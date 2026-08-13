@@ -1,0 +1,45 @@
+{
+  "name": "crypto-strategy-lab-backend",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Crypto Strategy Lab — backend foundation (modular monolith, event-driven).",
+  "main": "src/server.ts",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "node --enable-source-maps -r tsconfig-paths/register dist/server.js",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "prisma:generate": "prisma generate",
+    "prisma:migrate": "prisma migrate dev",
+    "prisma:format": "prisma format"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
+  },
+  "engines": {
+    "node": ">=18.18.0"
+  },
+  "dependencies": {
+    "@prisma/client": "^5.22.0",
+    "bullmq": "^5.21.2",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "ioredis": "^5.4.1",
+    "pino": "^9.5.0",
+    "socket.io": "^4.8.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.17.6",
+    "@types/supertest": "^6.0.2",
+    "prisma": "^5.22.0",
+    "supertest": "^7.0.0",
+    "tsconfig-paths": "^4.2.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.5"
+  }
+}

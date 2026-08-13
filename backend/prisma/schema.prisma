@@ -23,6 +23,8 @@ datasource db {
 enum StrategyType {
   BASE
   COMPOSITE
+
+  @@map("strategy_type")
 }
 
 enum StrategyFamily {
@@ -31,22 +33,30 @@ enum StrategyFamily {
   STRUCTURE
   VOLATILITY
   SENTIMENT
+
+  @@map("strategy_family")
 }
 
 enum SentimentClass {
   POSITIVE
   NEUTRAL
   NEGATIVE
+
+  @@map("sentiment_class")
 }
 
 enum PositionType {
   LONG
   SHORT
+
+  @@map("position_type")
 }
 
 enum TradeSide {
   BUY
   SELL
+
+  @@map("trade_side")
 }
 
 enum ExperimentStatus {
@@ -55,6 +65,8 @@ enum ExperimentStatus {
   DONE
   FAILED
   STOPPED
+
+  @@map("experiment_status")
 }
 
 enum CandidateStatus {
@@ -64,6 +76,8 @@ enum CandidateStatus {
   DONE
   FAILED
   SKIPPED
+
+  @@map("candidate_status")
 }
 
 enum SearchStatus {
@@ -72,13 +86,8 @@ enum SearchStatus {
   DONE
   STOPPED
   FAILED
-}
 
-enum WorkerStatus {
-  IDLE
-  BUSY
-  OFFLINE
-  ERROR
+  @@map("search_status")
 }
 
 enum LogLevel {
@@ -86,6 +95,8 @@ enum LogLevel {
   INFO
   WARN
   ERROR
+
+  @@map("log_level")
 }
 
 // ============================================================
@@ -94,11 +105,11 @@ enum LogLevel {
 
 model MarketDataProvider {
   id        String   @id @default(uuid()) @db.Uuid
-  code      String   @unique
-  name      String
+  code      String   @unique @db.VarChar(50)
+  name      String   @db.VarChar(255)
   baseUrl   String   @map("base_url")
   isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   symbols Symbol[]
 
@@ -108,11 +119,11 @@ model MarketDataProvider {
 model Symbol {
   id          String   @id @default(uuid()) @db.Uuid
   providerId  String   @map("provider_id") @db.Uuid
-  symbol      String
-  baseAsset   String   @map("base_asset")
-  quoteAsset  String   @map("quote_asset")
+  symbol      String   @db.VarChar(32)
+  baseAsset   String   @map("base_asset") @db.VarChar(16)
+  quoteAsset  String   @map("quote_asset") @db.VarChar(16)
   isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   provider          MarketDataProvider @relation(fields: [providerId], references: [id])
   candles           Candle[]
@@ -130,7 +141,7 @@ model Symbol {
 model Candle {
   id           String   @id @default(uuid()) @db.Uuid
   symbolId     String   @map("symbol_id") @db.Uuid
-  timeframe    String
+  timeframe    String   @db.VarChar(8)
   openTime     BigInt   @map("open_time")
   closeTime    BigInt   @map("close_time")
   open         Decimal  @db.Decimal(24, 10)
@@ -140,7 +151,7 @@ model Candle {
   volume       Decimal  @db.Decimal(32, 10)
   quoteVolume  Decimal  @map("quote_volume") @db.Decimal(32, 10)
   trades       Int
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   symbol Symbol @relation(fields: [symbolId], references: [id], onDelete: Cascade)
 
@@ -155,11 +166,11 @@ model Candle {
 
 model IndicatorType {
   id          String   @id @default(uuid()) @db.Uuid
-  code        String   @unique
-  name        String
+  code        String   @unique @db.VarChar(64)
+  name        String   @db.VarChar(255)
   category    StrategyFamily
   description String?
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   strategyVersions StrategyVersion[]
 
@@ -171,7 +182,7 @@ model StrategyDefinition {
   type        StrategyType
   family      StrategyFamily
   description String?
-  createdAt   DateTime @default(now()) @map("created_at")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   versions StrategyVersion[]
   registry StrategyRegistry?
@@ -182,14 +193,14 @@ model StrategyDefinition {
 model StrategyVersion {
   id                String   @id @default(uuid()) @db.Uuid
   definitionId      String   @map("definition_id") @db.Uuid
-  version           String
-  name              String
+  version           String   @db.VarChar(32)
+  name              String   @db.VarChar(255)
   description       String?
   indicatorTypeId   String?  @map("indicator_type_id") @db.Uuid
-  implementationRef String   @map("implementation_ref")
+  implementationRef String   @map("implementation_ref") @db.VarChar(255)
   parameters        Json     @default("{}")
   isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   definition         StrategyDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
   indicatorType      IndicatorType?     @relation(fields: [indicatorTypeId], references: [id])
@@ -219,7 +230,7 @@ model CompositeComponent {
 model StrategyRegistry {
   id           String   @id @default(uuid()) @db.Uuid
   definitionId String   @unique @map("definition_id") @db.Uuid
-  registeredAt DateTime @default(now()) @map("registered_at")
+  registeredAt DateTime @default(now()) @map("registered_at") @db.Timestamptz(3)
   isEnabled    Boolean  @default(true) @map("is_enabled")
 
   definition StrategyDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
@@ -233,10 +244,10 @@ model StrategyRegistry {
 
 model SearchAlgorithm {
   id                String   @id @default(uuid()) @db.Uuid
-  code              String   @unique
-  name              String
-  implementationRef String   @map("implementation_ref")
-  createdAt         DateTime @default(now()) @map("created_at")
+  code              String   @unique @db.VarChar(64)
+  name              String   @db.VarChar(255)
+  implementationRef String   @map("implementation_ref") @db.VarChar(255)
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   searchRuns SearchRun[]
 
@@ -247,16 +258,16 @@ model SearchRun {
   id            String   @id @default(uuid()) @db.Uuid
   algorithmId   String   @map("algorithm_id") @db.Uuid
   symbolId      String   @map("symbol_id") @db.Uuid
-  timeframe     String
+  timeframe     String   @db.VarChar(8)
   maxCandidates Int      @map("max_candidates")
   fromTime      BigInt?  @map("from_time")
   toTime        BigInt?  @map("to_time")
   status        SearchStatus @default(PENDING)
-  startedAt     DateTime? @map("started_at")
-  finishedAt    DateTime? @map("finished_at")
-  createdBy     String?  @map("created_by")
+  startedAt     DateTime? @map("started_at") @db.Timestamptz(3)
+  finishedAt    DateTime? @map("finished_at") @db.Timestamptz(3)
+  createdBy     String?  @map("created_by") @db.VarChar(64)
   config        Json     @default("{}")
-  createdAt     DateTime @default(now()) @map("created_at")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   algorithm  SearchAlgorithm @relation(fields: [algorithmId], references: [id])
   symbol     Symbol          @relation(fields: [symbolId], references: [id])
@@ -272,7 +283,7 @@ model CandidateStrategy {
   parameters        Json     @default("{}")
   status            CandidateStatus @default(PENDING)
   errorMessage      String?  @map("error_message")
-  createdAt         DateTime @default(now()) @map("created_at")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   searchRun       SearchRun @relation(fields: [searchRunId], references: [id], onDelete: Cascade)
   strategyVersion StrategyVersion @relation(fields: [strategyVersionId], references: [id])
@@ -288,10 +299,10 @@ model CandidateStrategy {
 model Experiment {
   id             String   @id @default(uuid()) @db.Uuid
   candidateId    String   @map("candidate_id") @db.Uuid
-  name           String
+  name           String   @db.VarChar(255)
   description    String?
   symbolId       String   @map("symbol_id") @db.Uuid
-  timeframe      String
+  timeframe      String   @db.VarChar(8)
   fromTime       BigInt   @map("from_time")
   toTime         BigInt   @map("to_time")
   initialCapital Decimal  @default(10000) @map("initial_capital") @db.Decimal(24, 8)
@@ -299,8 +310,8 @@ model Experiment {
   positionType   PositionType @default(LONG) @map("position_type")
   status         ExperimentStatus @default(PENDING)
   errorMessage   String?  @map("error_message")
-  createdAt      DateTime @default(now()) @map("created_at")
-  finishedAt     DateTime? @map("finished_at")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(3)
 
   candidate        CandidateStrategy @relation(fields: [candidateId], references: [id], onDelete: Cascade)
   symbol           Symbol @relation(fields: [symbolId], references: [id])
@@ -315,7 +326,7 @@ model BacktestResult {
   id                String   @id @default(uuid()) @db.Uuid
   experimentId      String   @unique @map("experiment_id") @db.Uuid
   symbolId          String   @map("symbol_id") @db.Uuid
-  timeframe         String
+  timeframe         String   @db.VarChar(8)
   fromTime          BigInt   @map("from_time")
   toTime            BigInt   @map("to_time")
   initialCapital    Decimal  @map("initial_capital") @db.Decimal(24, 8)
@@ -331,7 +342,7 @@ model BacktestResult {
   sortinoRatio      Decimal? @map("sortino_ratio") @db.Decimal(10, 4)
   overallScore      Decimal  @map("overall_score") @db.Decimal(10, 4)
   equityCurve       Json     @default("[]") @map("equity_curve")
-  createdAt         DateTime @default(now()) @map("created_at")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
   symbol     Symbol     @relation(fields: [symbolId], references: [id])
@@ -342,10 +353,10 @@ model BacktestResult {
 model EvaluationMetric {
   id           String   @id @default(uuid()) @db.Uuid
   experimentId String   @map("experiment_id") @db.Uuid
-  metricCode   String   @map("metric_code")
+  metricCode   String   @map("metric_code") @db.VarChar(64)
   metricValue  Decimal  @map("metric_value") @db.Decimal(20, 8)
-  metricGroup  String?  @map("metric_group")
-  createdAt    DateTime @default(now()) @map("created_at")
+  metricGroup  String?  @map("metric_group") @db.VarChar(64)
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
 
@@ -368,7 +379,7 @@ model Trade {
   profitLossPct  Decimal? @map("profit_loss_pct") @db.Decimal(10, 4)
   entryReason    String?  @map("entry_reason")
   exitReason     String?  @map("exit_reason")
-  createdAt      DateTime @default(now()) @map("created_at")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
   symbol     Symbol     @relation(fields: [symbolId], references: [id])
@@ -385,14 +396,14 @@ model LeaderboardEntry {
   id                String   @id @default(uuid()) @db.Uuid
   strategyVersionId String   @map("strategy_version_id") @db.Uuid
   symbolId          String   @map("symbol_id") @db.Uuid
-  timeframe         String
+  timeframe         String   @db.VarChar(8)
   totalReturn       Decimal  @map("total_return") @db.Decimal(10, 4)
   winRate           Decimal  @map("win_rate") @db.Decimal(6, 4)
   maxDrawdown       Decimal  @map("max_drawdown") @db.Decimal(10, 4)
   numTrades         Int      @map("num_trades")
   overallScore      Decimal  @map("overall_score") @db.Decimal(10, 4)
   rank              Int
-  lastEvaluatedAt   DateTime @default(now()) @map("last_evaluated_at")
+  lastEvaluatedAt   DateTime @default(now()) @map("last_evaluated_at") @db.Timestamptz(3)
 
   strategyVersion StrategyVersion @relation(fields: [strategyVersionId], references: [id], onDelete: Cascade)
   symbol          Symbol          @relation(fields: [symbolId], references: [id])
@@ -407,8 +418,8 @@ model RankingHistory {
   strategyVersionId String   @map("strategy_version_id") @db.Uuid
   rank              Int
   overallScore      Decimal  @map("overall_score") @db.Decimal(10, 4)
-  snapshotAt        DateTime @default(now()) @map("snapshot_at")
-  datasetLabel      String?  @map("dataset_label")
+  snapshotAt        DateTime @default(now()) @map("snapshot_at") @db.Timestamptz(3)
+  datasetLabel      String?  @map("dataset_label") @db.VarChar(64)
 
   strategyVersion StrategyVersion @relation(fields: [strategyVersionId], references: [id], onDelete: Cascade)
 
@@ -423,12 +434,12 @@ model RankingHistory {
 
 model NewsProvider {
   id            String   @id @default(uuid()) @db.Uuid
-  code          String   @unique
-  name          String
+  code          String   @unique @db.VarChar(64)
+  name          String   @db.VarChar(255)
   baseUrl       String   @map("base_url")
   requiresApiKey Boolean @default(false) @map("requires_api_key")
   isActive      Boolean  @default(true) @map("is_active")
-  createdAt     DateTime @default(now()) @map("created_at")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   news News[]
 
@@ -438,15 +449,15 @@ model NewsProvider {
 model News {
   id          String   @id @default(uuid()) @db.Uuid
   providerId  String   @map("provider_id") @db.Uuid
-  externalId  String   @map("external_id")
+  externalId  String   @map("external_id") @db.VarChar(255)
   title       String
   summary     String?
   content     String?
   url         String
-  source      String
-  author      String?
-  publishedAt DateTime @map("published_at")
-  crawledAt   DateTime @default(now()) @map("crawled_at")
+  source      String   @db.VarChar(255)
+  author      String?  @db.VarChar(255)
+  publishedAt DateTime @map("published_at") @db.Timestamptz(3)
+  crawledAt   DateTime @default(now()) @map("crawled_at") @db.Timestamptz(3)
 
   provider   NewsProvider @relation(fields: [providerId], references: [id])
   coins      NewsCoin[]
@@ -470,11 +481,11 @@ model NewsCoin {
 
 model SentimentProvider {
   id           String   @id @default(uuid()) @db.Uuid
-  code         String   @unique
-  name         String
-  modelVersion String   @map("model_version")
+  code         String   @unique @db.VarChar(64)
+  name         String   @db.VarChar(255)
+  modelVersion String   @map("model_version") @db.VarChar(64)
   isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   sentiments Sentiment[]
 
@@ -488,7 +499,7 @@ model Sentiment {
   classification SentimentClass
   score          Decimal  @db.Decimal(4, 3)
   confidence     Decimal? @db.Decimal(4, 3)
-  analyzedAt     DateTime @default(now()) @map("analyzed_at")
+  analyzedAt     DateTime @default(now()) @map("analyzed_at") @db.Timestamptz(3)
 
   news     News             @relation(fields: [newsId], references: [id], onDelete: Cascade)
   provider SentimentProvider @relation(fields: [providerId], references: [id])
@@ -504,18 +515,18 @@ model Sentiment {
 
 model QueueJob {
   id           String   @id @default(uuid()) @db.Uuid
-  jobId        String   @unique @map("job_id")
-  queueName    String   @map("queue_name")
-  jobType      String   @map("job_type")
+  jobId        String   @unique @map("job_id") @db.VarChar(64)
+  queueName    String   @map("queue_name") @db.VarChar(64)
+  jobType      String   @map("job_type") @db.VarChar(64)
   payload      Json     @default("{}")
-  status       String   @default("WAITING")
+  status       String   @default("WAITING") @db.VarChar(32)
   attempts     Int      @default(0)
   maxAttempts  Int      @default(3) @map("max_attempts")
-  scheduledAt  DateTime @default(now()) @map("scheduled_at")
-  startedAt    DateTime? @map("started_at")
-  finishedAt   DateTime? @map("finished_at")
+  scheduledAt  DateTime @default(now()) @map("scheduled_at") @db.Timestamptz(3)
+  startedAt    DateTime? @map("started_at") @db.Timestamptz(3)
+  finishedAt   DateTime? @map("finished_at") @db.Timestamptz(3)
   errorMessage String?  @map("error_message")
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   // A worker optionally references its current job. The FK lives on
   // `WorkerHeartbeat.currentJobId`, but Prisma requires the inverse
@@ -533,17 +544,17 @@ model QueueJob {
 // remains `worker_statuses` as documented.
 model WorkerHeartbeat {
   id             String   @id @default(uuid()) @db.Uuid
-  workerId       String   @unique @map("worker_id")
-  host           String?
+  workerId       String   @unique @map("worker_id") @db.VarChar(64)
+  host           String?  @db.VarChar(255)
   status         WorkerState @default(IDLE)
   currentJobId   String?  @unique @map("current_job_id") @db.Uuid
-  lastHeartbeat  DateTime @default(now()) @map("last_heartbeat")
+  lastHeartbeat  DateTime @default(now()) @map("last_heartbeat") @db.Timestamptz(3)
   totalProcessed Int      @default(0) @map("total_processed")
   totalFailed    Int      @default(0) @map("total_failed")
-  startedAt      DateTime @default(now()) @map("started_at")
-  createdAt      DateTime @default(now()) @map("created_at")
+  startedAt      DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  currentJob QueueJob? @relation("WorkerCurrentJob", fields: [currentJobId], references: [id])
+  currentJob QueueJob? @relation("WorkerCurrentJob", fields: [currentJobId], references: [id], onDelete: Restrict)
 
   @@map("worker_statuses")
 }
@@ -564,11 +575,11 @@ enum WorkerState {
 model SystemLog {
   id           String   @id @default(uuid()) @db.Uuid
   level        LogLevel
-  sourceModule String   @map("source_module")
-  eventCode    String?  @map("event_code")
+  sourceModule String   @map("source_module") @db.VarChar(64)
+  eventCode    String?  @map("event_code") @db.VarChar(64)
   message      String
   context      Json     @default("{}")
-  createdAt    DateTime @default(now()) @map("created_at")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   @@index([level, createdAt(sort: Desc)])
   @@index([sourceModule, createdAt(sort: Desc)])
@@ -576,10 +587,10 @@ model SystemLog {
 }
 
 model Setting {
-  key         String   @id
+  key         String   @id @db.VarChar(64)
   value       Json
   description String?
-  updatedAt   DateTime @default(now()) @map("updated_at")
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@map("settings")
 }

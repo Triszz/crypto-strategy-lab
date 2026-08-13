@@ -1,12 +1,3 @@
-// Crypto Strategy Lab — Prisma schema (foundation)
-//
-// This schema mirrors `docs/Database.md`. It is intentionally
-// comprehensive at the data-modelling layer; module owners will
-// build typed repositories on top of this client.
-//
-// Schema is treated as a frozen contract after week 1 (per the team's
-// "đóng băng" rule). Any change must be agreed by the whole team.
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -16,9 +7,433 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ============================================================
-// ENUMS
-// ============================================================
+model MarketDataProvider {
+  id        String   @id @default(uuid()) @db.Uuid
+  code      String   @unique @db.VarChar(50)
+  name      String   @db.VarChar(255)
+  baseUrl   String   @map("base_url")
+  isActive  Boolean  @default(true) @map("is_active")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  symbols   Symbol[]
+
+  @@map("market_data_providers")
+}
+
+model Symbol {
+  id                 String             @id @default(uuid()) @db.Uuid
+  providerId         String             @map("provider_id") @db.Uuid
+  symbol             String             @db.VarChar(32)
+  baseAsset          String             @map("base_asset") @db.VarChar(16)
+  quoteAsset         String             @map("quote_asset") @db.VarChar(16)
+  isActive           Boolean            @default(true) @map("is_active")
+  createdAt          DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  backtestResults    BacktestResult[]
+  candles            Candle[]
+  experiments        Experiment[]
+  leaderboardEntries LeaderboardEntry[]
+  newsCoins          NewsCoin[]
+  searchRuns         SearchRun[]
+  provider           MarketDataProvider @relation(fields: [providerId], references: [id])
+  trades             Trade[]
+
+  @@unique([providerId, symbol])
+  @@map("symbols")
+}
+
+model Candle {
+  id          String   @id @default(uuid()) @db.Uuid
+  symbolId    String   @map("symbol_id") @db.Uuid
+  timeframe   String   @db.VarChar(8)
+  openTime    BigInt   @map("open_time")
+  closeTime   BigInt   @map("close_time")
+  open        Decimal  @db.Decimal(24, 10)
+  high        Decimal  @db.Decimal(24, 10)
+  low         Decimal  @db.Decimal(24, 10)
+  close       Decimal  @db.Decimal(24, 10)
+  volume      Decimal  @db.Decimal(32, 10)
+  quoteVolume Decimal  @map("quote_volume") @db.Decimal(32, 10)
+  trades      Int
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  symbol      Symbol   @relation(fields: [symbolId], references: [id], onDelete: Cascade)
+
+  @@unique([symbolId, timeframe, openTime])
+  @@index([symbolId, timeframe, openTime(sort: Desc)])
+  @@index([openTime(sort: Desc)])
+  @@map("candles")
+}
+
+model IndicatorType {
+  id               String            @id @default(uuid()) @db.Uuid
+  code             String            @unique @db.VarChar(64)
+  name             String            @db.VarChar(255)
+  category         StrategyFamily
+  description      String?
+  createdAt        DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  strategyVersions StrategyVersion[]
+
+  @@map("indicator_types")
+}
+
+model StrategyDefinition {
+  id          String            @id @default(uuid()) @db.Uuid
+  type        StrategyType
+  family      StrategyFamily
+  description String?
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+  registry    StrategyRegistry?
+  versions    StrategyVersion[]
+
+  @@map("strategy_definitions")
+}
+
+model StrategyVersion {
+  id                 String               @id @default(uuid()) @db.Uuid
+  definitionId       String               @map("definition_id") @db.Uuid
+  version            String               @db.VarChar(32)
+  name               String               @db.VarChar(255)
+  description        String?
+  indicatorTypeId    String?              @map("indicator_type_id") @db.Uuid
+  implementationRef  String               @map("implementation_ref") @db.VarChar(255)
+  parameters         Json                 @default("{}")
+  isActive           Boolean              @default(true) @map("is_active")
+  createdAt          DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  candidates         CandidateStrategy[]
+  compositeChild     CompositeComponent[] @relation("CompositeChild")
+  compositeParent    CompositeComponent[] @relation("CompositeParent")
+  leaderboardEntries LeaderboardEntry[]
+  rankingHistory     RankingHistory[]
+  definition         StrategyDefinition   @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+  indicatorType      IndicatorType?       @relation(fields: [indicatorTypeId], references: [id])
+
+  @@unique([definitionId, version])
+  @@map("strategy_versions")
+}
+
+model CompositeComponent {
+  compositeVersionId String          @map("composite_version_id") @db.Uuid
+  componentVersionId String          @map("component_version_id") @db.Uuid
+  weight             Decimal         @db.Decimal(6, 4)
+  position           Int
+  componentVersion   StrategyVersion @relation("CompositeChild", fields: [componentVersionId], references: [id])
+  compositeVersion   StrategyVersion @relation("CompositeParent", fields: [compositeVersionId], references: [id], onDelete: Cascade)
+
+  @@id([compositeVersionId, componentVersionId])
+  @@map("composite_components")
+}
+
+model StrategyRegistry {
+  id           String             @id @default(uuid()) @db.Uuid
+  definitionId String             @unique @map("definition_id") @db.Uuid
+  registeredAt DateTime           @default(now()) @map("registered_at") @db.Timestamptz(3)
+  isEnabled    Boolean            @default(true) @map("is_enabled")
+  definition   StrategyDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
+
+  @@map("strategy_registry")
+}
+
+model SearchAlgorithm {
+  id                String      @id @default(uuid()) @db.Uuid
+  code              String      @unique @db.VarChar(64)
+  name              String      @db.VarChar(255)
+  implementationRef String      @map("implementation_ref") @db.VarChar(255)
+  createdAt         DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  searchRuns        SearchRun[]
+
+  @@map("search_algorithms")
+}
+
+model SearchRun {
+  id            String              @id @default(uuid()) @db.Uuid
+  algorithmId   String              @map("algorithm_id") @db.Uuid
+  symbolId      String              @map("symbol_id") @db.Uuid
+  timeframe     String              @db.VarChar(8)
+  maxCandidates Int                 @map("max_candidates")
+  fromTime      BigInt?             @map("from_time")
+  toTime        BigInt?             @map("to_time")
+  status        SearchStatus        @default(PENDING)
+  startedAt     DateTime?           @map("started_at") @db.Timestamptz(3)
+  finishedAt    DateTime?           @map("finished_at") @db.Timestamptz(3)
+  createdBy     String?             @map("created_by") @db.VarChar(64)
+  config        Json                @default("{}")
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  candidates    CandidateStrategy[]
+  algorithm     SearchAlgorithm     @relation(fields: [algorithmId], references: [id])
+  symbol        Symbol              @relation(fields: [symbolId], references: [id])
+
+  @@map("search_runs")
+}
+
+model CandidateStrategy {
+  id                String          @id @default(uuid()) @db.Uuid
+  searchRunId       String          @map("search_run_id") @db.Uuid
+  strategyVersionId String          @map("strategy_version_id") @db.Uuid
+  parameters        Json            @default("{}")
+  status            CandidateStatus @default(PENDING)
+  errorMessage      String?         @map("error_message")
+  createdAt         DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  searchRun         SearchRun       @relation(fields: [searchRunId], references: [id], onDelete: Cascade)
+  strategyVersion   StrategyVersion @relation(fields: [strategyVersionId], references: [id])
+  experiments       Experiment[]
+
+  @@map("candidate_strategies")
+}
+
+model Experiment {
+  id                String             @id @default(uuid()) @db.Uuid
+  candidateId       String             @map("candidate_id") @db.Uuid
+  name              String             @db.VarChar(255)
+  description       String?
+  symbolId          String             @map("symbol_id") @db.Uuid
+  timeframe         String             @db.VarChar(8)
+  fromTime          BigInt             @map("from_time")
+  toTime            BigInt             @map("to_time")
+  initialCapital    Decimal            @default(10000) @map("initial_capital") @db.Decimal(24, 8)
+  positionSize      Decimal            @map("position_size") @db.Decimal(24, 8)
+  positionType      PositionType       @default(LONG) @map("position_type")
+  status            ExperimentStatus   @default(PENDING)
+  errorMessage      String?            @map("error_message")
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  finishedAt        DateTime?          @map("finished_at") @db.Timestamptz(3)
+  backtestResult    BacktestResult?
+  evaluationMetrics EvaluationMetric[]
+  candidate         CandidateStrategy  @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  symbol            Symbol             @relation(fields: [symbolId], references: [id])
+  trades            Trade[]
+
+  @@map("experiments")
+}
+
+model BacktestResult {
+  id               String     @id @default(uuid()) @db.Uuid
+  experimentId     String     @unique @map("experiment_id") @db.Uuid
+  symbolId         String     @map("symbol_id") @db.Uuid
+  timeframe        String     @db.VarChar(8)
+  fromTime         BigInt     @map("from_time")
+  toTime           BigInt     @map("to_time")
+  initialCapital   Decimal    @map("initial_capital") @db.Decimal(24, 8)
+  finalCapital     Decimal    @map("final_capital") @db.Decimal(24, 8)
+  totalReturn      Decimal    @map("total_return") @db.Decimal(10, 4)
+  annualReturn     Decimal?   @map("annual_return") @db.Decimal(10, 4)
+  winRate          Decimal    @map("win_rate") @db.Decimal(6, 4)
+  maxDrawdown      Decimal    @map("max_drawdown") @db.Decimal(10, 4)
+  numTrades        Int        @map("num_trades")
+  numWinningTrades Int        @map("num_winning_trades")
+  numLosingTrades  Int        @map("num_losing_trades")
+  sharpeRatio      Decimal?   @map("sharpe_ratio") @db.Decimal(10, 4)
+  sortinoRatio     Decimal?   @map("sortino_ratio") @db.Decimal(10, 4)
+  overallScore     Decimal    @map("overall_score") @db.Decimal(10, 4)
+  equityCurve      Json       @default("[]") @map("equity_curve")
+  createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  experiment       Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  symbol           Symbol     @relation(fields: [symbolId], references: [id])
+
+  @@map("backtest_results")
+}
+
+model EvaluationMetric {
+  id           String     @id @default(uuid()) @db.Uuid
+  experimentId String     @map("experiment_id") @db.Uuid
+  metricCode   String     @map("metric_code") @db.VarChar(64)
+  metricValue  Decimal    @map("metric_value") @db.Decimal(20, 8)
+  metricGroup  String?    @map("metric_group") @db.VarChar(64)
+  createdAt    DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  experiment   Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+
+  @@unique([experimentId, metricCode])
+  @@map("evaluation_metrics")
+}
+
+model Trade {
+  id            String       @id @default(uuid()) @db.Uuid
+  experimentId  String       @map("experiment_id") @db.Uuid
+  symbolId      String       @map("symbol_id") @db.Uuid
+  side          TradeSide
+  position      PositionType
+  entryTime     BigInt       @map("entry_time")
+  entryPrice    Decimal      @map("entry_price") @db.Decimal(24, 10)
+  exitTime      BigInt?      @map("exit_time")
+  exitPrice     Decimal?     @map("exit_price") @db.Decimal(24, 10)
+  quantity      Decimal      @db.Decimal(24, 10)
+  profitLoss    Decimal?     @map("profit_loss") @db.Decimal(24, 8)
+  profitLossPct Decimal?     @map("profit_loss_pct") @db.Decimal(10, 4)
+  entryReason   String?      @map("entry_reason")
+  exitReason    String?      @map("exit_reason")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  experiment    Experiment   @relation(fields: [experimentId], references: [id], onDelete: Cascade)
+  symbol        Symbol       @relation(fields: [symbolId], references: [id])
+
+  @@index([experimentId, entryTime])
+  @@map("trades")
+}
+
+model LeaderboardEntry {
+  id                String          @id @default(uuid()) @db.Uuid
+  strategyVersionId String          @map("strategy_version_id") @db.Uuid
+  symbolId          String          @map("symbol_id") @db.Uuid
+  timeframe         String          @db.VarChar(8)
+  totalReturn       Decimal         @map("total_return") @db.Decimal(10, 4)
+  winRate           Decimal         @map("win_rate") @db.Decimal(6, 4)
+  maxDrawdown       Decimal         @map("max_drawdown") @db.Decimal(10, 4)
+  numTrades         Int             @map("num_trades")
+  overallScore      Decimal         @map("overall_score") @db.Decimal(10, 4)
+  rank              Int
+  lastEvaluatedAt   DateTime        @default(now()) @map("last_evaluated_at") @db.Timestamptz(3)
+  strategyVersion   StrategyVersion @relation(fields: [strategyVersionId], references: [id], onDelete: Cascade)
+  symbol            Symbol          @relation(fields: [symbolId], references: [id])
+
+  @@unique([strategyVersionId, symbolId, timeframe])
+  @@index([overallScore(sort: Desc)])
+  @@index([symbolId, timeframe, overallScore(sort: Desc)])
+  @@map("leaderboard_entries")
+}
+
+model RankingHistory {
+  id                String          @id @default(uuid()) @db.Uuid
+  strategyVersionId String          @map("strategy_version_id") @db.Uuid
+  rank              Int
+  overallScore      Decimal         @map("overall_score") @db.Decimal(10, 4)
+  snapshotAt        DateTime        @default(now()) @map("snapshot_at") @db.Timestamptz(3)
+  datasetLabel      String?         @map("dataset_label") @db.VarChar(64)
+  strategyVersion   StrategyVersion @relation(fields: [strategyVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([strategyVersionId, snapshotAt])
+  @@index([strategyVersionId, snapshotAt(sort: Desc)])
+  @@map("ranking_history")
+}
+
+model NewsProvider {
+  id             String   @id @default(uuid()) @db.Uuid
+  code           String   @unique @db.VarChar(64)
+  name           String   @db.VarChar(255)
+  baseUrl        String   @map("base_url")
+  requiresApiKey Boolean  @default(false) @map("requires_api_key")
+  isActive       Boolean  @default(true) @map("is_active")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  news           News[]
+
+  @@map("news_providers")
+}
+
+model News {
+  id          String       @id @default(uuid()) @db.Uuid
+  providerId  String       @map("provider_id") @db.Uuid
+  externalId  String       @map("external_id") @db.VarChar(255)
+  title       String
+  summary     String?
+  content     String?
+  url         String
+  source      String       @db.VarChar(255)
+  author      String?      @db.VarChar(255)
+  publishedAt DateTime     @map("published_at") @db.Timestamptz(3)
+  crawledAt   DateTime     @default(now()) @map("crawled_at") @db.Timestamptz(3)
+  provider    NewsProvider @relation(fields: [providerId], references: [id])
+  coins       NewsCoin[]
+  sentiments  Sentiment[]
+
+  @@unique([providerId, externalId])
+  @@index([publishedAt(sort: Desc)])
+  @@index([providerId, publishedAt(sort: Desc)])
+  @@map("news")
+}
+
+model NewsCoin {
+  newsId   String @map("news_id") @db.Uuid
+  symbolId String @map("symbol_id") @db.Uuid
+  news     News   @relation(fields: [newsId], references: [id], onDelete: Cascade)
+  symbol   Symbol @relation(fields: [symbolId], references: [id], onDelete: Cascade)
+
+  @@id([newsId, symbolId])
+  @@map("news_coins")
+}
+
+model SentimentProvider {
+  id           String      @id @default(uuid()) @db.Uuid
+  code         String      @unique @db.VarChar(64)
+  name         String      @db.VarChar(255)
+  modelVersion String      @map("model_version") @db.VarChar(64)
+  isActive     Boolean     @default(true) @map("is_active")
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  sentiments   Sentiment[]
+
+  @@map("sentiment_providers")
+}
+
+model Sentiment {
+  id             String            @id @default(uuid()) @db.Uuid
+  newsId         String            @map("news_id") @db.Uuid
+  providerId     String            @map("provider_id") @db.Uuid
+  classification SentimentClass
+  score          Decimal           @db.Decimal(4, 3)
+  confidence     Decimal?          @db.Decimal(4, 3)
+  analyzedAt     DateTime          @default(now()) @map("analyzed_at") @db.Timestamptz(3)
+  news           News              @relation(fields: [newsId], references: [id], onDelete: Cascade)
+  provider       SentimentProvider @relation(fields: [providerId], references: [id])
+
+  @@unique([newsId, providerId])
+  @@index([classification])
+  @@index([newsId])
+  @@map("sentiments")
+}
+
+model QueueJob {
+  id               String           @id @default(uuid()) @db.Uuid
+  jobId            String           @unique @map("job_id") @db.VarChar(64)
+  queueName        String           @map("queue_name") @db.VarChar(64)
+  jobType          String           @map("job_type") @db.VarChar(64)
+  payload          Json             @default("{}")
+  status           String           @default("WAITING") @db.VarChar(32)
+  attempts         Int              @default(0)
+  maxAttempts      Int              @default(3) @map("max_attempts")
+  scheduledAt      DateTime         @default(now()) @map("scheduled_at") @db.Timestamptz(3)
+  startedAt        DateTime?        @map("started_at") @db.Timestamptz(3)
+  finishedAt       DateTime?        @map("finished_at") @db.Timestamptz(3)
+  errorMessage     String?          @map("error_message")
+  createdAt        DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  currentJobWorker WorkerHeartbeat? @relation("WorkerCurrentJob")
+
+  @@index([status, queueName])
+  @@index([scheduledAt])
+  @@map("queue_jobs")
+}
+
+model WorkerHeartbeat {
+  id             String      @id @default(uuid()) @db.Uuid
+  workerId       String      @unique @map("worker_id") @db.VarChar(64)
+  host           String?     @db.VarChar(255)
+  status         WorkerState @default(IDLE)
+  currentJobId   String?     @unique @map("current_job_id") @db.Uuid
+  lastHeartbeat  DateTime    @default(now()) @map("last_heartbeat") @db.Timestamptz(3)
+  totalProcessed Int         @default(0) @map("total_processed")
+  totalFailed    Int         @default(0) @map("total_failed")
+  startedAt      DateTime    @default(now()) @map("started_at") @db.Timestamptz(3)
+  createdAt      DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  currentJob     QueueJob?   @relation("WorkerCurrentJob", fields: [currentJobId], references: [id], onDelete: Restrict)
+
+  @@map("worker_statuses")
+}
+
+model SystemLog {
+  id           String   @id @default(uuid()) @db.Uuid
+  level        LogLevel
+  sourceModule String   @map("source_module") @db.VarChar(64)
+  eventCode    String?  @map("event_code") @db.VarChar(64)
+  message      String
+  context      Json     @default("{}")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  @@index([level, createdAt(sort: Desc)])
+  @@index([sourceModule, createdAt(sort: Desc)])
+  @@map("system_logs")
+}
+
+model Setting {
+  key         String   @id @db.VarChar(64)
+  value       Json
+  description String?
+  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@map("settings")
+}
 
 enum StrategyType {
   BASE
@@ -99,470 +514,6 @@ enum LogLevel {
   @@map("log_level")
 }
 
-// ============================================================
-// MARKET DATA
-// ============================================================
-
-model MarketDataProvider {
-  id        String   @id @default(uuid()) @db.Uuid
-  code      String   @unique @db.VarChar(50)
-  name      String   @db.VarChar(255)
-  baseUrl   String   @map("base_url")
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  symbols Symbol[]
-
-  @@map("market_data_providers")
-}
-
-model Symbol {
-  id          String   @id @default(uuid()) @db.Uuid
-  providerId  String   @map("provider_id") @db.Uuid
-  symbol      String   @db.VarChar(32)
-  baseAsset   String   @map("base_asset") @db.VarChar(16)
-  quoteAsset  String   @map("quote_asset") @db.VarChar(16)
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  provider          MarketDataProvider @relation(fields: [providerId], references: [id])
-  candles           Candle[]
-  newsCoins         NewsCoin[]
-  searchRuns        SearchRun[]
-  experiments       Experiment[]
-  backtestResults   BacktestResult[]
-  leaderboardEntries LeaderboardEntry[]
-  trades            Trade[]
-
-  @@unique([providerId, symbol])
-  @@map("symbols")
-}
-
-model Candle {
-  id           String   @id @default(uuid()) @db.Uuid
-  symbolId     String   @map("symbol_id") @db.Uuid
-  timeframe    String   @db.VarChar(8)
-  openTime     BigInt   @map("open_time")
-  closeTime    BigInt   @map("close_time")
-  open         Decimal  @db.Decimal(24, 10)
-  high         Decimal  @db.Decimal(24, 10)
-  low          Decimal  @db.Decimal(24, 10)
-  close        Decimal  @db.Decimal(24, 10)
-  volume       Decimal  @db.Decimal(32, 10)
-  quoteVolume  Decimal  @map("quote_volume") @db.Decimal(32, 10)
-  trades       Int
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  symbol Symbol @relation(fields: [symbolId], references: [id], onDelete: Cascade)
-
-  @@unique([symbolId, timeframe, openTime])
-  @@index([symbolId, timeframe, openTime(sort: Desc)])
-  @@map("candles")
-}
-
-// ============================================================
-// STRATEGY
-// ============================================================
-
-model IndicatorType {
-  id          String   @id @default(uuid()) @db.Uuid
-  code        String   @unique @db.VarChar(64)
-  name        String   @db.VarChar(255)
-  category    StrategyFamily
-  description String?
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  strategyVersions StrategyVersion[]
-
-  @@map("indicator_types")
-}
-
-model StrategyDefinition {
-  id          String   @id @default(uuid()) @db.Uuid
-  type        StrategyType
-  family      StrategyFamily
-  description String?
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  versions StrategyVersion[]
-  registry StrategyRegistry?
-
-  @@map("strategy_definitions")
-}
-
-model StrategyVersion {
-  id                String   @id @default(uuid()) @db.Uuid
-  definitionId      String   @map("definition_id") @db.Uuid
-  version           String   @db.VarChar(32)
-  name              String   @db.VarChar(255)
-  description       String?
-  indicatorTypeId   String?  @map("indicator_type_id") @db.Uuid
-  implementationRef String   @map("implementation_ref") @db.VarChar(255)
-  parameters        Json     @default("{}")
-  isActive          Boolean  @default(true) @map("is_active")
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  definition         StrategyDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
-  indicatorType      IndicatorType?     @relation(fields: [indicatorTypeId], references: [id])
-  compositeParent    CompositeComponent[] @relation("CompositeParent")
-  compositeChild     CompositeComponent[] @relation("CompositeChild")
-  candidates         CandidateStrategy[]
-  leaderboardEntries LeaderboardEntry[]
-  rankingHistory     RankingHistory[]
-
-  @@unique([definitionId, version])
-  @@map("strategy_versions")
-}
-
-model CompositeComponent {
-  compositeVersionId String  @map("composite_version_id") @db.Uuid
-  componentVersionId String  @map("component_version_id") @db.Uuid
-  weight             Decimal @db.Decimal(6, 4)
-  position           Int
-
-  compositeVersion StrategyVersion @relation("CompositeParent", fields: [compositeVersionId], references: [id], onDelete: Cascade)
-  componentVersion StrategyVersion @relation("CompositeChild", fields: [componentVersionId], references: [id], onDelete: Restrict)
-
-  @@id([compositeVersionId, componentVersionId])
-  @@map("composite_components")
-}
-
-model StrategyRegistry {
-  id           String   @id @default(uuid()) @db.Uuid
-  definitionId String   @unique @map("definition_id") @db.Uuid
-  registeredAt DateTime @default(now()) @map("registered_at") @db.Timestamptz(3)
-  isEnabled    Boolean  @default(true) @map("is_enabled")
-
-  definition StrategyDefinition @relation(fields: [definitionId], references: [id], onDelete: Cascade)
-
-  @@map("strategy_registry")
-}
-
-// ============================================================
-// SEARCH
-// ============================================================
-
-model SearchAlgorithm {
-  id                String   @id @default(uuid()) @db.Uuid
-  code              String   @unique @db.VarChar(64)
-  name              String   @db.VarChar(255)
-  implementationRef String   @map("implementation_ref") @db.VarChar(255)
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  searchRuns SearchRun[]
-
-  @@map("search_algorithms")
-}
-
-model SearchRun {
-  id            String   @id @default(uuid()) @db.Uuid
-  algorithmId   String   @map("algorithm_id") @db.Uuid
-  symbolId      String   @map("symbol_id") @db.Uuid
-  timeframe     String   @db.VarChar(8)
-  maxCandidates Int      @map("max_candidates")
-  fromTime      BigInt?  @map("from_time")
-  toTime        BigInt?  @map("to_time")
-  status        SearchStatus @default(PENDING)
-  startedAt     DateTime? @map("started_at") @db.Timestamptz(3)
-  finishedAt    DateTime? @map("finished_at") @db.Timestamptz(3)
-  createdBy     String?  @map("created_by") @db.VarChar(64)
-  config        Json     @default("{}")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  algorithm  SearchAlgorithm @relation(fields: [algorithmId], references: [id])
-  symbol     Symbol          @relation(fields: [symbolId], references: [id])
-  candidates CandidateStrategy[]
-
-  @@map("search_runs")
-}
-
-model CandidateStrategy {
-  id                String   @id @default(uuid()) @db.Uuid
-  searchRunId       String   @map("search_run_id") @db.Uuid
-  strategyVersionId String   @map("strategy_version_id") @db.Uuid
-  parameters        Json     @default("{}")
-  status            CandidateStatus @default(PENDING)
-  errorMessage      String?  @map("error_message")
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  searchRun       SearchRun @relation(fields: [searchRunId], references: [id], onDelete: Cascade)
-  strategyVersion StrategyVersion @relation(fields: [strategyVersionId], references: [id])
-  experiments     Experiment[]
-
-  @@map("candidate_strategies")
-}
-
-// ============================================================
-// EXPERIMENT / BACKTEST
-// ============================================================
-
-model Experiment {
-  id             String   @id @default(uuid()) @db.Uuid
-  candidateId    String   @map("candidate_id") @db.Uuid
-  name           String   @db.VarChar(255)
-  description    String?
-  symbolId       String   @map("symbol_id") @db.Uuid
-  timeframe      String   @db.VarChar(8)
-  fromTime       BigInt   @map("from_time")
-  toTime         BigInt   @map("to_time")
-  initialCapital Decimal  @default(10000) @map("initial_capital") @db.Decimal(24, 8)
-  positionSize   Decimal  @map("position_size") @db.Decimal(24, 8)
-  positionType   PositionType @default(LONG) @map("position_type")
-  status         ExperimentStatus @default(PENDING)
-  errorMessage   String?  @map("error_message")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  finishedAt     DateTime? @map("finished_at") @db.Timestamptz(3)
-
-  candidate        CandidateStrategy @relation(fields: [candidateId], references: [id], onDelete: Cascade)
-  symbol           Symbol @relation(fields: [symbolId], references: [id])
-  backtestResult   BacktestResult?
-  evaluationMetrics EvaluationMetric[]
-  trades           Trade[]
-
-  @@map("experiments")
-}
-
-model BacktestResult {
-  id                String   @id @default(uuid()) @db.Uuid
-  experimentId      String   @unique @map("experiment_id") @db.Uuid
-  symbolId          String   @map("symbol_id") @db.Uuid
-  timeframe         String   @db.VarChar(8)
-  fromTime          BigInt   @map("from_time")
-  toTime            BigInt   @map("to_time")
-  initialCapital    Decimal  @map("initial_capital") @db.Decimal(24, 8)
-  finalCapital      Decimal  @map("final_capital") @db.Decimal(24, 8)
-  totalReturn       Decimal  @map("total_return") @db.Decimal(10, 4)
-  annualReturn      Decimal? @map("annual_return") @db.Decimal(10, 4)
-  winRate           Decimal  @map("win_rate") @db.Decimal(6, 4)
-  maxDrawdown       Decimal  @map("max_drawdown") @db.Decimal(10, 4)
-  numTrades         Int      @map("num_trades")
-  numWinningTrades  Int      @map("num_winning_trades")
-  numLosingTrades   Int      @map("num_losing_trades")
-  sharpeRatio       Decimal? @map("sharpe_ratio") @db.Decimal(10, 4)
-  sortinoRatio      Decimal? @map("sortino_ratio") @db.Decimal(10, 4)
-  overallScore      Decimal  @map("overall_score") @db.Decimal(10, 4)
-  equityCurve       Json     @default("[]") @map("equity_curve")
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
-  symbol     Symbol     @relation(fields: [symbolId], references: [id])
-
-  @@map("backtest_results")
-}
-
-model EvaluationMetric {
-  id           String   @id @default(uuid()) @db.Uuid
-  experimentId String   @map("experiment_id") @db.Uuid
-  metricCode   String   @map("metric_code") @db.VarChar(64)
-  metricValue  Decimal  @map("metric_value") @db.Decimal(20, 8)
-  metricGroup  String?  @map("metric_group") @db.VarChar(64)
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
-
-  @@unique([experimentId, metricCode])
-  @@map("evaluation_metrics")
-}
-
-model Trade {
-  id             String   @id @default(uuid()) @db.Uuid
-  experimentId   String   @map("experiment_id") @db.Uuid
-  symbolId       String   @map("symbol_id") @db.Uuid
-  side           TradeSide
-  position       PositionType
-  entryTime      BigInt   @map("entry_time")
-  entryPrice     Decimal  @map("entry_price") @db.Decimal(24, 10)
-  exitTime       BigInt?  @map("exit_time")
-  exitPrice      Decimal? @map("exit_price") @db.Decimal(24, 10)
-  quantity       Decimal  @db.Decimal(24, 10)
-  profitLoss     Decimal? @map("profit_loss") @db.Decimal(24, 8)
-  profitLossPct  Decimal? @map("profit_loss_pct") @db.Decimal(10, 4)
-  entryReason    String?  @map("entry_reason")
-  exitReason     String?  @map("exit_reason")
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  experiment Experiment @relation(fields: [experimentId], references: [id], onDelete: Cascade)
-  symbol     Symbol     @relation(fields: [symbolId], references: [id])
-
-  @@index([experimentId, entryTime])
-  @@map("trades")
-}
-
-// ============================================================
-// LEADERBOARD
-// ============================================================
-
-model LeaderboardEntry {
-  id                String   @id @default(uuid()) @db.Uuid
-  strategyVersionId String   @map("strategy_version_id") @db.Uuid
-  symbolId          String   @map("symbol_id") @db.Uuid
-  timeframe         String   @db.VarChar(8)
-  totalReturn       Decimal  @map("total_return") @db.Decimal(10, 4)
-  winRate           Decimal  @map("win_rate") @db.Decimal(6, 4)
-  maxDrawdown       Decimal  @map("max_drawdown") @db.Decimal(10, 4)
-  numTrades         Int      @map("num_trades")
-  overallScore      Decimal  @map("overall_score") @db.Decimal(10, 4)
-  rank              Int
-  lastEvaluatedAt   DateTime @default(now()) @map("last_evaluated_at") @db.Timestamptz(3)
-
-  strategyVersion StrategyVersion @relation(fields: [strategyVersionId], references: [id], onDelete: Cascade)
-  symbol          Symbol          @relation(fields: [symbolId], references: [id])
-
-  @@unique([strategyVersionId, symbolId, timeframe])
-  @@index([overallScore(sort: Desc)])
-  @@map("leaderboard_entries")
-}
-
-model RankingHistory {
-  id                String   @id @default(uuid()) @db.Uuid
-  strategyVersionId String   @map("strategy_version_id") @db.Uuid
-  rank              Int
-  overallScore      Decimal  @map("overall_score") @db.Decimal(10, 4)
-  snapshotAt        DateTime @default(now()) @map("snapshot_at") @db.Timestamptz(3)
-  datasetLabel      String?  @map("dataset_label") @db.VarChar(64)
-
-  strategyVersion StrategyVersion @relation(fields: [strategyVersionId], references: [id], onDelete: Cascade)
-
-  @@unique([strategyVersionId, snapshotAt])
-  @@index([strategyVersionId, snapshotAt(sort: Desc)])
-  @@map("ranking_history")
-}
-
-// ============================================================
-// NEWS / SENTIMENT
-// ============================================================
-
-model NewsProvider {
-  id            String   @id @default(uuid()) @db.Uuid
-  code          String   @unique @db.VarChar(64)
-  name          String   @db.VarChar(255)
-  baseUrl       String   @map("base_url")
-  requiresApiKey Boolean @default(false) @map("requires_api_key")
-  isActive      Boolean  @default(true) @map("is_active")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  news News[]
-
-  @@map("news_providers")
-}
-
-model News {
-  id          String   @id @default(uuid()) @db.Uuid
-  providerId  String   @map("provider_id") @db.Uuid
-  externalId  String   @map("external_id") @db.VarChar(255)
-  title       String
-  summary     String?
-  content     String?
-  url         String
-  source      String   @db.VarChar(255)
-  author      String?  @db.VarChar(255)
-  publishedAt DateTime @map("published_at") @db.Timestamptz(3)
-  crawledAt   DateTime @default(now()) @map("crawled_at") @db.Timestamptz(3)
-
-  provider   NewsProvider @relation(fields: [providerId], references: [id])
-  coins      NewsCoin[]
-  sentiments Sentiment[]
-
-  @@unique([providerId, externalId])
-  @@index([publishedAt(sort: Desc)])
-  @@map("news")
-}
-
-model NewsCoin {
-  newsId   String @map("news_id") @db.Uuid
-  symbolId String @map("symbol_id") @db.Uuid
-
-  news   News   @relation(fields: [newsId], references: [id], onDelete: Cascade)
-  symbol Symbol @relation(fields: [symbolId], references: [id], onDelete: Cascade)
-
-  @@id([newsId, symbolId])
-  @@map("news_coins")
-}
-
-model SentimentProvider {
-  id           String   @id @default(uuid()) @db.Uuid
-  code         String   @unique @db.VarChar(64)
-  name         String   @db.VarChar(255)
-  modelVersion String   @map("model_version") @db.VarChar(64)
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  sentiments Sentiment[]
-
-  @@map("sentiment_providers")
-}
-
-model Sentiment {
-  id             String   @id @default(uuid()) @db.Uuid
-  newsId         String   @map("news_id") @db.Uuid
-  providerId     String   @map("provider_id") @db.Uuid
-  classification SentimentClass
-  score          Decimal  @db.Decimal(4, 3)
-  confidence     Decimal? @db.Decimal(4, 3)
-  analyzedAt     DateTime @default(now()) @map("analyzed_at") @db.Timestamptz(3)
-
-  news     News             @relation(fields: [newsId], references: [id], onDelete: Cascade)
-  provider SentimentProvider @relation(fields: [providerId], references: [id])
-
-  @@unique([newsId, providerId])
-  @@index([classification])
-  @@map("sentiments")
-}
-
-// ============================================================
-// OPERATIONS / MONITORING
-// ============================================================
-
-model QueueJob {
-  id           String   @id @default(uuid()) @db.Uuid
-  jobId        String   @unique @map("job_id") @db.VarChar(64)
-  queueName    String   @map("queue_name") @db.VarChar(64)
-  jobType      String   @map("job_type") @db.VarChar(64)
-  payload      Json     @default("{}")
-  status       String   @default("WAITING") @db.VarChar(32)
-  attempts     Int      @default(0)
-  maxAttempts  Int      @default(3) @map("max_attempts")
-  scheduledAt  DateTime @default(now()) @map("scheduled_at") @db.Timestamptz(3)
-  startedAt    DateTime? @map("started_at") @db.Timestamptz(3)
-  finishedAt   DateTime? @map("finished_at") @db.Timestamptz(3)
-  errorMessage String?  @map("error_message")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  // A worker optionally references its current job. The FK lives on
-  // `WorkerHeartbeat.currentJobId`, but Prisma requires the inverse
-  // side to be declared on both ends. `currentJobWorker` is therefore
-  // declared without its own FK column.
-  currentJobWorker WorkerHeartbeat[] @relation("WorkerCurrentJob")
-
-  @@index([status, queueName])
-  @@map("queue_jobs")
-}
-
-// Worker model. Named `WorkerHeartbeat` in the Prisma client to avoid
-// colliding with the `WorkerState` enum (Prisma enforces unique names
-// across enums and models in the same namespace). The database table
-// remains `worker_statuses` as documented.
-model WorkerHeartbeat {
-  id             String   @id @default(uuid()) @db.Uuid
-  workerId       String   @unique @map("worker_id") @db.VarChar(64)
-  host           String?  @db.VarChar(255)
-  status         WorkerState @default(IDLE)
-  currentJobId   String?  @unique @map("current_job_id") @db.Uuid
-  lastHeartbeat  DateTime @default(now()) @map("last_heartbeat") @db.Timestamptz(3)
-  totalProcessed Int      @default(0) @map("total_processed")
-  totalFailed    Int      @default(0) @map("total_failed")
-  startedAt      DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  currentJob QueueJob? @relation("WorkerCurrentJob", fields: [currentJobId], references: [id], onDelete: Restrict)
-
-  @@map("worker_statuses")
-}
-
-// `WorkerState` is the enum backing the `worker_statuses.status`
-// column. Named `WorkerState` (not `WorkerStatus`) to avoid colliding
-// with the `WorkerStatus` model in the Prisma client API. The
-// database enum remains `worker_status` as documented.
 enum WorkerState {
   IDLE
   BUSY
@@ -570,27 +521,4 @@ enum WorkerState {
   ERROR
 
   @@map("worker_status")
-}
-
-model SystemLog {
-  id           String   @id @default(uuid()) @db.Uuid
-  level        LogLevel
-  sourceModule String   @map("source_module") @db.VarChar(64)
-  eventCode    String?  @map("event_code") @db.VarChar(64)
-  message      String
-  context      Json     @default("{}")
-  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  @@index([level, createdAt(sort: Desc)])
-  @@index([sourceModule, createdAt(sort: Desc)])
-  @@map("system_logs")
-}
-
-model Setting {
-  key         String   @id @db.VarChar(64)
-  value       Json
-  description String?
-  updatedAt   DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
-
-  @@map("settings")
 }

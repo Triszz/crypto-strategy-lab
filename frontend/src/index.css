@@ -1,47 +1,38 @@
 @import "tailwindcss";
 
 @theme {
-  /* Background scale - deeper, layered */
-  --color-bg-primary: #0f1014;
-  --color-bg-secondary: #161821;
-  --color-bg-card: #1c1e2a;
-  --color-bg-hover: #262938;
-  --color-bg-elevated: #232530;
+  --color-bg-primary: #f8fafc;
+  --color-bg-secondary: #ffffff;
+  --color-bg-card: #ffffff;
+  --color-bg-hover: #f1f5f9;
+  --color-bg-elevated: #f8fafc;
 
-  /* Borders */
-  --color-border: #2a2d3a;
-  --color-border-hover: #3a3e4d;
-  --color-border-strong: #4a4f5e;
+  --color-border: #e2e8f0;
+  --color-border-hover: #cbd5e1;
+  --color-border-strong: #94a3b8;
 
-  /* Text */
-  --color-text-primary: #f3f4f6;
-  --color-text-secondary: #9ca3af;
-  --color-text-muted: #6b7280;
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94a3b8;
 
-  /* Accent (purple) */
-  --color-accent: #c084fc;
-  --color-accent-hover: #a855f7;
-  --color-accent-muted: rgba(192, 132, 252, 0.12);
-  --color-accent-soft: rgba(192, 132, 252, 0.06);
+  --color-accent: #2563eb;
+  --color-accent-hover: #1d4ed8;
+  --color-accent-muted: rgba(37, 99, 235, 0.1);
 
-  /* Status */
   --color-success: #10b981;
-  --color-success-muted: rgba(16, 185, 129, 0.12);
+  --color-success-muted: rgba(16, 185, 129, 0.1);
   --color-danger: #ef4444;
-  --color-danger-muted: rgba(239, 68, 68, 0.12);
+  --color-danger-muted: rgba(239, 68, 68, 0.1);
   --color-warning: #f59e0b;
-  --color-warning-muted: rgba(245, 158, 11, 0.12);
-  --color-info: #3b82f6;
-  --color-info-muted: rgba(59, 130, 246, 0.12);
-
-  /* Trading */
-  --color-bull: #10b981;
-  --color-bear: #ef4444;
+  --color-warning-muted: rgba(245, 158, 11, 0.1);
 }
 
+* {
+  box-sizing: border-box;
+}
 
-
-html, body {
+html,
+body {
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   background-color: var(--color-bg-primary);
   color: var(--color-text-primary);
@@ -53,54 +44,49 @@ html, body {
   min-height: 100vh;
 }
 
-/* Scrollbar */
+/* Custom scrollbar for webkit */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-bg-secondary);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 8px;
-  border: 2px solid var(--color-bg-secondary);
+  background: #cbd5e1;
+  border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-hover);
+  background: #94a3b8;
 }
 
-/* TradingView chart container */
-.tv-lightweight-charts {
-  width: 100%;
-  height: 100%;
+/* Custom classes for animations */
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.5);
+  }
+
+  70% {
+    transform: scale(1);
+    box-shadow: 0 0 0 6px rgba(37, 99, 235, 0);
+  }
+
+  100% {
+    transform: scale(0.95);
+    box-shadow: 0 0 0 0 rgba(37, 99, 235, 0);
+  }
 }
 
-/* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+.pulse-active {
+  animation: pulse-ring 2s infinite;
 }
 
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
-
-.animate-fade-in {
-  animation: fadeIn 0.3s ease-out;
-}
-
-.skeleton {
-  background: linear-gradient(
-    90deg,
-    var(--color-bg-card) 0%,
-    var(--color-bg-hover) 50%,
-    var(--color-bg-card) 100%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
+.glassmorphism {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }

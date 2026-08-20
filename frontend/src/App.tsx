@@ -1,11 +1,11 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
-import RealtimePage from './pages/RealtimePage';
-import StrategyPage from './pages/StrategyPage';
-import BacktestPage from './pages/BacktestPage';
-import LeaderboardPage from './pages/LeaderboardPage';
-import NewsPage from './pages/NewsPage';
-import SettingsPage from './pages/SettingsPage';
+import RealtimeDashboard from './pages/RealtimeDashboard';
+import StrategyEngine from './pages/StrategyEngine';
+import Discovery from './pages/Discovery';
+import Backtest from './pages/Backtest';
+import NewsCrawler from './pages/NewsCrawler';
+import Settings from './pages/Settings';
 
 export default function App() {
   return (
@@ -13,14 +13,13 @@ export default function App() {
       <Routes>
         <Route element={<MainLayout />}>
           <Route path="/" element={<Navigate to="/realtime" replace />} />
-          <Route path="/realtime" element={<RealtimePage />} />
-          <Route path="/strategy" element={<StrategyPage />} />
-          <Route path="/backtest" element={<BacktestPage />} />
-          <Route path="/leaderboard" element={<LeaderboardPage />} />
-          <Route path="/news" element={<NewsPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
+          <Route path="/realtime" element={<RealtimeDashboard />} />
+          <Route path="/strategy-engine" element={<StrategyEngine />} />
+          <Route path="/discovery" element={<Discovery />} />
+          <Route path="/backtest" element={<Backtest />} />
+          <Route path="/news-crawler" element={<NewsCrawler />} />
+          <Route path="/settings" element={<Settings />} />
         </Route>
-
         <Route path="*" element={<Navigate to="/realtime" replace />} />
       </Routes>
     </BrowserRouter>

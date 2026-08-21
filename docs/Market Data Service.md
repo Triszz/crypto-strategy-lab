@@ -57,6 +57,39 @@
                             │  Frontend   │
                             │  (4 charts) │
                             └─────────────┘
+
+
+                         Binance
+                            │
+                     WebSocket Kline
+                            │
+                            ▼
+                 ┌────────────────────┐
+                 │ BinanceWsAdapter   │
+                 │                    │
+                 │ Raw Binance Event  │
+                 │        ↓           │
+                 │ Normalize Candle   │
+                 └─────────┬──────────┘
+                           │
+                           │ publish
+                           ▼
+                  ┌──────────────────┐
+                  │    Event Bus     │
+                  │ Node EventEmitter│
+                  └───────┬──────────┘
+                          │
+              ┌───────────┼────────────┐
+              │           │            │
+              ▼           ▼            ▼
+       CandleConsumer  SocketGateway  Logger
+              │           │
+              ▼           ▼
+         PostgreSQL    Socket.IO
+                            │
+                            │ WebSocket
+                            ▼
+                         React
 ```
 
 ---

@@ -364,6 +364,37 @@ Payload convention (WebSocket):
 
 (1) REALTIME MARKET DATA
 
+Binance WebSocket
+       │
+       ▼
+ WebSocket Client
+       │
+       ├── Connected ──────► Receive candles
+       │                         │
+       │                         ▼
+       │                    Store/Process
+       │
+       └── Disconnected
+              │
+              ▼
+        Exponential Backoff
+              │
+              ▼
+           Reconnect
+              │
+              ▼
+       REST API Backfill
+              │
+              ▼
+       Missing candles?
+          │         │
+         Yes        No
+          │         │
+          ▼         ▼
+       Insert    Continue WS
+          │
+          └──────────┘
+
 Binance WS
     │
     ▼

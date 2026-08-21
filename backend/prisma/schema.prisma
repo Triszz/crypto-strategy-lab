@@ -7,21 +7,21 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model MarketDataProvider {
-  id        String   @id @default(uuid()) @db.Uuid
-  code      String   @unique @db.VarChar(50)
-  name      String   @db.VarChar(255)
-  baseUrl   String   @map("base_url")
-  isActive  Boolean  @default(true) @map("is_active")
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  symbols   Symbol[]
+model Timeframe {
+  id          String       @id @default(uuid()) @db.Uuid
+  code        String       @unique @db.VarChar(8)  // "1m", "5m", "15m", "1h", "4h", "1d"
+  label       String       @map("label") @db.VarChar(32)  // "1 Minute", "5 Minutes"
+  seconds     Int          @db.Integer  // 60, 300, 900, 3600, 14400, 86400
+  isActive    Boolean      @default(true) @map("is_active")
+  createdAt   DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  candles     Candle[]
+  chartConfigs ChartConfig[]
 
-  @@map("market_data_providers")
+  @@map("timeframes")
 }
 
 model Symbol {
   id                 String             @id @default(uuid()) @db.Uuid
-  providerId         String             @map("provider_id") @db.Uuid
   symbol             String             @db.VarChar(32)
   baseAsset          String             @map("base_asset") @db.VarChar(16)
   quoteAsset         String             @map("quote_asset") @db.VarChar(16)
@@ -33,31 +33,44 @@ model Symbol {
   leaderboardEntries LeaderboardEntry[]
   newsCoins          NewsCoin[]
   searchRuns         SearchRun[]
-  provider           MarketDataProvider @relation(fields: [providerId], references: [id])
   trades             Trade[]
 
-  @@unique([providerId, symbol])
+  @@unique([symbol])
   @@map("symbols")
 }
 
-model Candle {
-  id          String   @id @default(uuid()) @db.Uuid
-  symbolId    String   @map("symbol_id") @db.Uuid
-  timeframe   String   @db.VarChar(8)
-  openTime    BigInt   @map("open_time")
-  closeTime   BigInt   @map("close_time")
-  open        Decimal  @db.Decimal(24, 10)
-  high        Decimal  @db.Decimal(24, 10)
-  low         Decimal  @db.Decimal(24, 10)
-  close       Decimal  @db.Decimal(24, 10)
-  volume      Decimal  @db.Decimal(32, 10)
-  quoteVolume Decimal  @map("quote_volume") @db.Decimal(32, 10)
-  trades      Int
-  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  symbol      Symbol   @relation(fields: [symbolId], references: [id], onDelete: Cascade)
+model ChartConfig {
+  id          String    @id @default(uuid()) @db.Uuid
+  chartIndex  Int       @map("chart_index")
+  pair        String    @default("BTCUSDT")
+  timeframeId String    @map("timeframe_id") @db.Uuid
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
+  timeframe   Timeframe @relation(fields: [timeframeId], references: [id])
 
-  @@unique([symbolId, timeframe, openTime])
-  @@index([symbolId, timeframe, openTime(sort: Desc)])
+  @@unique([chartIndex])
+  @@map("chart_configs")
+}
+
+model Candle {
+  id          String    @id @default(uuid()) @db.Uuid
+  symbolId    String    @map("symbol_id") @db.Uuid
+  timeframeId String    @map("timeframe_id") @db.Uuid
+  openTime    BigInt    @map("open_time")
+  closeTime   BigInt    @map("close_time")
+  open        Decimal   @db.Decimal(24, 10)
+  high        Decimal   @db.Decimal(24, 10)
+  low         Decimal   @db.Decimal(24, 10)
+  close       Decimal   @db.Decimal(24, 10)
+  volume      Decimal   @db.Decimal(32, 10)
+  quoteVolume Decimal   @map("quote_volume") @db.Decimal(32, 10)
+  trades      Int
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  symbol      Symbol    @relation(fields: [symbolId], references: [id], onDelete: Cascade)
+  timeframe   Timeframe @relation(fields: [timeframeId], references: [id])
+
+  @@unique([symbolId, timeframeId, openTime])
+  @@index([symbolId, timeframeId, openTime(sort: Desc)])
   @@index([openTime(sort: Desc)])
   @@map("candles")
 }

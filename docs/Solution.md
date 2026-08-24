@@ -363,7 +363,7 @@ Payload convention (WebSocket):
 └─────────────────────────────────────────────────────────────────────────┘
 
 (1) REALTIME MARKET DATA
-
+<!-- 
 Binance WebSocket
        │
        ▼
@@ -393,7 +393,7 @@ Binance WebSocket
           ▼         ▼
        Insert    Continue WS
           │
-          └──────────┘
+          └──────────┘ -->
 
 Binance WS
     │

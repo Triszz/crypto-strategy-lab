@@ -1119,3 +1119,200 @@ Module được coi là "xong" khi:
 - User data stream (account balance) — đồ án không cần (Out of Scope: Live Trading).
 - Aggregate trade stream.
 - Authentication (API key) — chỉ dùng public endpoint.
+
+---
+
+## 15. Implementation — Boot Flow & REST API
+
+Phần này phản ánh implementation thực tế (Tuần 2) trong
+`backend/src/modules/market-data/`. Nó *bổ sung* chứ không thay thế các
+mục 1–14 ở trên.
+
+### 15.1 Sequence khi service start (`MarketDataService.start`)
+
+```
+server.ts
+  └─ buildMarketDataContainer()
+        ├─ PostgresCandleRepository (Prisma, dùng cặp symbolId/timeframeId cache)
+        ├─ BinanceRestAdapter (retry, timeout 10s, max 3 retry, no auth)
+        ├─ BinanceWsAdapter (Node `WebSocket`, ref-count, ping 180s)
+        └─ ... services khác
+  └─ socketGateway.start()        // chỉ attach socket.io handlers
+  └─ persister.start()            // subscribe CandleClosed → upsert DB
+  └─ marketData.service.start()   // chạy async, không block HTTP listen
+        │
+        ├─ 1. SymbolSyncService.syncSymbols()
+        │     · GET /api/v3/exchangeInfo
+        │     · Filter: quoteAsset=USDT && status=TRADING && spotTradingAllowed
+        │     · upsert vào `symbols`, deactivate symbol không còn trên Binance
+        │
+        ├─ 2. DefaultChartSeeder.seedIfEmpty()
+        │     · Upsert 6 timeframe (1m/5m/15m/1h/4h/1d) vào `timeframes`
+        │     · Nếu `chart_configs` rỗng → tạo 4 pane mặc định
+        │         (BTCUSDT × [1m, 1h, 4h, 1d], chartIndex 0..3)
+        │     · Nếu không tìm thấy BTCUSDT, fallback symbol active đầu tiên
+        │
+        ├─ 3. loadActiveChartConfigs() → ChartConfig[]
+        │     · Đọc `chart_configs` ORDER BY chart_index ASC
+        │
+        ├─ 4. BackfillService.backfillInitial(chartConfigs)
+        │     · Với mỗi chart: rest.fetchLatest(symbol, tf, 1000)
+        │       → repo.upsertBatch (Idempotent, key (symbolId, timeframeId, openTime))
+        │     · Sleep 80ms giữa các chart để tránh rate-limit
+        │
+        ├─ 5. wireWsToEventBus()
+        │     · ws.on("CandleClosed") →
+        │           · eventBus.publish("market-data.candle.closed", candle)
+        │           · repo.upsert(candle) (fire-and-forget với log lỗi)
+        │     · ws.on("CandleUpdating") → eventBus.publish("market-data.candle.updating")
+        │
+        ├─ 6. ws.connect()              // mở WS, resubscribe sau reconnect
+        │
+        └─ 7. ws.subscribe(symbol, tf)  // ref-count = 1 cho mỗi default stream
+```
+
+**Lưu ý:**
+- Boot **không block** HTTP — `marketData.service.start()` chạy async;
+  endpoint `/api/health` lên ngay tức thì.
+- Backfill là "best-effort": nếu 1 chart fail (rate-limit, timeout),
+  các chart còn lại vẫn tiếp tục. Lỗi được log rõ (`market-data.backfill.failed`).
+- Nếu DB rỗng (fresh deploy) lần đầu chạy chưa sync symbols xong,
+  `PostgresCandleRepository.resolveIds()` sẽ throw — chỉ xảy ra khi
+  client gọi REST trước khi boot xong. Frontend nên `GET /api/health`
+  hoặc đợi `subscribe` WS succeed.
+
+### 15.2 REST API (`/api/candles/...`)
+
+| Method | Path                          | Body / Query                                         | Trả về                                  |
+|--------|-------------------------------|------------------------------------------------------|-----------------------------------------|
+| GET    | `/api/candles`                | `?symbol=BTCUSDT&timeframe=1h&from=&to=&limit=500`   | `{ success, data: Candle[] }`           |
+| POST   | `/api/candles/load-more`      | `{ symbol, timeframe, beforeMs, limit? }`             | `{ success, data: { inserted, candles } }` |
+| GET    | `/api/candles/chart-configs`  | —                                                    | `{ success, data: ChartConfig[] }`      |
+
+**Validation:** mọi input đều qua `zod`. Lỗi trả về HTTP 400 với shape:
+
+```json
+{ "success": false, "error": "INVALID_QUERY", "details": [...] }
+```
+
+**`load-more` flow:**
+
+```
+Frontend scroll xuống, hết data hiển thị
+    │
+    ▼ POST /api/candles/load-more
+Body: { symbol: "BTCUSDT", timeframe: "1h", beforeMs: <openTime của candle cũ nhất>, limit: 1000 }
+    │
+    ▼ BackfillService.loadMore()
+    │
+    ├─ BinanceRestAdapter.fetchKlines({symbol, timeframe, endMs: beforeMs, limit})
+    │       │
+    │       └─ CandleNormalizer.fromRestKline() → Candle[]
+    │
+    ├─ PostgresCandleRepository.upsertBatch()
+    │
+    └─ return candles[] (sorted ASC, FE merge vào chart)
+```
+
+Frontend gọi lặp lại cho đến khi response rỗng (`inserted: 0`) → đã chạm
+"đáy" lịch sử Binance có thể trả.
+
+### 15.3 Socket.IO protocol (`SocketGateway`)
+
+**Client → server:**
+
+```json
+{ "type": "subscribe",   "symbol": "BTCUSDT", "timeframes": ["1m", "1h"] }
+{ "type": "unsubscribe", "symbol": "BTCUSDT", "timeframes": ["1m"] }
+```
+
+**Server → client:**
+
+```json
+{ "type": "subscribed",   "symbol": "BTCUSDT", "timeframes": ["1m"] }
+{ "type": "unsubscribed", "symbol": "BTCUSDT", "timeframes": ["1m"] }
+{
+  "type": "CandleClosed",
+  "version": "1.0",
+  "timestamp": 1700000060000,
+  "payload": {
+    "symbol": "BTCUSDT", "timeframe": "1h",
+    "candle": { "openTime": ..., "closeTime": ..., "open": ..., "high": ...,
+                "low": ..., "close": ..., "volume": ..., "quoteVolume": ..., "trades": ... },
+    "candleKey": "BTCUSDT@1h@1700000400000"
+  }
+}
+{ "type": "error", "code": "INVALID_TIMEFRAME", "message": "..." }
+```
+
+**Ref-count (critical):** nếu 5 client cùng subscribe `BTCUSDT@1h`,
+Binance chỉ nhận **1 SUBSCRIBE**. Lệnh UNSUBSCRIBE tới Binance chỉ được
+gửi khi client cuối cùng rời đi. Logic ref-count nằm trong
+`BinanceWsAdapter.subscribe/unsubscribe` (xem `refCount: Map<string, number>`).
+
+### 15.4 Cây thư mục thực tế
+
+```
+backend/src/modules/market-data/
+├── domain/
+│   ├── Candle.ts                    # Internal Candle + candleKey + candleRoom
+│   ├── Timeframe.ts                 # Union, Binance map, getStreamKey, helpers
+│   ├── ChartConfig.ts               # Chart projection (chartIndex 0..3)
+│   ├── CandleRepository.port.ts     # Port interface
+│   └── events.ts                    # Event names + CandleClosedEvent schema
+├── application/
+│   ├── SymbolSyncService.ts         # exchangeInfo → upsert symbols
+│   ├── DefaultChartSeeder.ts        # Seed timeframe + 4 ChartConfig
+│   ├── BackfillService.ts           # backfillInitial + loadMore
+│   └── MarketDataService.ts         # Orchestrator (start/stop/subscribe)
+├── infrastructure/
+│   ├── BinanceRestAdapter.ts        # fetchKlines + fetchExchangeInfo
+│   ├── BinanceWsAdapter.ts          # WS + ref-count + reconnect + heartbeat
+│   ├── CandleNormalizer.ts          # Binance DTO → Candle
+│   ├── PostgresCandleRepository.ts  # Prisma-backed impl
+│   └── ReconnectStrategy.ts         # Exponential backoff + jitter
+├── realtime/
+│   ├── HeartbeatMonitor.ts          # WS dead-detection
+│   ├── SocketGateway.ts             # Socket.IO handlers + broadcast
+│   └── CandlePersister.ts           # EventBus → repo (cầu nối)
+├── presentation/
+│   ├── market-data.routes.ts        # REST endpoints + zod
+│   └── chart-config-loader.ts       # Prisma helper
+├── container.ts                     # DI wiring
+└── index.ts                         # Public exports
+```
+
+### 15.5 Event catalog (đồng bộ với `docs/Solution.md` §7)
+
+| Event name                       | Publisher              | Subscribers                                        |
+|---------------------------------|------------------------|----------------------------------------------------|
+| `market-data.candle.closed`     | BinanceWsAdapter       | `CandlePersister` (DB), các module khác (Strategy, …) |
+| `market-data.candle.updating`   | BinanceWsAdapter       | optional (live tick UI nếu cần)                    |
+| `market-data.ws.status`         | BinanceWsAdapter       | logger, dashboard                                  |
+| `market-data.backfill.progress` | BackfillService        | logger                                             |
+| `market-data.symbols.synced`    | SymbolSyncService      | logger                                             |
+
+Downstream consumer `Strategy`/`Backtest`/`Search` subscribe
+`market-data.candle.closed` qua `getEventBus()` — không bao giờ gọi trực
+tiếp `BinanceWsAdapter` (giữ đúng rule "Module không biết Binance").
+
+### 15.6 Acceptance criteria (bổ sung cho Tuần 2)
+
+- [x] Service start: load symbols từ Binance `/exchangeInfo` → upsert
+      `symbols` (filter USDT, status TRADING, spot allowed)
+- [x] Service start: upsert 6 timeframe + 4 ChartConfig mặc định nếu rỗng
+- [x] Service start: backfill 1000 candle mới nhất cho mỗi ChartConfig
+- [x] Service start: connect WS, subscribe từng default stream (ref-count=1)
+- [x] Realtime: WS → `market-data.candle.closed` → upsert DB + broadcast room
+- [x] Socket.IO: client subscribe → ref-count + join room
+- [x] `GET /api/candles` query từ DB (symbol + timeframe + range)
+- [x] `POST /api/candles/load-more` mở rộng lịch sử về phía trước (1000/batch)
+- [x] `GET /api/candles/chart-configs` trả 4 ChartConfig đang active
+- [x] Reconnect: WS đóng → backoff 1s→30s cap; heartbeat 30s timeout
+- [x] Graceful shutdown: `SIGTERM` → `service.stop()` → ws.disconnect()
+
+### 15.7 Out of scope (Tuần 3+)
+
+- IndicatorService (RSI, MA, …) — module riêng, consume `CandleClosed`.
+- BacktestService — đọc candles từ DB qua `CandleRepository.query()`
+- Frontend MultiChart — đã consume Socket.IO + REST ở trên.

@@ -6,6 +6,8 @@ import { initSocketServer } from "./infrastructure/websocket/socket";
 import { closeRedisConnection, getRedisConnection, pingRedis } from "./infrastructure/queue/redis";
 import { closeSocketServer, getSocketServer } from "./infrastructure/websocket/socket";
 import { getEventBus } from "./shared/event-bus";
+import { buildMarketDataContainer } from "./modules/market-data";
+import { mountMarketData } from "./api/routes";
 
 /**
  * Process entrypoint. Responsibilities:
@@ -13,7 +15,8 @@ import { getEventBus } from "./shared/event-bus";
  *  2. Warm shared infrastructure singletons (EventBus, Redis).
  *  3. Build the Express application.
  *  4. Start the HTTP server and attach Socket.IO.
- *  5. Install graceful shutdown hooks.
+ *  5. Boot the Market Data service (sync symbols, backfill, WS connect).
+ *  6. Install graceful shutdown hooks.
  *
  * No business logic lives here.
  */
@@ -32,6 +35,19 @@ async function main(): Promise<void> {
   const httpServer = http.createServer(app);
   initSocketServer(httpServer);
 
+  // Build the Market Data container at the right point so the
+  // Socket.IO singleton is initialised before the gateway attaches.
+  const marketData = buildMarketDataContainer();
+  mountMarketData(marketData);
+  marketData.socketGateway.start();
+  marketData.persister.start();
+  const marketStartPromise = marketData.service.start().catch((err: unknown) => {
+    logger.fatal(
+      { err },
+      "Market Data service failed to start — backend will keep running without realtime data",
+    );
+  });
+
   await new Promise<void>((resolve) => {
     httpServer.listen(env.PORT, () => {
       logger.info({ port: env.PORT }, "HTTP server listening");
@@ -45,10 +61,17 @@ async function main(): Promise<void> {
     else logger.warn("Redis ping failed (queue/cache will be unavailable)");
   });
 
-  installShutdown(httpServer);
+  // Start the Market Data service asynchronously so HTTP can serve
+  // health checks immediately while backfill + WS connect happen.
+  void marketStartPromise;
+
+  installShutdown(httpServer, marketData);
 }
 
-function installShutdown(httpServer: http.Server): void {
+function installShutdown(
+  httpServer: http.Server,
+  marketData: ReturnType<typeof buildMarketDataContainer>,
+): void {
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
     if (shuttingDown) return;
@@ -59,6 +82,22 @@ function installShutdown(httpServer: http.Server): void {
       if (err) logger.error({ err }, "HTTP close error");
       logger.info("HTTP server closed");
     });
+
+    try {
+      await marketData.service.stop();
+    } catch (err) {
+      logger.warn({ err }, "Market data shutdown error");
+    }
+    try {
+      marketData.persister.stop();
+    } catch (err) {
+      logger.warn({ err }, "Candle persister stop error");
+    }
+    try {
+      marketData.socketGateway.stop();
+    } catch (err) {
+      logger.warn({ err }, "Socket gateway stop error");
+    }
 
     try {
       await closeSocketServer();

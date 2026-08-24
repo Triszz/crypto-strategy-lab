@@ -1,23 +1,39 @@
-import { useState, useEffect, useRef } from 'react';
-import { 
-  ChevronDown, 
-  HelpCircle, 
-  Bell, 
-  RefreshCw, 
-  ArrowUpRight, 
-  ArrowDownRight
-} from 'lucide-react';
+import { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  ChevronDown,
+  HelpCircle,
+  Bell,
+  ArrowUpRight,
+  ArrowDownRight,
+  Loader2,
+  AlertCircle,
+  Wifi,
+  WifiOff,
+} from "lucide-react";
+import {
+  connect,
+  disconnect,
+  subscribe,
+  onCandleClosed,
+  onWsStatus,
+  isConnected,
+  type CandleClosedEvent,
+  type Timeframe,
+} from "../lib/socket";
+import {
+  fetchChartConfigs,
+  fetchCandles,
+  loadMoreCandles,
+  updateChartConfig,
+  type ChartConfig,
+  type RawCandle,
+} from "../lib/api";
 
-// Types
-interface Ticker {
-  time: string;
-  price: number;
-  amount: number;
-  type: 'Buy' | 'Sell';
-}
+// ── local candle shape for the chart ──────────────────────────────────────────
 
-interface Candle {
-  time: string;
+interface LocalCandle {
+  time: string; // display label, e.g. "14:30"
+  openTime: number; // epoch ms — used for dedup logic
   open: number;
   high: number;
   low: number;
@@ -25,182 +41,726 @@ interface Candle {
   volume: number;
 }
 
-export default function RealtimeDashboard() {
-  const selectedPair = 'BTCUSDT';
-  const [activeTimeframe, setActiveTimeframe] = useState<'1m' | '5m' | '15m' | '1h' | '4h'>('1m');
-  const [isRealtime, setIsRealtime] = useState(true);
-  const [currentPrice, setCurrentPrice] = useState(69342.18);
-  const [priceChangePct, setPriceChangePct] = useState(0.28);
-  const [recentTicks, setRecentTicks] = useState<Ticker[]>([]);
-  const [latency, setLatency] = useState(102);
+// ── helpers ───────────────────────────────────────────────────────────────────
 
-  // Keep track of ticks for history
-  const ticksRef = useRef<Ticker[]>([]);
+function openTimeToLabel(openTime: number, tf: Timeframe): string {
+  const d = new Date(openTime);
+  if (tf === "1d") {
+    return d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" });
+  }
+  return d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
 
-  // Candle data state for 4 timeframes
-  const [candlesData, setCandlesData] = useState<Record<string, Candle[]>>({
-    '1m': [],
-    '5m': [],
-    '15m': [],
-    '1h': [],
+function rawToLocal(c: RawCandle, tf: Timeframe): LocalCandle {
+  return {
+    time: openTimeToLabel(c.openTime, tf),
+    openTime: c.openTime,
+    open: c.open,
+    high: c.high,
+    low: c.low,
+    close: c.close,
+    volume: c.volume,
+  };
+}
+
+function updateCandleList(
+  list: LocalCandle[],
+  raw: RawCandle,
+  tf: Timeframe,
+): LocalCandle[] {
+  const incoming = rawToLocal(raw, tf);
+  const last = list[list.length - 1];
+
+  if (last && last.openTime === incoming.openTime) {
+    // Same candle → update in place
+    const updated = [...list];
+    updated[updated.length - 1] = incoming;
+    return updated;
+  }
+
+  // New candle → append, keep last 100
+  const next = [...list, incoming];
+  return next.length > 100 ? next.slice(next.length - 100) : next;
+}
+
+function computeMA(candles: LocalCandle[], period: number = 20): (number | null)[] {
+  return candles.map((_, i) => {
+    if (i < period - 1) return null;
+    let sum = 0;
+    for (let j = 0; j < period; j++) sum += candles[i - j].close;
+    return sum / period;
+  });
+}
+
+// ── status pill ──────────────────────────────────────────────────────────────
+
+type WsStatusState = "connecting" | "connected" | "reconnecting" | "disconnected";
+
+function StatusPill({ status, latency }: { status: WsStatusState; latency: number | null }) {
+  if (status === "connected") {
+    return (
+      <div className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
+        <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+        <Wifi className="w-3.5 h-3.5" />
+        <span>
+          Đã kết nối{latency !== null ? ` · ${latency}ms` : ""}
+        </span>
+      </div>
+    );
+  }
+  if (status === "reconnecting") {
+    return (
+      <div className="flex items-center gap-2 bg-amber-50 text-amber-700 border border-amber-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+        <span>Đang kết nối lại…</span>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2 bg-red-50 text-red-700 border border-red-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
+      <WifiOff className="w-3.5 h-3.5" />
+      <span>Mất kết nối</span>
+    </div>
+  );
+}
+
+// ── chart pane ────────────────────────────────────────────────────────────────
+
+// Viewport state: which candles are visible and offset
+interface ViewportState {
+  candleOffset: number; // how many candles we've scrolled left from the latest
+  isLoadingOlder: boolean;
+}
+
+function ChartPane({
+  chartIndex,
+  tf,
+  candles,
+  currentPrice,
+  priceChangePct,
+  onTimeframeChange,
+  isLoadingTf,
+  onLoadOlder,
+}: {
+  chartIndex: number;
+  tf: Timeframe;
+  candles: LocalCandle[];
+  currentPrice: number;
+  priceChangePct: number;
+  onTimeframeChange: (chartIndex: number, newTf: Timeframe) => void;
+  isLoadingTf: boolean;
+  onLoadOlder: () => void;
+}) {
+  const lastCandle = candles[candles.length - 1];
+  const isUp = priceChangePct >= 0;
+
+  // MA(15)
+  const maVals = computeMA(candles, 15);
+
+  // SVG dimensions
+  const W = 500, H = 260;
+  const padR = 65, padTop = 24, padBot = 28;
+
+  // Candles visible in viewport
+  const VISIBLE_CANDLES = 60;
+
+  // Viewport state
+  const [viewport, setViewport] = useState<ViewportState>({
+    candleOffset: 0,
+    isLoadingOlder: false,
   });
 
-  // Setup initial candle data
-  useEffect(() => {
-    const timeframes = ['1m', '5m', '15m', '1h'] as const;
-    const initial: Record<string, Candle[]> = {};
+  // Drag state
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStartX, setDragStartX] = useState(0);
+  const [dragStartOffset, setDragStartOffset] = useState(0);
 
-    timeframes.forEach((tf) => {
-      let baseVal = 69100;
-      const arr: Candle[] = [];
-      const now = Date.now();
-      const intervalMs = tf === '1m' ? 60000 : tf === '5m' ? 300000 : tf === '15m' ? 900000 : 3600000;
+  // Candles to render: from (total - offset - visible) to (total - offset)
+  const totalCandles = candles.length;
+  const maxOffset = Math.max(0, totalCandles - VISIBLE_CANDLES);
+  const clampedOffset = Math.min(viewport.candleOffset, maxOffset);
+  const startIdx = Math.max(0, totalCandles - clampedOffset - VISIBLE_CANDLES);
+  const endIdx = totalCandles - clampedOffset;
+  const visibleCandles = candles.slice(startIdx, endIdx);
 
-      for (let i = 24; i >= 0; i--) {
-        const timeObj = new Date(now - i * intervalMs);
-        const timeStr = timeObj.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
-        
-        // Random walk
-        const change = (Math.random() - 0.48) * 80;
-        const open = baseVal;
-        const close = baseVal + change;
-        const high = Math.max(open, close) + Math.random() * 25;
-        const low = Math.min(open, close) - Math.random() * 25;
-        const volume = Math.round(100 + Math.random() * 800);
+  // Price range for visible candles only
+  const prices = visibleCandles.flatMap((c) => [c.open, c.close, c.high, c.low]);
+  const minP = prices.length ? Math.min(...prices) * 0.9995 : currentPrice * 0.998;
+  const maxP = prices.length ? Math.max(...prices) * 1.0005 : currentPrice * 1.002;
 
-        arr.push({ time: timeStr, open, high, low, close, volume });
-        baseVal = close;
+  const chartWidth = W - padR;
+  const candleWidth = chartWidth / Math.max(visibleCandles.length, 1);
+
+  const getX = (localIdx: number) => localIdx * candleWidth + candleWidth / 2;
+  const getY = (v: number) =>
+    H - padBot - ((v - minP) * (H - padTop - padBot)) / (maxP - minP);
+
+  const maxVol = visibleCandles.length
+    ? Math.max(...visibleCandles.map((c) => c.volume))
+    : 1000;
+  const getVolY = (v: number) =>
+    H - padBot - (v * 50) / maxVol;
+
+  // Mouse handlers for pan
+  const handleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+    setDragStartX(e.clientX);
+    setDragStartOffset(viewport.candleOffset);
+  };
+
+  const handleMouseMove = useCallback(
+    (e: React.MouseEvent) => {
+      if (!isDragging) return;
+      const dx = e.clientX - dragStartX; // drag RIGHT = older data
+      const candleShift = dx / candleWidth;
+      const newOffset = Math.max(0, dragStartOffset + candleShift);
+
+      setViewport((prev) => ({ ...prev, candleOffset: newOffset }));
+
+      // Auto-load when near the right edge (older data)
+      const nearRightEdge = newOffset >= maxOffset - 5 && !viewport.isLoadingOlder;
+      if (nearRightEdge && candles.length > 0) {
+        setViewport((prev) => ({ ...prev, isLoadingOlder: true }));
+        onLoadOlder();
+        // Reset loading flag after a delay
+        setTimeout(() => {
+          setViewport((prev) => ({ ...prev, isLoadingOlder: false }));
+        }, 1000);
       }
-      initial[tf] = arr;
-    });
+    },
+    [isDragging, dragStartX, dragStartOffset, candleWidth, clampedOffset, maxOffset, candles.length, onLoadOlder],
+  );
 
-    setCandlesData(initial);
-
-    // Initial Ticks
-    const startTicks: Ticker[] = [];
-    const nowTime = new Date();
-    for (let i = 0; i < 5; i++) {
-      const t = new Date(nowTime.getTime() - i * 1200);
-      startTicks.push({
-        time: t.toLocaleTimeString('vi-VN', { hour12: false }),
-        price: 69342.18 + (Math.random() - 0.5) * 4,
-        amount: parseFloat((Math.random() * 0.03 + 0.002).toFixed(3)),
-        type: Math.random() > 0.4 ? 'Buy' : 'Sell',
-      });
-    }
-    setRecentTicks(startTicks);
-    ticksRef.current = startTicks;
+  const handleMouseUp = useCallback(() => {
+    setIsDragging(false);
   }, []);
 
-  // Live simulation effect
-  useEffect(() => {
-    if (!isRealtime) return;
+  const handleMouseLeave = useCallback(() => {
+    setIsDragging(false);
+  }, []);
 
-    const interval = setInterval(() => {
-      // 1. Update Price
-      const diff = (Math.random() - 0.49) * 6; // slightly positive bias
-      const nextPrice = parseFloat((currentPrice + diff).toFixed(2));
-      setCurrentPrice(nextPrice);
-      
-      // Update price percentage slightly
-      setPriceChangePct((prev) => parseFloat((prev + diff / 7000).toFixed(4)));
+  // Handle scroll wheel for zoom (optional)
+  const handleWheel = useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? 5 : -5;
+      setViewport((prev) => ({
+        ...prev,
+        candleOffset: Math.max(0, Math.min(prev.candleOffset + delta, maxOffset)),
+      }));
+    },
+    [maxOffset],
+  );
 
-      // Randomize latency a bit
-      setLatency(Math.round(98 + Math.random() * 8));
-
-      // 2. Add New Tick
-      const nowStr = new Date().toLocaleTimeString('vi-VN', { hour12: false });
-      const newTick: Ticker = {
-        time: nowStr,
-        price: nextPrice,
-        amount: parseFloat((Math.random() * 0.02 + 0.001).toFixed(3)),
-        type: diff >= 0 ? 'Buy' : 'Sell',
-      };
-
-      const updatedTicks = [newTick, ...ticksRef.current.slice(0, 4)];
-      setRecentTicks(updatedTicks);
-      ticksRef.current = updatedTicks;
-
-      // 3. Update Candles
-      setCandlesData((prev) => {
-        const next = { ...prev };
-        
-        Object.keys(next).forEach((tf) => {
-          const list = [...next[tf]];
-          if (list.length === 0) return;
-
-          const lastIdx = list.length - 1;
-          const last = { ...list[lastIdx] };
-
-          // In this demo, we simulate candle updates and appends
-          // Let's say we have a 10% chance to append a new candle (to keep it active)
-          const shouldAppend = Math.random() < 0.15;
-
-          if (shouldAppend) {
-            // Append candle: create a new candle starting at the last candle's close
-            const now = new Date();
-            const timeStr = now.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
-            
-            const newCandle: Candle = {
-              time: timeStr,
-              open: last.close,
-              close: nextPrice,
-              high: Math.max(last.close, nextPrice),
-              low: Math.min(last.close, nextPrice),
-              volume: Math.round(50 + Math.random() * 150),
-            };
-            
-            list.push(newCandle);
-            if (list.length > 25) list.shift(); // Keep size
-          } else {
-            // Update candle: modify the current last candle
-            last.close = nextPrice;
-            if (nextPrice > last.high) last.high = nextPrice;
-            if (nextPrice < last.low) last.low = nextPrice;
-            last.volume += Math.round(1 + Math.random() * 5);
-            list[lastIdx] = last;
-          }
-
-          next[tf] = list;
-        });
-
-        return next;
-      });
-
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [isRealtime, currentPrice]);
-
-  // Helper to compute Moving Average MA(20)
-  const computeMA = (candles: Candle[], period: number = 20): (number | null)[] => {
-    const ma: (number | null)[] = [];
-    for (let i = 0; i < candles.length; i++) {
-      if (i < period - 1) {
-        ma.push(null);
-      } else {
-        let sum = 0;
-        for (let j = 0; j < period; j++) {
-          sum += candles[i - j].close;
-        }
-        ma.push(sum / period);
-      }
-    }
-    return ma;
+  // Button to scroll to latest (rightmost)
+  const scrollToLatest = () => {
+    setViewport((prev) => ({ ...prev, candleOffset: maxOffset }));
   };
 
   return (
+    <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 relative overflow-hidden group hover:shadow-md hover:border-slate-200/70 transition-all">
+      {/* Header */}
+      <div className="flex justify-between items-start">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-extrabold text-sm text-slate-800">
+              {lastCandle ? "BTCUSDT" : "—"}
+            </span>
+            {/* Timeframe selector */}
+            <div className="relative">
+              <select
+                className="appearance-none bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-600 text-xs font-bold px-2.5 py-1 rounded-lg cursor-pointer pr-7 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400"
+                value={tf}
+                onChange={(e) => onTimeframeChange(chartIndex, e.target.value as Timeframe)}
+              >
+                {(["1m", "5m", "15m", "1h", "4h", "1d"] as Timeframe[]).map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+              <ChevronDown className="w-3 h-3 text-blue-500 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+            {isLoadingTf && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />}
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-[11px] font-bold text-blue-500 uppercase">MA(15)</span>
+            {lastCandle && (
+              <span className="text-[11px] font-semibold text-slate-500">
+                {lastCandle.close.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="ml-3">
+          <span
+            className={`px-3 py-1 rounded-lg text-xs font-black tracking-wider ${
+              isUp
+                ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                : "bg-red-50 text-red-700 border border-red-200"
+            }`}
+          >
+            {isUp ? "BUY" : "SELL"}
+          </span>
+        </div>
+      </div>
+
+      {/* SVG Chart */}
+      <div
+        className="h-[260px] relative w-full mt-2 select-none"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+        onWheel={handleWheel}
+        style={{ cursor: isDragging ? "grabbing" : "grab" }}
+      >
+        {visibleCandles.length > 0 ? (
+          <svg
+            className="w-full h-full"
+            viewBox={`0 0 ${W} ${H}`}
+            preserveAspectRatio="none"
+          >
+            {/* Grid */}
+            <line
+              x1={0} y1={getY(minP + (maxP - minP) * 0.25)}
+              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.25)}
+              stroke="#f1f5f9" strokeDasharray="3,3"
+            />
+            <line
+              x1={0} y1={getY(minP + (maxP - minP) * 0.5)}
+              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.5)}
+              stroke="#f1f5f9" strokeDasharray="3,3"
+            />
+            <line
+              x1={0} y1={getY(minP + (maxP - minP) * 0.75)}
+              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.75)}
+              stroke="#f1f5f9" strokeDasharray="3,3"
+            />
+
+            {/* Volume bars */}
+            {visibleCandles.map((c, i) => {
+              const x = getX(i);
+              const y = getVolY(c.volume);
+              const isGreen = c.close >= c.open;
+              const bw = Math.max(2, candleWidth * 0.7);
+              return (
+                <rect
+                  key={`vol-${startIdx + i}`}
+                  x={x - bw / 2}
+                  y={y}
+                  width={bw}
+                  height={H - padBot - y}
+                  fill={isGreen ? "#a7f3d0" : "#fecaca"}
+                  opacity={0.65}
+                />
+              );
+            })}
+
+            {/* Candlesticks */}
+            {visibleCandles.map((c, i) => {
+              const x = getX(i);
+              const isGreen = c.close >= c.open;
+              const color = isGreen ? "#10b981" : "#ef4444";
+              const bw = Math.max(3, candleWidth * 0.7);
+              return (
+                <g key={`candle-${startIdx + i}`}>
+                  <line
+                    x1={x} y1={getY(c.high)} x2={x} y2={getY(c.low)}
+                    stroke={color} strokeWidth={1.2}
+                  />
+                  <rect
+                    x={x - bw / 2}
+                    y={Math.min(getY(c.open), getY(c.close))}
+                    width={bw}
+                    height={Math.max(1.5, Math.abs(getY(c.open) - getY(c.close)))}
+                    fill={color} stroke={color} strokeWidth={0.5} rx={0.5}
+                  />
+                </g>
+              );
+            })}
+
+            {/* MA line */}
+            <path
+              d={visibleCandles.reduce((path, _c, i) => {
+                const globalIdx = startIdx + i;
+                const v = maVals[globalIdx];
+                if (v === null) return path;
+                const cmd = path === "" ? "M" : "L";
+                return `${path} ${cmd} ${getX(i)} ${getY(v)}`;
+              }, "")}
+              fill="none" stroke="#3b82f6" strokeWidth={1.5}
+            />
+
+            {/* Current price dotted line */}
+            {lastCandle && (
+              <g>
+                <line
+                  x1={0} y1={getY(currentPrice)}
+                  x2={W - padR} y2={getY(currentPrice)}
+                  stroke="#10b981" strokeWidth={1} strokeDasharray="2,2"
+                />
+                <rect
+                  x={W - padR + 2} y={getY(currentPrice) - 6}
+                  width={54} height={12} fill="#10b981" rx={2}
+                />
+                <text
+                  x={W - padR + 5} y={getY(currentPrice) + 3}
+                  fill="#fff" fontSize="8" fontWeight="extrabold"
+                >
+                  {currentPrice.toLocaleString("en-US", { maximumFractionDigits: 1 })}
+                </text>
+              </g>
+            )}
+
+            {/* Y-axis labels */}
+            <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
+              <text x={W - padR + 6} y={getY(maxP) + 8}>
+                {maxP.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              </text>
+              <text x={W - padR + 6} y={getY((minP + maxP) / 2) + 3}>
+                {((minP + maxP) / 2).toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              </text>
+              <text x={W - padR + 6} y={getY(minP) - 3}>
+                {minP.toLocaleString("en-US", { maximumFractionDigits: 0 })}
+              </text>
+            </g>
+
+            {/* X-axis labels */}
+            {visibleCandles.map((c, i) => {
+              if (i % Math.max(1, Math.floor(visibleCandles.length / 8)) !== 0) return null;
+              return (
+                <text
+                  key={`xl-${startIdx + i}`} x={getX(i)} y={H - 6}
+                  fill="#94a3b8" fontSize="7.5" fontWeight="bold"
+                  textAnchor="middle"
+                >
+                  {c.time}
+                </text>
+              );
+            })}
+          </svg>
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400 text-xs">
+            <Loader2 className="w-5 h-5 animate-spin" />
+            <span>Đang tải dữ liệu…</span>
+          </div>
+        )}
+
+        {/* Auto-load indicator */}
+        {viewport.isLoadingOlder && (
+          <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg flex items-center gap-2 z-10">
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            Đang tải thêm…
+          </div>
+        )}
+
+        {/* Scroll to latest button */}
+        {clampedOffset > 10 && (
+          <button
+            onClick={scrollToLatest}
+            className="absolute top-2 right-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-xs font-bold shadow-lg transition-colors flex items-center gap-1 z-10"
+          >
+            <ArrowDownRight className="w-3 h-3" />
+            Latest
+          </button>
+        )}
+
+        {/* Drag hint */}
+        {candles.length > 0 && (
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[10px] text-slate-300 font-medium opacity-0 group-hover:opacity-100 transition-opacity select-none pointer-events-none flex items-center gap-1">
+            <span>→</span>
+            <span>Kéo phải xem thêm</span>
+            <span>←</span>
+          </div>
+        )}
+
+        {/* Historical data indicator */}
+        {clampedOffset > 0 && (
+          <div className="absolute top-2 left-2 bg-slate-800/80 text-white px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 z-10">
+            <ArrowUpRight className="w-3 h-3" />
+            Historical
+          </div>
+        )}
+      </div>
+
+      {/* Footer */}
+      <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
+          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
+        </div>
+        {totalCandles > 0 && (
+          <span className="text-[10px] font-medium text-slate-400">
+            {totalCandles} candles
+            {clampedOffset > 0 && ` · xem ${clampedOffset} cũ hơn`}
+          </span>
+        )}
+      </div>
+    </article>
+  );
+}
+
+// ── main component ────────────────────────────────────────────────────────────
+
+export default function RealtimeDashboard() {
+  // Chart pane configs loaded from backend (default: BTCUSDT + 4 timeframes)
+  const [chartConfigs, setChartConfigs] = useState<ChartConfig[]>([]);
+
+  // Per-chart current timeframe (keyed by chartIndex)
+  const [timeframes, setTimeframes] = useState<Record<number, Timeframe>>({});
+
+  // Candle data keyed by timeframe (each chart has unique tf)
+  const [candlesData, setCandlesData] = useState<Record<string, LocalCandle[]>>({});
+
+  // Loading states
+  const [loadingConfigs, setLoadingConfigs] = useState(true);
+  // Which chart indices are currently loading a tf change
+  const [loadingTfCharts, setLoadingTfCharts] = useState<Set<number>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  // Connection
+  const [wsStatus, setWsStatus] = useState<WsStatusState>("connecting");
+  const [latency, setLatency] = useState<number | null>(null);
+
+  // Computed from candle data (all candle data across all timeframes)
+  const allCandles = Object.values(candlesData).flat();
+  const lastCandle = allCandles[allCandles.length - 1];
+  const firstCandle = allCandles[0];
+  const currentPrice = lastCandle?.close ?? 0;
+  const priceChangePct =
+    lastCandle && firstCandle && lastCandle.close && firstCandle.close
+      ? ((lastCandle.close - firstCandle.close) / firstCandle.close) * 100
+      : 0;
+
+  // ── 1. Load chart configs on mount ──────────────────────────────────────
+  useEffect(() => {
+    fetchChartConfigs()
+      .then((configs) => {
+        setChartConfigs(configs);
+        setLoadingConfigs(false);
+      })
+      .catch((err) => {
+        setError(`Không tải được chart config: ${err.message}`);
+        setLoadingConfigs(false);
+      });
+  }, []);
+
+  // ── 2. Init timeframes from chart configs + load initial candles ───────────
+  useEffect(() => {
+    if (chartConfigs.length === 0) return;
+    setError(null);
+
+    // Initialize per-chart timeframes from config
+    const initTf: Record<number, Timeframe> = {};
+    for (const cfg of chartConfigs) {
+      initTf[cfg.chartIndex] = cfg.timeframe;
+    }
+    setTimeframes(initTf);
+
+    // Fetch candles for each config's timeframe in parallel
+    Promise.all(
+      chartConfigs.map((cfg) =>
+        fetchCandles({
+          symbol: cfg.symbol,
+          timeframe: cfg.timeframe,
+          limit: 100,
+        }).then((candles) => ({
+          timeframe: cfg.timeframe,
+          candles: candles.map((c) => rawToLocal(c, cfg.timeframe)),
+        })),
+      ),
+    )
+      .then((results) => {
+        const next: Record<string, LocalCandle[]> = {};
+        for (const r of results) {
+          next[r.timeframe] = r.candles;
+        }
+        setCandlesData(next);
+      })
+      .catch((err) => {
+        setError(`Không tải được candle: ${err.message}`);
+      });
+  }, [chartConfigs]);
+
+  // ── 3. Socket connection ─────────────────────────────────────────────────
+  useEffect(() => {
+    // Status listener
+    const offStatus = onWsStatus((status) => {
+      if (status.state === "connected") {
+        setWsStatus("connected");
+        if ("since" in status) {
+          setLatency(Date.now() - status.since);
+        }
+      } else if (status.state === "connecting") {
+        setWsStatus("connecting");
+      } else if (status.state === "reconnecting") {
+        setWsStatus("reconnecting");
+      } else {
+        setWsStatus("disconnected");
+      }
+    });
+
+    // Candle listener
+    const offCandle = onCandleClosed((event: CandleClosedEvent) => {
+      const { candle } = event.payload;
+      const tf = event.payload.timeframe as Timeframe;
+
+      setCandlesData((prev) => {
+        const list = prev[tf] ?? [];
+        return {
+          ...prev,
+          [tf]: updateCandleList(list, candle as RawCandle, tf),
+        };
+      });
+    });
+
+    // Connect
+    connect();
+
+    return () => {
+      offStatus();
+      offCandle();
+      disconnect();
+    };
+  }, []);
+
+  // ── 4. Subscribe to streams when configs + socket ready ──────────────────
+  useEffect(() => {
+    if (chartConfigs.length === 0) return;
+    if (!isConnected()) return;
+
+    const tfMap = new Map<string, Timeframe[]>();
+    for (const cfg of chartConfigs) {
+      const existing = tfMap.get(cfg.symbol) ?? [];
+      tfMap.set(cfg.symbol, [...existing, cfg.timeframe]);
+    }
+
+    for (const [symbol, timeframes] of tfMap) {
+      subscribe(symbol, timeframes);
+    }
+  }, [chartConfigs]);
+
+  // ── 5. Handle per-chart timeframe change ───────────────────────────────────
+  const handleTimeframeChange = useCallback(
+    async (chartIndex: number, newTf: Timeframe) => {
+      const currentTf = timeframes[chartIndex];
+      if (currentTf === newTf) return;
+
+      // Check for conflict: another chart already uses this timeframe
+      const conflict = chartConfigs.find(
+        (c) => c.chartIndex !== chartIndex && c.timeframe === newTf,
+      );
+      if (conflict) {
+        setError(`Timeframe ${newTf} đã được sử dụng ở chart ${conflict.chartIndex + 1}. Không thể chọn trùng.`);
+        return;
+      }
+
+      // Mark chart as loading
+      setLoadingTfCharts((prev) => new Set(prev).add(chartIndex));
+
+      // Update timeframe immediately (optimistic)
+      setTimeframes((prev) => ({ ...prev, [chartIndex]: newTf }));
+
+      // Clear old candles for the old timeframe (no longer needed)
+      setCandlesData((prev) => {
+        const next = { ...prev };
+        delete next[currentTf];
+        return next;
+      });
+
+      try {
+        // Update chart config in backend
+        await updateChartConfig({
+          chartIndex,
+          symbol: "BTCUSDT",
+          timeframe: newTf,
+        });
+
+        // Fetch new candles
+        const result = await fetchCandles({
+          symbol: "BTCUSDT",
+          timeframe: newTf,
+          limit: 100,
+        });
+        setCandlesData((prev) => ({
+          ...prev,
+          [newTf]: result.map((c) => rawToLocal(c, newTf)),
+        }));
+
+        // Update local chartConfigs to reflect the change
+        setChartConfigs((prev) =>
+          prev.map((c) =>
+            c.chartIndex === chartIndex ? { ...c, timeframe: newTf } : c,
+          ),
+        );
+      } catch (err) {
+        setError(`Không tải được candle ${newTf}: ${(err as Error).message}`);
+        // Revert timeframe on error
+        setTimeframes((prev) => ({ ...prev, [chartIndex]: currentTf }));
+        setCandlesData((prev) => ({ ...prev, [currentTf]: prev[currentTf] ?? [] }));
+      } finally {
+        setLoadingTfCharts((prev) => {
+          const next = new Set(prev);
+          next.delete(chartIndex);
+          return next;
+        });
+      }
+    },
+    [timeframes, chartConfigs],
+  );
+
+  // ── 6. Load older data handlers per chart ──────────────────────────────────
+  const loadOlderHandlers = useMemo(() => {
+    const handlers: Record<number, () => void> = {};
+    for (const cfg of chartConfigs) {
+      const tf = timeframes[cfg.chartIndex] ?? cfg.timeframe;
+      handlers[cfg.chartIndex] = () => {
+        setCandlesData((currentData) => {
+          const currentCandles = currentData[tf] ?? [];
+          const oldestCandle = currentCandles[0];
+          if (!oldestCandle) return currentData;
+
+          loadMoreCandles({
+            symbol: cfg.symbol,
+            timeframe: tf,
+            beforeMs: oldestCandle.openTime,
+            limit: 100,
+          }).then(({ candles: older }) => {
+            if (older.length === 0) return;
+            const olderLocal = older.map((c) => rawToLocal(c, tf));
+            setCandlesData((prev) => ({
+              ...prev,
+              [tf]: [...olderLocal, ...(prev[tf] ?? [])].slice(0, 500),
+            }));
+          }).catch(() => {});
+
+          return currentData;
+        });
+      };
+    }
+    return handlers;
+  }, [chartConfigs, timeframes]);
+
+  // ── render ────────────────────────────────────────────────────────────────
+
+  return (
     <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto">
-      {/* Top Header */}
+      {/* ── Header ─────────────────────────────────────────────────────────── */}
       <header className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
         <div>
-          <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">Realtime Chart – Đa khung thời gian</h2>
+          <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">
+            Realtime Chart – Đa khung thời gian
+          </h2>
+          {currentPrice > 0 && (
+            <p className="text-xs text-slate-400 mt-0.5">
+              BTCUSDT · {currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })} USDT
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
-            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            <span>Nguồn dữ liệu: Binance API + WebSocket</span>
-          </div>
+          <StatusPill status={wsStatus} latency={latency} />
           <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors">
             <HelpCircle className="w-5 h-5" />
           </button>
@@ -211,440 +771,207 @@ export default function RealtimeDashboard() {
         </div>
       </header>
 
-      {/* Control Bar */}
+      {/* ── Error banner ────────────────────────────────────────────────────── */}
+      {error && (
+        <div className="flex items-center gap-3 bg-red-50 border border-red-200 text-red-700 p-4 rounded-2xl text-sm font-semibold">
+          <AlertCircle className="w-5 h-5 shrink-0" />
+          <span>{error}</span>
+          <button
+            className="ml-auto underline text-red-800 font-bold"
+            onClick={() => setError(null)}
+          >
+            Đóng
+          </button>
+        </div>
+      )}
+
+      {/* ── Control bar ─────────────────────────────────────────────────────── */}
       <section className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
         <div className="flex items-center gap-6">
-          {/* Pair Select */}
+          {/* Pair */}
           <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Pair / Coin</label>
+            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+              Pair / Coin
+            </label>
             <div className="relative">
               <button className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200/80 font-bold text-sm text-slate-800 hover:border-slate-300 transition-colors min-w-[130px] justify-between">
                 <span className="flex items-center gap-2">
-                  <span className="w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center text-white font-bold text-[10px] shadow-sm">₿</span>
-                  {selectedPair}
+                  <span className="w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center text-white font-bold text-[10px] shadow-sm">
+                    ₿
+                  </span>
+                  BTCUSDT
                 </span>
                 <ChevronDown className="w-4 h-4 text-slate-500" />
               </button>
             </div>
           </div>
-
-          {/* Timeframe selector */}
-          <div className="flex flex-col gap-1">
-            <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Khung thời gian</label>
-            <div className="flex p-0.75 bg-slate-50 rounded-xl border border-slate-200/80">
-              {(['1m', '5m', '15m', '1h', '4h'] as const).map((tf) => (
-                <button
-                  key={tf}
-                  onClick={() => setActiveTimeframe(tf)}
-                  className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
-                    activeTimeframe === tf
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'text-slate-500 hover:text-slate-900'
-                  }`}
-                >
-                  {tf}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
 
-        {/* Realtime switch */}
+        {/* Realtime toggle */}
         <div className="flex items-center gap-5">
           <div className="flex items-center gap-2.5">
             <span className="text-xs font-bold text-slate-600">Realtime</span>
-            <button 
-              onClick={() => setIsRealtime(!isRealtime)}
+            <button
               className={`w-11 h-6 rounded-full transition-colors relative flex items-center ${
-                isRealtime ? 'bg-blue-600' : 'bg-slate-300'
+                wsStatus === "connected"
+                  ? "bg-blue-600"
+                  : "bg-slate-300 cursor-not-allowed"
               }`}
+              onClick={() => {
+                if (wsStatus === "connected") disconnect();
+                else connect();
+              }}
             >
-              <span className={`w-4.5 h-4.5 bg-white rounded-full absolute shadow-sm transition-transform ${
-                isRealtime ? 'translate-x-5.5' : 'translate-x-1'
-              }`} />
+              <span
+                className={`w-4.5 h-4.5 bg-white rounded-full absolute shadow-sm transition-transform ${
+                  wsStatus === "connected" ? "translate-x-5.5" : "translate-x-1"
+                }`}
+              />
             </button>
-          </div>
-
-          <div className="flex items-center gap-2 text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-full border border-emerald-100">
-            <span className="w-1.5 h-1.5 bg-emerald-500 rounded-full animate-ping" />
-            <span className="text-[11px] font-bold">Đang nhận dữ liệu</span>
           </div>
         </div>
       </section>
 
-      {/* Main Grid View */}
+      {/* ── Main grid ────────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
-        
-        {/* Charts Grid (Left part, occupies 3 columns) */}
-        <div className="xl:col-span-3 grid grid-cols-1 md:grid-cols-2 gap-6">
-          {(['1m', '5m', '15m', '1h'] as const).map((tf) => {
-            const list = candlesData[tf] || [];
-            const maVals = computeMA(list, 15); // MA(15) for simpler visualization
-
-            // Get last candle stats
-            const lastCandle = list[list.length - 1];
-            const isBuy = tf !== '1h'; // BTCUSDT - 1h has SELL, others BUY in screenshots
-            
-            // Render Candlestick Chart SVG
-            const chartWidth = 400;
-            const chartHeight = 200;
-            const paddingRight = 60;
-            const paddingTop = 20;
-            const paddingBottom = 25;
-
-            // Find min/max values for scaling
-            const prices = list.flatMap(c => [c.open, c.close, c.high, c.low]);
-            const minPrice = prices.length ? Math.min(...prices) * 0.9995 : 69000;
-            const maxPrice = prices.length ? Math.max(...prices) * 1.0005 : 69600;
-            
-            // Map function coordinates
-            const getX = (index: number) => (index * (chartWidth - paddingRight)) / Math.max(list.length - 1, 1);
-            const getY = (val: number) => chartHeight - paddingBottom - ((val - minPrice) * (chartHeight - paddingTop - paddingBottom)) / (maxPrice - minPrice);
-            
-            // Volume Y-scale
-            const volumes = list.map(c => c.volume);
-            const maxVol = volumes.length ? Math.max(...volumes) : 1000;
-            const getVolY = (vol: number) => chartHeight - paddingBottom - (vol * 45) / maxVol; // Bottom overlay height max 45px
-
+        {/* Chart panes — 4 rows stacked */}
+        <div className="xl:col-span-3 grid grid-cols-1 gap-4">
+          {loadingConfigs ? (
+            <>
+              {[1, 2, 3, 4].map((i) => (
+                <div
+                  key={i}
+                  className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm h-[280px] animate-pulse flex flex-col gap-4"
+                >
+                  <div className="h-4 bg-slate-100 rounded w-1/2" />
+                  <div className="flex-1 bg-slate-50 rounded" />
+                </div>
+              ))}
+            </>
+          ) : chartConfigs.length === 0 ? (
+            <div className="col-span-1 flex flex-col items-center justify-center py-20 text-slate-400 gap-3">
+              <AlertCircle className="w-8 h-8" />
+              <p className="font-semibold">Không tìm thấy chart config nào.</p>
+              <p className="text-sm">Kiểm tra lại backend và database.</p>
+            </div>
+          ) : (
+            chartConfigs.map((cfg) => {
+            const tf = timeframes[cfg.chartIndex] ?? cfg.timeframe;
+            const candles = candlesData[tf] ?? [];
             return (
-              <article key={tf} className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 relative overflow-hidden group hover:shadow-md hover:border-slate-200/70 transition-all">
-                {/* Chart Card Title */}
-                <div className="flex justify-between items-start">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-extrabold text-sm text-slate-800">BTCUSDT • {tf}</span>
-                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    </div>
-                    <div className="flex items-center gap-2 mt-1">
-                      <span className="text-[11px] font-bold text-blue-500 uppercase">MA(20)</span>
-                      <span className="text-[11px] font-semibold text-slate-500">
-                        {lastCandle ? lastCandle.close.toLocaleString('en-US', { minimumFractionDigits: 2 }) : ''}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-lg font-black text-slate-900 leading-none tracking-tight">
-                      {currentPrice.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                    </div>
-                    <div className={`text-[11px] font-extrabold mt-1 flex items-center justify-end gap-1 ${
-                      isBuy ? 'text-emerald-500' : 'text-red-500'
-                    }`}>
-                      {isBuy ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
-                      <span>{isBuy ? '+' : ''}{priceChangePct.toFixed(2)}%</span>
-                    </div>
-                  </div>
-
-                  {/* BUY/SELL badge */}
-                  <div className="ml-3">
-                    <span className={`px-3 py-1 rounded-lg text-xs font-black tracking-wider ${
-                      isBuy 
-                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
-                        : 'bg-red-50 text-red-700 border border-red-200'
-                    }`}>
-                      {isBuy ? 'BUY' : 'SELL'}
-                    </span>
-                  </div>
-                </div>
-
-                {/* SVG Chart Panel */}
-                <div className="h-56 relative w-full mt-2 select-none">
-                  {list.length > 0 ? (
-                    <svg className="w-full h-full" viewBox={`0 0 ${chartWidth} ${chartHeight}`} preserveAspectRatio="none">
-                      {/* Grid lines */}
-                      <line x1={0} y1={getY(minPrice + (maxPrice - minPrice) * 0.25)} x2={chartWidth - paddingRight} y2={getY(minPrice + (maxPrice - minPrice) * 0.25)} stroke="#f1f5f9" strokeDasharray="3,3" />
-                      <line x1={0} y1={getY(minPrice + (maxPrice - minPrice) * 0.5)} x2={chartWidth - paddingRight} y2={getY(minPrice + (maxPrice - minPrice) * 0.5)} stroke="#f1f5f9" strokeDasharray="3,3" />
-                      <line x1={0} y1={getY(minPrice + (maxPrice - minPrice) * 0.75)} x2={chartWidth - paddingRight} y2={getY(minPrice + (maxPrice - minPrice) * 0.75)} stroke="#f1f5f9" strokeDasharray="3,3" />
-                      
-                      {/* Volume Bars at Bottom */}
-                      {list.map((c, i) => {
-                        const x = getX(i);
-                        const y = getVolY(c.volume);
-                        const isGreen = c.close >= c.open;
-                        const barWidth = Math.max(2, (chartWidth - paddingRight) / (list.length * 1.5));
-                        return (
-                          <rect
-                            key={`vol-${i}`}
-                            x={x - barWidth / 2}
-                            y={y}
-                            width={barWidth}
-                            height={chartHeight - paddingBottom - y}
-                            fill={isGreen ? '#a7f3d0' : '#fecaca'}
-                            opacity={0.65}
-                          />
-                        );
-                      })}
-
-                      {/* Candlesticks */}
-                      {list.map((c, i) => {
-                        const x = getX(i);
-                        const yOpen = getY(c.open);
-                        const yClose = getY(c.close);
-                        const yHigh = getY(c.high);
-                        const yLow = getY(c.low);
-                        const isGreen = c.close >= c.open;
-                        const color = isGreen ? '#10b981' : '#ef4444';
-                        const bodyWidth = Math.max(3, (chartWidth - paddingRight) / (list.length * 1.5));
-
-                        return (
-                          <g key={`candle-${i}`}>
-                            {/* Wick */}
-                            <line x1={x} y1={yHigh} x2={x} y2={yLow} stroke={color} strokeWidth={1.2} />
-                            {/* Body */}
-                            <rect
-                              x={x - bodyWidth / 2}
-                              y={Math.min(yOpen, yClose)}
-                              width={bodyWidth}
-                              height={Math.max(1.5, Math.abs(yOpen - yClose))}
-                              fill={color}
-                              stroke={color}
-                              strokeWidth={0.5}
-                              rx={0.5}
-                            />
-                          </g>
-                        );
-                      })}
-
-                      {/* Moving Average Line MA(20) */}
-                      <path
-                        d={list.reduce((path, _, i) => {
-                          const val = maVals[i];
-                          if (val === null) return path;
-                          const cmd = path === '' ? 'M' : 'L';
-                          return `${path} ${cmd} ${getX(i)} ${getY(val)}`;
-                        }, '')}
-                        fill="none"
-                        stroke="#3b82f6"
-                        strokeWidth={1.5}
-                      />
-
-                      {/* Y-Axis Labels */}
-                      <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
-                        <text x={chartWidth - paddingRight + 6} y={getY(maxPrice) + 8}>
-                          {maxPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                        </text>
-                        <text x={chartWidth - paddingRight + 6} y={getY(minPrice + (maxPrice - minPrice) * 0.5) + 3}>
-                          {((minPrice + maxPrice) / 2).toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                        </text>
-                        <text x={chartWidth - paddingRight + 6} y={getY(minPrice) - 3}>
-                          {minPrice.toLocaleString('en-US', { maximumFractionDigits: 0 })}
-                        </text>
-                      </g>
-
-                      {/* Current price dotted marker line */}
-                      {lastCandle && (
-                        <g>
-                          <line
-                            x1={0}
-                            y1={getY(currentPrice)}
-                            x2={chartWidth - paddingRight}
-                            y2={getY(currentPrice)}
-                            stroke="#10b981"
-                            strokeWidth={1}
-                            strokeDasharray="2,2"
-                          />
-                          {/* Price Tag badge on axis */}
-                          <rect
-                            x={chartWidth - paddingRight + 2}
-                            y={getY(currentPrice) - 6}
-                            width={54}
-                            height={12}
-                            fill="#10b981"
-                            rx={2}
-                          />
-                          <text
-                            x={chartWidth - paddingRight + 5}
-                            y={getY(currentPrice) + 3}
-                            fill="#ffffff"
-                            fontSize="8"
-                            fontWeight="extrabold"
-                          >
-                            {currentPrice.toLocaleString('en-US', { maximumFractionDigits: 1 })}
-                          </text>
-                        </g>
-                      )}
-
-                      {/* X-Axis labels */}
-                      {list.map((c, i) => {
-                        if (i % 6 !== 0) return null;
-                        return (
-                          <text
-                            key={`x-lbl-${i}`}
-                            x={getX(i)}
-                            y={chartHeight - 6}
-                            fill="#94a3b8"
-                            fontSize="7.5"
-                            fontWeight="bold"
-                            textAnchor="middle"
-                          >
-                            {c.time}
-                          </text>
-                        );
-                      })}
-                    </svg>
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-slate-400 text-xs">
-                      Loading Chart...
-                    </div>
-                  )}
-                </div>
-
-                {/* Footer Buttons */}
-                <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
-                  <button className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 hover:text-slate-800 transition-colors">
-                    <RefreshCw className="w-3.5 h-3.5" />
-                    <span>Load 1000 nến lịch sử</span>
-                  </button>
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
-                  </div>
-                </div>
-              </article>
+              <ChartPane
+                key={cfg.chartIndex}
+                chartIndex={cfg.chartIndex}
+                tf={tf}
+                candles={candles}
+                currentPrice={currentPrice}
+                priceChangePct={priceChangePct}
+                onTimeframeChange={handleTimeframeChange}
+                isLoadingTf={loadingTfCharts.has(cfg.chartIndex)}
+                onLoadOlder={loadOlderHandlers[cfg.chartIndex] ?? (() => {})}
+              />
             );
-          })}
+          })
+          )}
         </div>
 
-        {/* Info Sidebar Panel (Right part, occupies 1 column) */}
+        {/* Sidebar */}
         <div className="flex flex-col gap-6">
-          
-          {/* Logic Cập Nhật Candle */}
+          {/* Logic cập nhật candle */}
           <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-3.5">
             <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-1.5">
               <span>Logic cập nhật candle</span>
               <HelpCircle className="w-4 h-4 text-slate-400 cursor-pointer" />
             </h3>
-            
-            {/* Logic Block 1 */}
+
             <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 flex flex-col gap-2">
-              <span className="text-xs font-bold text-slate-700">Trùng nến cuối → Update candle</span>
-              <div className="flex items-center justify-between gap-2 mt-1">
-                {/* Candle Visual 1 */}
-                <div className="flex items-center gap-1">
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-3 bg-red-400" />
-                    <span className="w-3.5 h-5 bg-red-400 rounded-sm" />
-                    <span className="w-0.5 h-2 bg-red-400" />
-                  </div>
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-2 bg-emerald-500" />
-                    <span className="w-3.5.5 h-6 bg-emerald-500 rounded-sm" />
-                    <span className="w-0.5 h-3 bg-emerald-500" />
-                  </div>
-                  <div className="flex flex-col items-center border border-dashed border-blue-400 p-0.5 bg-blue-50/20 rounded">
-                    <span className="w-0.5 h-2.5 bg-red-400" />
-                    <span className="w-3 h-4 bg-red-400 rounded-sm" />
-                    <span className="w-0.5 h-1.5 bg-red-400" />
-                  </div>
-                </div>
-                
-                <span className="text-slate-400 text-xs font-bold">→</span>
-                
-                {/* Result Visual 1 */}
-                <div className="flex items-center gap-1">
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-3 bg-red-400" />
-                    <span className="w-3.5 h-5 bg-red-400 rounded-sm" />
-                    <span className="w-0.5 h-2 bg-red-400" />
-                  </div>
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-2 bg-emerald-500" />
-                    <span className="w-3.5.5 h-6 bg-emerald-500 rounded-sm" />
-                    <span className="w-0.5 h-3 bg-emerald-500" />
-                  </div>
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-3 bg-emerald-500" />
-                    <span className="w-3.5 h-7 bg-emerald-500 rounded-sm" />
-                    <span className="w-0.5 h-2 bg-emerald-500" />
-                  </div>
-                </div>
-              </div>
-              <p className="text-[10px] text-slate-400 font-semibold leading-relaxed mt-1">
-                Nếu nến đến có cùng thời gian với nến cuối → Update (ghi đè).
+              <span className="text-xs font-bold text-slate-700">
+                Trùng nến cuối → Update candle
+              </span>
+              <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
+                openTime giống nến cuối → ghi đè dữ liệu mới nhất.
               </p>
             </div>
 
-            {/* Logic Block 2 */}
             <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 flex flex-col gap-2">
-              <span className="text-xs font-bold text-slate-700">Nến mới hoàn toàn → Append candle</span>
-              <div className="flex items-center justify-between gap-2 mt-1">
-                {/* Candle Visual 2 */}
-                <div className="flex items-center gap-1">
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-3 bg-red-400" />
-                    <span className="w-3.5 h-5 bg-red-400 rounded-sm" />
-                    <span className="w-0.5 h-2 bg-red-400" />
-                  </div>
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-2 bg-emerald-500" />
-                    <span className="w-3.5.5 h-6 bg-emerald-500 rounded-sm" />
-                    <span className="w-0.5 h-3 bg-emerald-500" />
-                  </div>
-                </div>
-                
-                <span className="text-slate-400 text-xs font-bold">→</span>
-                
-                {/* Result Visual 2 */}
-                <div className="flex items-center gap-1">
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-3 bg-red-400" />
-                    <span className="w-3.5 h-5 bg-red-400 rounded-sm" />
-                    <span className="w-0.5 h-2 bg-red-400" />
-                  </div>
-                  <div className="flex flex-col items-center">
-                    <span className="w-0.5 h-2 bg-emerald-500" />
-                    <span className="w-3.5.5 h-6 bg-emerald-500 rounded-sm" />
-                    <span className="w-0.5 h-3 bg-emerald-500" />
-                  </div>
-                  <div className="flex flex-col items-center border border-dashed border-emerald-400 p-0.5 bg-emerald-50/20 rounded">
-                    <span className="w-0.5 h-2 bg-emerald-500" />
-                    <span className="w-3 h-5 bg-emerald-500 rounded-sm" />
-                    <span className="w-0.5 h-1.5 bg-emerald-500" />
-                  </div>
-                </div>
-              </div>
-              <p className="text-[10px] text-slate-400 font-semibold leading-relaxed mt-1">
-                Nếu nến đến có thời gian mới → Append (thêm nến mới).
+              <span className="text-xs font-bold text-slate-700">
+                Nến mới hoàn toàn → Append candle
+              </span>
+              <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
+                openTime mới → thêm nến vào cuối, xóa nến cũ nhất nếu quá 100.
               </p>
             </div>
           </article>
 
-          {/* Trạng Thái Kết Nối */}
+          {/* Trạng thái kết nối */}
           <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-extrabold text-slate-800">Trạng thái kết nối</h3>
-              <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full">
-                <span className="w-1 h-1 bg-emerald-500 rounded-full" /> Đã kết nối
+              <span
+                className={`flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  wsStatus === "connected"
+                    ? "text-emerald-600 bg-emerald-50"
+                    : "text-slate-400 bg-slate-50"
+                }`}
+              >
+                <span
+                  className={`w-1 h-1 rounded-full ${
+                    wsStatus === "connected" ? "bg-emerald-500" : "bg-slate-400"
+                  }`}
+                />
+                {wsStatus === "connected"
+                  ? "Đã kết nối"
+                  : wsStatus === "reconnecting"
+                    ? "Đang kết nối lại"
+                    : "Chưa kết nối"}
               </span>
             </div>
-            
+
             <table className="w-full text-xs font-semibold text-slate-600">
               <tbody>
                 <tr className="border-b border-slate-50">
                   <td className="py-2 text-slate-400">Nguồn dữ liệu</td>
-                  <td className="py-2 text-right text-slate-800 font-bold">Binance API + WebSocket</td>
-                </tr>
-                <tr className="border-b border-slate-50">
-                  <td className="py-2 text-slate-400">Độ trễ (Latency)</td>
-                  <td className="py-2 text-right text-slate-800 font-bold">{latency} ms</td>
-                </tr>
-                <tr className="border-b border-slate-50">
-                  <td className="py-2 text-slate-400">Dữ liệu cuối</td>
                   <td className="py-2 text-right text-slate-800 font-bold">
-                    {new Date().toLocaleTimeString('vi-VN', { hour12: false })}
+                    Binance WebSocket
+                  </td>
+                </tr>
+                <tr className="border-b border-slate-50">
+                  <td className="py-2 text-slate-400">Độ trễ</td>
+                  <td className="py-2 text-right text-slate-800 font-bold">
+                    {latency !== null ? `${latency} ms` : "—"}
+                  </td>
+                </tr>
+                <tr className="border-b border-slate-50">
+                  <td className="py-2 text-slate-400">Số candle đã tải</td>
+                  <td className="py-2 text-right text-slate-800 font-bold">
+                    {allCandles.length}
                   </td>
                 </tr>
                 <tr>
                   <td className="py-2 text-slate-400">Kết nối</td>
-                  <td className="py-2 text-right text-emerald-600 font-extrabold">Ổn định</td>
+                  <td
+                    className={`py-2 text-right font-extrabold ${
+                      wsStatus === "connected"
+                        ? "text-emerald-600"
+                        : "text-slate-400"
+                    }`}
+                  >
+                    {wsStatus === "connected" ? "Ổn định" : "Chưa kết nối"}
+                  </td>
                 </tr>
               </tbody>
             </table>
           </article>
 
-          {/* Recent Ticks */}
+          {/* Recent ticks — computed from first chart's candle data */}
           <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
-            <h3 className="text-sm font-extrabold text-slate-800">Recent Ticks ({selectedPair})</h3>
-            
+            <div className="flex justify-between items-center">
+              <h3 className="text-sm font-extrabold text-slate-800">Giá mới nhất</h3>
+              <span className="text-[10px] font-bold text-slate-400">
+                {chartConfigs[0] ? (timeframes[chartConfigs[0].chartIndex] ?? chartConfigs[0].timeframe) : "—"}
+              </span>
+            </div>
+
             <div className="overflow-hidden rounded-xl border border-slate-100">
               <table className="w-full text-xs font-bold text-slate-600">
                 <thead>
@@ -656,38 +983,62 @@ export default function RealtimeDashboard() {
                   </tr>
                 </thead>
                 <tbody>
-                  {recentTicks.map((tick, i) => (
-                    <tr key={i} className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 transition-colors">
-                      <td className="py-2 px-3 text-slate-500 font-medium">{tick.time}</td>
-                      <td className="py-2 px-2 text-right text-slate-800">
-                        {tick.price.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                      </td>
-                      <td className="py-2 px-2 text-right text-slate-500 font-medium">{tick.amount.toFixed(3)}</td>
-                      <td className="py-2 px-3 text-right">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${
-                          tick.type === 'Buy' ? 'bg-emerald-50 text-emerald-600' : 'bg-red-50 text-red-600'
-                        }`}>
-                          {tick.type}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  {(() => {
+                    const firstTf = chartConfigs[0] ? (timeframes[chartConfigs[0].chartIndex] ?? chartConfigs[0].timeframe) : null;
+                    const firstCandles = firstTf ? (candlesData[firstTf] ?? []) : [];
+                    return firstCandles
+                      .slice(-10)
+                      .reverse()
+                      .map((c, i) => {
+                        const prev = firstCandles[firstCandles.length - 10 + i];
+                        const isUp = prev ? c.close >= prev.close : true;
+                        return (
+                          <tr
+                            key={`${c.openTime}-${i}`}
+                            className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 transition-colors"
+                          >
+                            <td className="py-2 px-3 text-slate-500 font-medium">{c.time}</td>
+                            <td className="py-2 px-2 text-right text-slate-800">
+                              {c.close.toLocaleString("en-US", {
+                                minimumFractionDigits: 2,
+                              })}
+                            </td>
+                            <td className="py-2 px-2 text-right text-slate-500 font-medium">
+                              {c.volume.toFixed(0)}
+                            </td>
+                            <td className="py-2 px-3 text-right">
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${
+                                  isUp
+                                    ? "bg-emerald-50 text-emerald-600"
+                                    : "bg-red-50 text-red-600"
+                                }`}
+                              >
+                                {isUp ? "BUY" : "SELL"}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      });
+                  })()}
                 </tbody>
               </table>
             </div>
           </article>
 
-          {/* Chú Thích */}
+          {/* Chú thích */}
           <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
             <h3 className="text-sm font-extrabold text-slate-800">Chú thích</h3>
-            
+
             <div className="flex flex-col gap-3 text-xs font-semibold text-slate-600">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2">
                   <span className="w-4 h-2.5 bg-emerald-500 rounded-xs inline-block" />
                   <span>Nến tăng (Close &gt; Open)</span>
                 </span>
-                <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 font-black text-[9px]">BUY</span>
+                <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-600 font-black text-[9px]">
+                  BUY
+                </span>
                 <span className="text-[11px] text-slate-400">Tín hiệu Mua</span>
               </div>
 
@@ -696,13 +1047,15 @@ export default function RealtimeDashboard() {
                   <span className="w-4 h-2.5 bg-red-500 rounded-xs inline-block" />
                   <span>Nến giảm (Close &lt; Open)</span>
                 </span>
-                <span className="px-2 py-0.5 rounded bg-red-50 text-red-600 font-black text-[9px]">SELL</span>
+                <span className="px-2 py-0.5 rounded bg-red-50 text-red-600 font-black text-[9px]">
+                  SELL
+                </span>
                 <span className="text-[11px] text-slate-400">Tín hiệu Bán</span>
               </div>
 
               <div className="flex items-center gap-2 pt-1 border-t border-slate-50">
                 <span className="w-4 h-0.5 bg-blue-500 inline-block" />
-                <span>MA(20) – Đường trung bình biến động 20</span>
+                <span>MA(15) – Đường trung bình biến động 15</span>
               </div>
 
               <div className="flex items-center gap-2">
@@ -711,9 +1064,7 @@ export default function RealtimeDashboard() {
               </div>
             </div>
           </article>
-
         </div>
-
       </div>
     </div>
   );

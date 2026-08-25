@@ -2,6 +2,7 @@ import { Router } from "express";
 import { healthRouter } from "./health.routes";
 import { buildMarketDataContainer } from "../../modules/market-data";
 import type { MarketDataContainer } from "../../modules/market-data";
+import { backtestRouter } from "../../modules/backtest/presentation/backtest.routes";
 
 /**
  * Aggregates every module-owned route under `/api`.
@@ -17,6 +18,7 @@ import type { MarketDataContainer } from "../../modules/market-data";
 export const apiRouter: Router = Router();
 
 apiRouter.use(healthRouter);
+apiRouter.use("/backtests", backtestRouter);
 
 let mountedMarketData: MarketDataContainer | null = null;
 
@@ -33,4 +35,4 @@ export function mountMarketData(container: MarketDataContainer): void {
 
 void buildMarketDataContainer;
 
-export { healthRouter };
+export { healthRouter, backtestRouter };

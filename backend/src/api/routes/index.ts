@@ -4,6 +4,7 @@ import { buildMarketDataContainer } from "../../modules/market-data";
 import type { MarketDataContainer } from "../../modules/market-data";
 import type { SearchContainer } from "../../modules/search";
 import { buildStrategyRouter } from "../../modules/strategy/presentation/strategy.routes";
+import { backtestRouter } from "../../modules/backtest/presentation/backtest.routes";
 
 /**
  * Aggregates every module-owned route under `/api`.
@@ -19,6 +20,7 @@ import { buildStrategyRouter } from "../../modules/strategy/presentation/strateg
 export const apiRouter: Router = Router();
 
 apiRouter.use(healthRouter);
+apiRouter.use("/backtests", backtestRouter);
 
 let mountedMarketData: MarketDataContainer | null = null;
 let mountedSearch: SearchContainer | null = null;
@@ -57,4 +59,4 @@ export function mountStrategy(): void {
 
 void buildMarketDataContainer;
 
-export { healthRouter };
+export { healthRouter, backtestRouter };

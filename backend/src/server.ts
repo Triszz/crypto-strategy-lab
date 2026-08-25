@@ -58,7 +58,17 @@ async function main(): Promise<void> {
   bootstrapStrategies();
   mountStrategy();
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    httpServer.on("error", (err: unknown) => {
+      const error = err as { code?: string };
+      if (error.code === "EADDRINUSE") {
+        logger.error(
+          { port: env.PORT },
+          `Port ${env.PORT} is already in use by a running backend instance. You do not need to run "npm run dev" again.`,
+        );
+      }
+      reject(err);
+    });
     httpServer.listen(env.PORT, () => {
       logger.info({ port: env.PORT }, "HTTP server listening");
       resolve();

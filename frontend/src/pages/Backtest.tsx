@@ -6,8 +6,6 @@ import {
   Play, 
   Info,
   CheckCircle2,
-  ChevronLeft,
-  ChevronRight,
   TrendingUp,
   AlertCircle
 } from 'lucide-react';
@@ -49,10 +47,10 @@ export default function Backtest() {
   });
 
   const [trades, setTrades] = useState<TradeItemApi[]>([
-    { id: 'trade-1', entryTime: Date.now() - 3600000 * 5, exitTime: Date.now() - 3600000 * 4, direction: 'LONG', entryPrice: 68120.5, exitPrice: 69050.8, fee: 5.4, slippage: 3.4, profitLoss: 93.0, profitLossPct: 0.93, entryReason: 'MA_CROSSOVER', exitReason: 'SIGNAL_REVERSAL' },
-    { id: 'trade-2', entryTime: Date.now() - 3600000 * 4, exitTime: Date.now() - 3600000 * 3, direction: 'SHORT', entryPrice: 69450.2, exitPrice: 68430.1, fee: 5.5, slippage: 3.5, profitLoss: 102.0, profitLossPct: 1.02, entryReason: 'MA_CROSSOVER', exitReason: 'TAKE_PROFIT' },
-    { id: 'trade-3', entryTime: Date.now() - 3600000 * 3, exitTime: Date.now() - 3600000 * 2, direction: 'LONG', entryPrice: 68600.1, exitPrice: 67980.0, fee: 5.4, slippage: 3.4, profitLoss: -62.0, profitLossPct: -0.62, entryReason: 'MA_CROSSOVER', exitReason: 'STOP_LOSS' },
-    { id: 'trade-4', entryTime: Date.now() - 3600000 * 2, exitTime: Date.now() - 3600000 * 1, direction: 'SHORT', entryPrice: 69320.3, exitPrice: 68310.4, fee: 5.5, slippage: 3.5, profitLoss: 101.0, profitLossPct: 1.01, entryReason: 'MA_CROSSOVER', exitReason: 'TAKE_PROFIT' },
+    { id: 'trade-1', entryTime: Date.now() - 3600000 * 5, exitTime: Date.now() - 3600000 * 4, direction: 'LONG', quantity: 0.1, entryPrice: 68120.5, exitPrice: 69050.8, fee: 5.4, slippage: 3.4, profitLoss: 93.0, profitLossPct: 0.93, entryReason: 'MA_CROSSOVER', exitReason: 'SIGNAL_REVERSAL' },
+    { id: 'trade-2', entryTime: Date.now() - 3600000 * 4, exitTime: Date.now() - 3600000 * 3, direction: 'SHORT', quantity: 0.1, entryPrice: 69450.2, exitPrice: 68430.1, fee: 5.5, slippage: 3.5, profitLoss: 102.0, profitLossPct: 1.02, entryReason: 'MA_CROSSOVER', exitReason: 'TAKE_PROFIT' },
+    { id: 'trade-3', entryTime: Date.now() - 3600000 * 3, exitTime: Date.now() - 3600000 * 2, direction: 'LONG', quantity: 0.1, entryPrice: 68600.1, exitPrice: 67980.0, fee: 5.4, slippage: 3.4, profitLoss: -62.0, profitLossPct: -0.62, entryReason: 'MA_CROSSOVER', exitReason: 'STOP_LOSS' },
+    { id: 'trade-4', entryTime: Date.now() - 3600000 * 2, exitTime: Date.now() - 3600000 * 1, direction: 'SHORT', quantity: 0.1, entryPrice: 69320.3, exitPrice: 68310.4, fee: 5.5, slippage: 3.5, profitLoss: 101.0, profitLossPct: 1.01, entryReason: 'MA_CROSSOVER', exitReason: 'TAKE_PROFIT' },
   ]);
 
   const [equityCurve, setEquityCurve] = useState<EquityPointApi[]>([
@@ -320,6 +318,36 @@ export default function Backtest() {
                 className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
               />
               <span className="text-[10px] text-slate-400 font-bold uppercase">bps</span>
+            </div>
+          </div>
+
+          {/* Stop Loss % */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Stop Loss</label>
+            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 max-w-[90px]">
+              <input 
+                type="number" 
+                step="0.1"
+                value={stopLossPct}
+                onChange={(e) => setStopLossPct(Number(e.target.value))}
+                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
+              />
+              <span className="text-[10px] text-slate-400 font-bold">%</span>
+            </div>
+          </div>
+
+          {/* Take Profit % */}
+          <div className="flex flex-col gap-1.5">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Take Profit</label>
+            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 max-w-[90px]">
+              <input 
+                type="number" 
+                step="0.1"
+                value={takeProfitPct}
+                onChange={(e) => setTakeProfitPct(Number(e.target.value))}
+                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
+              />
+              <span className="text-[10px] text-slate-400 font-bold">%</span>
             </div>
           </div>
         </div>

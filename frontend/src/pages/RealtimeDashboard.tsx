@@ -534,15 +534,26 @@ export default function RealtimeDashboard() {
       ? ((lastCandle.close - firstCandle.close) / firstCandle.close) * 100
       : 0;
 
+  const DEFAULT_FALLBACK_CONFIGS: ChartConfig[] = [
+    { chartIndex: 0, symbol: "BTCUSDT", timeframe: "1m" },
+    { chartIndex: 1, symbol: "BTCUSDT", timeframe: "1h" },
+    { chartIndex: 2, symbol: "BTCUSDT", timeframe: "4h" },
+    { chartIndex: 3, symbol: "BTCUSDT", timeframe: "1d" },
+  ];
+
   // ── 1. Load chart configs on mount ──────────────────────────────────────
   useEffect(() => {
     fetchChartConfigs()
       .then((configs) => {
-        setChartConfigs(configs);
+        if (configs && configs.length > 0) {
+          setChartConfigs(configs);
+        } else {
+          setChartConfigs(DEFAULT_FALLBACK_CONFIGS);
+        }
         setLoadingConfigs(false);
       })
-      .catch((err) => {
-        setError(`Không tải được chart config: ${err.message}`);
+      .catch(() => {
+        setChartConfigs(DEFAULT_FALLBACK_CONFIGS);
         setLoadingConfigs(false);
       });
   }, []);
@@ -671,14 +682,14 @@ export default function RealtimeDashboard() {
       });
 
       try {
-        // Update chart config in backend
+        // Update chart config in backend (ignore error if backend offline)
         await updateChartConfig({
           chartIndex,
           symbol: "BTCUSDT",
           timeframe: newTf,
-        });
+        }).catch(() => {});
 
-        // Fetch new candles
+        // Fetch new candles (automatically uses fallback mock candles if backend offline)
         const result = await fetchCandles({
           symbol: "BTCUSDT",
           timeframe: newTf,
@@ -696,7 +707,7 @@ export default function RealtimeDashboard() {
           ),
         );
       } catch (err) {
-        setError(`Không tải được candle ${newTf}: ${(err as Error).message}`);
+        console.warn(`[handleTimeframeChange] Error changing timeframe to ${newTf}:`, err);
         // Revert timeframe on error
         setTimeframes((prev) => ({ ...prev, [chartIndex]: currentTf }));
         setCandlesData((prev) => ({ ...prev, [currentTf]: prev[currentTf] ?? [] }));

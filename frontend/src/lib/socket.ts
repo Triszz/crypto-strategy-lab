@@ -71,12 +71,12 @@ function getSocket(): Socket {
       emit("ws:status", { state: "connected", since: Date.now() });
     });
 
-    socket.on("disconnect", (reason) => {
+    socket.on("disconnect", (reason: string) => {
       console.log(`[ws] disconnected: ${reason}`);
       emit("ws:status", { state: "closed", reason });
     });
 
-    socket.on("connect_error", (err) => {
+    socket.on("connect_error", (err: Error) => {
       console.error("[ws] connect_error:", err.message);
       emit("ws:status", { state: "closed", reason: err.message });
     });
@@ -114,7 +114,7 @@ function getSocket(): Socket {
     });
 
     // Log ALL other incoming events
-    socket.onAny((event, ...args) => {
+    socket.onAny((event: string, ...args: unknown[]) => {
       if (!["connect", "disconnect", "connect_error", "CandleClosed", "subscribed", "unsubscribed", "error"].includes(event)) {
         debug(`IN ← ${event}`, args);
       }

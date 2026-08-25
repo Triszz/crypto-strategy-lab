@@ -19,13 +19,20 @@ function buildOptions(): RedisOptions {
       ? env.REDIS_PASSWORD
       : undefined,
     db: env.REDIS_DB,
-    // We expose lazyConnect so consumers can decide whether/when to
-    // attempt the first PING.
     lazyConnect: true,
     maxRetriesPerRequest: null, // BullMQ-friendly
-    enableReadyCheck: true,
+    enableReadyCheck: false,
+    retryStrategy(times) {
+      if (times > 3) {
+        // Stop reconnecting if Redis is not running locally
+        return null;
+      }
+      return Math.min(times * 200, 1000);
+    },
   };
 }
+
+let loggedErrorOnce = false;
 
 export function getRedisConnection(): Redis {
   if (connection) return connection;
@@ -33,12 +40,16 @@ export function getRedisConnection(): Redis {
 
   connection.on("connect", () => {
     logger.info("Redis connection established");
+    loggedErrorOnce = false;
   });
   connection.on("ready", () => {
     logger.info("Redis ready");
   });
   connection.on("error", (err: Error) => {
-    logger.error({ err }, "Redis connection error");
+    if (!loggedErrorOnce) {
+      logger.warn({ message: err.message }, "Redis connection failed (queue will operate offline/mock)");
+      loggedErrorOnce = true;
+    }
   });
   connection.on("close", () => {
     logger.warn("Redis connection closed");

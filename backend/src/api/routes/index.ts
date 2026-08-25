@@ -2,6 +2,8 @@ import { Router } from "express";
 import { healthRouter } from "./health.routes";
 import { buildMarketDataContainer } from "../../modules/market-data";
 import type { MarketDataContainer } from "../../modules/market-data";
+import type { SearchContainer } from "../../modules/search";
+import { buildStrategyRouter } from "../../modules/strategy/presentation/strategy.routes";
 
 /**
  * Aggregates every module-owned route under `/api`.
@@ -19,6 +21,8 @@ export const apiRouter: Router = Router();
 apiRouter.use(healthRouter);
 
 let mountedMarketData: MarketDataContainer | null = null;
+let mountedSearch: SearchContainer | null = null;
+let mountedStrategy: ReturnType<typeof buildStrategyRouter> | null = null;
 
 /**
  * Called by `server.ts` once the Socket.IO singleton is initialised
@@ -29,6 +33,26 @@ export function mountMarketData(container: MarketDataContainer): void {
   if (mountedMarketData) return;
   mountedMarketData = container;
   apiRouter.use("/candles", container.router);
+}
+
+/**
+ * Called by `server.ts` to mount the Search router under `/api/search`.
+ * Safe to call multiple times — subsequent calls are no-ops.
+ */
+export function mountSearch(container: SearchContainer): void {
+  if (mountedSearch) return;
+  mountedSearch = container;
+  apiRouter.use("/search", container.router);
+}
+
+/**
+ * Mounts the Strategy catalogue router under `/api/strategies`.
+ * Strategy routes are stateless — no container or DI needed.
+ */
+export function mountStrategy(): void {
+  if (mountedStrategy) return;
+  mountedStrategy = buildStrategyRouter();
+  apiRouter.use("/strategies", mountedStrategy);
 }
 
 void buildMarketDataContainer;

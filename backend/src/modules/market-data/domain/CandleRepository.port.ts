@@ -19,4 +19,5 @@ export interface CandleRepository {
   upsertBatch(candles: Candle[]): Promise<number>;
   query(q: CandleQuery): Promise<Candle[]>;
   getLatestOpen(symbol: string, timeframe: Timeframe): Promise<Candle | null>;
+  deleteAll(): Promise<void>;
 }

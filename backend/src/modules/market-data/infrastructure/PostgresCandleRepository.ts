@@ -121,6 +121,10 @@ export class PostgresCandleRepository implements CandleRepository {
     return row ? this.fromRow(row, symbol, timeframe) : null;
   }
 
+  async deleteAll(): Promise<void> {
+    await this.prisma.candle.deleteMany({});
+  }
+
   // ── helpers ───────────────────────────────────────────────────────────────
 
   private async resolveIds(

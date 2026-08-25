@@ -1,5 +1,4 @@
 import type { Server as IOServer, Socket } from "socket.io";
-import type { Logger } from "../../../shared/logger/logger";
 import { getSocketServer } from "../../../infrastructure/websocket/socket";
 import type { Candle } from "../domain/Candle";
 import {
@@ -47,7 +46,6 @@ export class SocketGateway {
   constructor(
     private readonly wsAdapter: BinanceWsAdapter,
     private readonly marketData: MarketDataService,
-    private readonly logger: Logger,
   ) {}
 
   private resolveIo(): IOServer {
@@ -63,7 +61,6 @@ export class SocketGateway {
     this.wsAdapter.on("CandleClosed", handleClosed);
 
     io.on("connection", (socket: Socket) => {
-      this.logger.info({ socketId: socket.id }, "market-data.client.connected");
       this.clientSubs.set(socket.id, new Set());
 
       socket.on("subscribe", async (raw: unknown) => {
@@ -114,15 +111,11 @@ export class SocketGateway {
         }
       });
 
-      socket.on("disconnect", (reason) => {
+      socket.on("disconnect", () => {
         // We intentionally do NOT call wsAdapter.unsubscribe here —
         // the upstream is ref-counted and other clients may still be
         // subscribed to the same stream.
         this.clientSubs.delete(socket.id);
-        this.logger.info(
-          { socketId: socket.id, reason },
-          "market-data.client.disconnected",
-        );
       });
     });
 

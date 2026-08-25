@@ -62,9 +62,8 @@ export class MarketDataService {
       "market-data.charts.loaded",
     );
 
-    if (chartConfigs.length > 0) {
-      await this.backfill.backfillInitial(chartConfigs);
-    }
+    // Clear old candles and re-backfill on every restart to ensure fresh data
+    await this.clearAndBackfill(chartConfigs);
 
     // Wire WS -> EventBus *before* connecting so we never miss the
     // first "CandleClosed" emitted by the freshly opened stream.
@@ -76,6 +75,16 @@ export class MarketDataService {
 
     this.logger.info("market-data.start.complete");
     return { symbols, defaults, chartConfigs };
+  }
+
+  private async clearAndBackfill(chartConfigs: ChartConfig[]): Promise<void> {
+    if (chartConfigs.length === 0) return;
+
+    this.logger.info({ count: chartConfigs.length }, "market-data.clearing-old-candles");
+    await this.repo.deleteAll();
+
+    this.logger.info({ charts: chartConfigs.length }, "market-data.backfilling-after-clear");
+    await this.backfill.backfillInitial(chartConfigs);
   }
 
   async stop(): Promise<void> {
@@ -137,7 +146,6 @@ export class MarketDataService {
       this.eventBus.publish(MARKET_DATA_EVENTS.CANDLE_CLOSED, candle);
     };
     const onUpdating = (candle: Candle): void => {
-      // Internal pulse. Other modules can subscribe if they care.
       this.eventBus.publish(MARKET_DATA_EVENTS.CANDLE_UPDATING, candle);
     };
 

@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
-import {
-  ChevronDown,
-  HelpCircle,
-  Bell,
-  ArrowUpRight,
+import { 
+  ChevronDown, 
+  HelpCircle, 
+  Bell, 
+  ArrowUpRight, 
   ArrowDownRight,
   Loader2,
   AlertCircle,
@@ -157,14 +157,17 @@ function ChartPane({
   // MA(15)
   const maVals = computeMA(candles, 15);
 
-  // SVG dimensions
-  const W = 500, H = 260;
-  const padR = 65, padTop = 24, padBot = 28;
+  // SVG dimensions — split into price chart (top) and volume (bottom)
+  const W = 500;
+  const priceH = 180; // Price chart height
+  const volH = 70;    // Volume chart height
+  const padR = 65, padTop = 20, padBot = 20;
+  const volGap = 8; // Gap between price and volume
 
   // Candles visible in viewport
   const VISIBLE_CANDLES = 60;
 
-  // Viewport state
+  // Viewport state — starts at maxOffset (showing latest candles)
   const [viewport, setViewport] = useState<ViewportState>({
     candleOffset: 0,
     isLoadingOlder: false,
@@ -178,6 +181,16 @@ function ChartPane({
   // Candles to render: from (total - offset - visible) to (total - offset)
   const totalCandles = candles.length;
   const maxOffset = Math.max(0, totalCandles - VISIBLE_CANDLES);
+
+  // Reset viewport to show latest candles whenever candles array changes
+  useEffect(() => {
+    setViewport((prev) => {
+      const newMaxOffset = Math.max(0, totalCandles - VISIBLE_CANDLES);
+      // Always show latest when candles change (e.g., timeframe switch)
+      return { ...prev, candleOffset: newMaxOffset };
+    });
+  }, [totalCandles]);
+
   const clampedOffset = Math.min(viewport.candleOffset, maxOffset);
   const startIdx = Math.max(0, totalCandles - clampedOffset - VISIBLE_CANDLES);
   const endIdx = totalCandles - clampedOffset;
@@ -192,14 +205,19 @@ function ChartPane({
   const candleWidth = chartWidth / Math.max(visibleCandles.length, 1);
 
   const getX = (localIdx: number) => localIdx * candleWidth + candleWidth / 2;
-  const getY = (v: number) =>
-    H - padBot - ((v - minP) * (H - padTop - padBot)) / (maxP - minP);
 
+  // Price chart Y axis (top section)
+  const getPriceY = (v: number) =>
+    priceH - padTop - ((v - minP) * (priceH - padTop - padBot)) / (maxP - minP);
+
+  // Volume chart Y axis (bottom section)
+  const volTop = priceH + volGap;
+  const volBottom = priceH + volGap + volH - padBot;
   const maxVol = visibleCandles.length
     ? Math.max(...visibleCandles.map((c) => c.volume))
     : 1000;
   const getVolY = (v: number) =>
-    H - padBot - (v * 50) / maxVol;
+    volBottom - ((v / maxVol) * (volBottom - volTop));
 
   // Mouse handlers for pan
   const handleMouseDown = (e: React.MouseEvent) => {
@@ -258,12 +276,12 @@ function ChartPane({
     setViewport((prev) => ({ ...prev, candleOffset: maxOffset }));
   };
 
-  return (
+            return (
     <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 relative overflow-hidden group hover:shadow-md hover:border-slate-200/70 transition-all">
       {/* Header */}
-      <div className="flex justify-between items-start">
-        <div>
-          <div className="flex items-center gap-2">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <div className="flex items-center gap-2">
             <span className="font-extrabold text-sm text-slate-800">
               {lastCandle ? "BTCUSDT" : "—"}
             </span>
@@ -281,19 +299,19 @@ function ChartPane({
               <ChevronDown className="w-3 h-3 text-blue-500 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
             {isLoadingTf && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />}
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-          </div>
-          <div className="flex items-center gap-2 mt-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
             <span className="text-[11px] font-bold text-blue-500 uppercase">MA(15)</span>
             {lastCandle && (
-              <span className="text-[11px] font-semibold text-slate-500">
+                      <span className="text-[11px] font-semibold text-slate-500">
                 {lastCandle.close.toLocaleString("en-US", { minimumFractionDigits: 2 })}
-              </span>
+                      </span>
             )}
-          </div>
-        </div>
+                    </div>
+                  </div>
 
-        <div className="ml-3">
+                  <div className="ml-3">
           <span
             className={`px-3 py-1 rounded-lg text-xs font-black tracking-wider ${
               isUp
@@ -302,147 +320,148 @@ function ChartPane({
             }`}
           >
             {isUp ? "BUY" : "SELL"}
-          </span>
-        </div>
-      </div>
+                    </span>
+                  </div>
+                </div>
 
-      {/* SVG Chart */}
+      {/* SVG Charts — Price (top) + Volume (bottom) */}
       <div
-        className="h-[260px] relative w-full mt-2 select-none"
+        className="relative w-full select-none mt-2"
+        style={{ height: priceH + volGap + volH + 20, cursor: isDragging ? "grabbing" : "grab" }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
         onWheel={handleWheel}
-        style={{ cursor: isDragging ? "grabbing" : "grab" }}
       >
         {visibleCandles.length > 0 ? (
-          <svg
-            className="w-full h-full"
-            viewBox={`0 0 ${W} ${H}`}
-            preserveAspectRatio="none"
-          >
-            {/* Grid */}
-            <line
-              x1={0} y1={getY(minP + (maxP - minP) * 0.25)}
-              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.25)}
-              stroke="#f1f5f9" strokeDasharray="3,3"
-            />
-            <line
-              x1={0} y1={getY(minP + (maxP - minP) * 0.5)}
-              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.5)}
-              stroke="#f1f5f9" strokeDasharray="3,3"
-            />
-            <line
-              x1={0} y1={getY(minP + (maxP - minP) * 0.75)}
-              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.75)}
-              stroke="#f1f5f9" strokeDasharray="3,3"
-            />
+          <>
+            {/* Price Chart SVG */}
+            <svg
+              className="w-full absolute"
+              style={{ height: priceH }}
+              viewBox={`0 0 ${W} ${priceH}`}
+              preserveAspectRatio="none"
+            >
+              {/* Grid lines */}
+              <line x1={0} y1={getPriceY(minP + (maxP - minP) * 0.25)} x2={W - padR} y2={getPriceY(minP + (maxP - minP) * 0.25)} stroke="#f1f5f9" strokeDasharray="3,3" />
+              <line x1={0} y1={getPriceY(minP + (maxP - minP) * 0.5)} x2={W - padR} y2={getPriceY(minP + (maxP - minP) * 0.5)} stroke="#f1f5f9" strokeDasharray="3,3" />
+              <line x1={0} y1={getPriceY(minP + (maxP - minP) * 0.75)} x2={W - padR} y2={getPriceY(minP + (maxP - minP) * 0.75)} stroke="#f1f5f9" strokeDasharray="3,3" />
 
-            {/* Volume bars */}
-            {visibleCandles.map((c, i) => {
-              const x = getX(i);
-              const y = getVolY(c.volume);
-              const isGreen = c.close >= c.open;
-              const bw = Math.max(2, candleWidth * 0.7);
-              return (
-                <rect
-                  key={`vol-${startIdx + i}`}
-                  x={x - bw / 2}
-                  y={y}
-                  width={bw}
-                  height={H - padBot - y}
-                  fill={isGreen ? "#a7f3d0" : "#fecaca"}
-                  opacity={0.65}
-                />
-              );
-            })}
+              {/* Candlesticks */}
+              {visibleCandles.map((c, i) => {
+                const x = getX(i);
+                const isGreen = c.close >= c.open;
+                const color = isGreen ? "#10b981" : "#ef4444";
+                const bw = Math.max(3, candleWidth * 0.7);
+                return (
+                  <g key={`candle-${startIdx + i}`}>
+                    <line x1={x} y1={getPriceY(c.high)} x2={x} y2={getPriceY(c.low)} stroke={color} strokeWidth={1.2} />
+                    <rect
+                      x={x - bw / 2}
+                      y={Math.min(getPriceY(c.open), getPriceY(c.close))}
+                      width={bw}
+                      height={Math.max(1.5, Math.abs(getPriceY(c.open) - getPriceY(c.close)))}
+                      fill={color} stroke={color} strokeWidth={0.5} rx={0.5}
+                    />
+                  </g>
+                );
+              })}
 
-            {/* Candlesticks */}
-            {visibleCandles.map((c, i) => {
-              const x = getX(i);
-              const isGreen = c.close >= c.open;
-              const color = isGreen ? "#10b981" : "#ef4444";
-              const bw = Math.max(3, candleWidth * 0.7);
-              return (
-                <g key={`candle-${startIdx + i}`}>
-                  <line
-                    x1={x} y1={getY(c.high)} x2={x} y2={getY(c.low)}
-                    stroke={color} strokeWidth={1.2}
-                  />
-                  <rect
-                    x={x - bw / 2}
-                    y={Math.min(getY(c.open), getY(c.close))}
-                    width={bw}
-                    height={Math.max(1.5, Math.abs(getY(c.open) - getY(c.close)))}
-                    fill={color} stroke={color} strokeWidth={0.5} rx={0.5}
-                  />
+              {/* MA line */}
+              <path
+                d={visibleCandles.reduce((path, _c, i) => {
+                  const globalIdx = startIdx + i;
+                  const v = maVals[globalIdx];
+                  if (v === null) return path;
+                  const cmd = path === "" ? "M" : "L";
+                  return `${path} ${cmd} ${getX(i)} ${getPriceY(v)}`;
+                }, "")}
+                fill="none" stroke="#3b82f6" strokeWidth={1.5}
+              />
+
+              {/* Current price line */}
+              {lastCandle && (
+                <g>
+                  <line x1={0} y1={getPriceY(currentPrice)} x2={W - padR} y2={getPriceY(currentPrice)} stroke="#10b981" strokeWidth={1} strokeDasharray="2,2" />
+                  <rect x={W - padR + 2} y={getPriceY(currentPrice) - 6} width={54} height={12} fill="#10b981" rx={2} />
+                  <text x={W - padR + 5} y={getPriceY(currentPrice) + 3} fill="#fff" fontSize="8" fontWeight="extrabold">
+                    {currentPrice.toLocaleString("en-US", { maximumFractionDigits: 1 })}
+                  </text>
                 </g>
-              );
-            })}
+              )}
 
-            {/* MA line */}
-            <path
-              d={visibleCandles.reduce((path, _c, i) => {
-                const globalIdx = startIdx + i;
-                const v = maVals[globalIdx];
-                if (v === null) return path;
-                const cmd = path === "" ? "M" : "L";
-                return `${path} ${cmd} ${getX(i)} ${getY(v)}`;
-              }, "")}
-              fill="none" stroke="#3b82f6" strokeWidth={1.5}
-            />
-
-            {/* Current price dotted line */}
-            {lastCandle && (
-              <g>
-                <line
-                  x1={0} y1={getY(currentPrice)}
-                  x2={W - padR} y2={getY(currentPrice)}
-                  stroke="#10b981" strokeWidth={1} strokeDasharray="2,2"
-                />
-                <rect
-                  x={W - padR + 2} y={getY(currentPrice) - 6}
-                  width={54} height={12} fill="#10b981" rx={2}
-                />
-                <text
-                  x={W - padR + 5} y={getY(currentPrice) + 3}
-                  fill="#fff" fontSize="8" fontWeight="extrabold"
-                >
-                  {currentPrice.toLocaleString("en-US", { maximumFractionDigits: 1 })}
-                </text>
+              {/* Y-axis labels */}
+              <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
+                <text x={W - padR + 6} y={getPriceY(maxP) + 8}>{maxP.toLocaleString("en-US", { maximumFractionDigits: 0 })}</text>
+                <text x={W - padR + 6} y={getPriceY((minP + maxP) / 2) + 3}>{((minP + maxP) / 2).toLocaleString("en-US", { maximumFractionDigits: 0 })}</text>
+                <text x={W - padR + 6} y={getPriceY(minP) - 3}>{minP.toLocaleString("en-US", { maximumFractionDigits: 0 })}</text>
               </g>
-            )}
+            </svg>
 
-            {/* Y-axis labels */}
-            <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
-              <text x={W - padR + 6} y={getY(maxP) + 8}>
-                {maxP.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-              </text>
-              <text x={W - padR + 6} y={getY((minP + maxP) / 2) + 3}>
-                {((minP + maxP) / 2).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-              </text>
-              <text x={W - padR + 6} y={getY(minP) - 3}>
-                {minP.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-              </text>
-            </g>
+            {/* Volume Chart SVG */}
+            <svg
+              className="w-full absolute"
+              style={{ height: volH, top: priceH + volGap }}
+              viewBox={`0 0 ${W} ${volH}`}
+              preserveAspectRatio="none"
+            >
+              {/* Divider line */}
+              <line x1={0} y1={volTop - 4} x2={W - padR} y2={volTop - 4} stroke="#e2e8f0" strokeDasharray="4,4" />
 
-            {/* X-axis labels */}
-            {visibleCandles.map((c, i) => {
-              if (i % Math.max(1, Math.floor(visibleCandles.length / 8)) !== 0) return null;
-              return (
-                <text
-                  key={`xl-${startIdx + i}`} x={getX(i)} y={H - 6}
-                  fill="#94a3b8" fontSize="7.5" fontWeight="bold"
-                  textAnchor="middle"
-                >
-                  {c.time}
-                </text>
-              );
-            })}
-          </svg>
+              {/* Volume bars with numbers */}
+              {visibleCandles.map((c, i) => {
+                const x = getX(i);
+                const y = getVolY(c.volume);
+                const isGreen = c.close >= c.open;
+                const bw = Math.max(2, candleWidth * 0.7);
+                const barTop = Math.max(volTop, y);
+                const barHeight = Math.max(0, volBottom - barTop);
+                return (
+                  <g key={`vol-${startIdx + i}`}>
+                    <rect
+                      x={x - bw / 2}
+                      y={barTop}
+                      width={bw}
+                      height={barHeight}
+                      fill={isGreen ? "#a7f3d0" : "#fecaca"}
+                      opacity={0.8}
+                    />
+                    {/* Volume number label - show every 5th candle */}
+                    {i % 5 === 0 && barHeight > 15 && (
+                      <text
+                        x={x}
+                        y={barTop + 10}
+                        fill={isGreen ? "#059669" : "#dc2626"}
+                        fontSize="6"
+                        fontWeight="bold"
+                        textAnchor="middle"
+                      >
+                        {(c.volume / 1000).toFixed(0)}k
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+
+              {/* X-axis labels */}
+              <g fill="#94a3b8" fontSize="7.5" fontWeight="bold" textAnchor="middle">
+                {visibleCandles.map((c, i) => {
+                  if (i % Math.max(1, Math.floor(visibleCandles.length / 8)) !== 0) return null;
+                  return (
+                    <text key={`xl-${startIdx + i}`} x={getX(i)} y={volH - 4}>
+                      {c.time}
+                    </text>
+                  );
+                })}
+              </g>
+
+              {/* Volume label */}
+              <text x={W - padR + 6} y={volTop + 12} fill="#94a3b8" fontSize="7" fontWeight="bold">VOL</text>
+            </svg>
+          </>
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400 text-xs">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400 text-xs" style={{ height: priceH + volGap + volH }}>
             <Loader2 className="w-5 h-5 animate-spin" />
             <span>Đang tải dữ liệu…</span>
           </div>
@@ -453,7 +472,7 @@ function ChartPane({
           <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg flex items-center gap-2 z-10">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
             Đang tải thêm…
-          </div>
+                </div>
         )}
 
         {/* Scroll to latest button */}
@@ -464,7 +483,7 @@ function ChartPane({
           >
             <ArrowDownRight className="w-3 h-3" />
             Latest
-          </button>
+                  </button>
         )}
 
         {/* Drag hint */}
@@ -487,19 +506,19 @@ function ChartPane({
 
       {/* Footer */}
       <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
-        </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
+                  </div>
         {totalCandles > 0 && (
           <span className="text-[10px] font-medium text-slate-400">
             {totalCandles} candles
             {clampedOffset > 0 && ` · xem ${clampedOffset} cũ hơn`}
           </span>
         )}
-      </div>
-    </article>
-  );
+                </div>
+              </article>
+            );
 }
 
 // ── main component ────────────────────────────────────────────────────────────
@@ -758,7 +777,7 @@ export default function RealtimeDashboard() {
               BTCUSDT · {currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })} USDT
             </p>
           )}
-        </div>
+                  </div>
         <div className="flex items-center gap-4">
           <StatusPill status={wsStatus} latency={latency} />
           <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors">
@@ -768,7 +787,7 @@ export default function RealtimeDashboard() {
             <Bell className="w-5 h-5" />
             <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
           </button>
-        </div>
+                  </div>
       </header>
 
       {/* ── Error banner ────────────────────────────────────────────────────── */}
@@ -782,7 +801,7 @@ export default function RealtimeDashboard() {
           >
             Đóng
           </button>
-        </div>
+                  </div>
       )}
 
       {/* ── Control bar ─────────────────────────────────────────────────────── */}
@@ -803,9 +822,9 @@ export default function RealtimeDashboard() {
                 </span>
                 <ChevronDown className="w-4 h-4 text-slate-500" />
               </button>
-            </div>
-          </div>
-        </div>
+                  </div>
+                  </div>
+                  </div>
 
         {/* Realtime toggle */}
         <div className="flex items-center gap-5">
@@ -828,8 +847,8 @@ export default function RealtimeDashboard() {
                 }`}
               />
             </button>
-          </div>
-        </div>
+                </div>
+              </div>
       </section>
 
       {/* ── Main grid ────────────────────────────────────────────────────────── */}
@@ -845,7 +864,7 @@ export default function RealtimeDashboard() {
                 >
                   <div className="h-4 bg-slate-100 rounded w-1/2" />
                   <div className="flex-1 bg-slate-50 rounded" />
-                </div>
+                  </div>
               ))}
             </>
           ) : chartConfigs.length === 0 ? (
@@ -853,7 +872,7 @@ export default function RealtimeDashboard() {
               <AlertCircle className="w-8 h-8" />
               <p className="font-semibold">Không tìm thấy chart config nào.</p>
               <p className="text-sm">Kiểm tra lại backend và database.</p>
-            </div>
+                  </div>
           ) : (
             chartConfigs.map((cfg) => {
             const tf = timeframes[cfg.chartIndex] ?? cfg.timeframe;
@@ -873,8 +892,8 @@ export default function RealtimeDashboard() {
             );
           })
           )}
-        </div>
-
+                </div>
+                
         {/* Sidebar */}
         <div className="flex flex-col gap-6">
           {/* Logic cập nhật candle */}
@@ -891,7 +910,7 @@ export default function RealtimeDashboard() {
               <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
                 openTime giống nến cuối → ghi đè dữ liệu mới nhất.
               </p>
-            </div>
+                  </div>
 
             <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 flex flex-col gap-2">
               <span className="text-xs font-bold text-slate-700">
@@ -926,7 +945,7 @@ export default function RealtimeDashboard() {
                     : "Chưa kết nối"}
               </span>
             </div>
-
+            
             <table className="w-full text-xs font-semibold text-slate-600">
               <tbody>
                 <tr className="border-b border-slate-50">
@@ -971,7 +990,7 @@ export default function RealtimeDashboard() {
                 {chartConfigs[0] ? (timeframes[chartConfigs[0].chartIndex] ?? chartConfigs[0].timeframe) : "—"}
               </span>
             </div>
-
+            
             <div className="overflow-hidden rounded-xl border border-slate-100">
               <table className="w-full text-xs font-bold text-slate-600">
                 <thead>
@@ -998,15 +1017,15 @@ export default function RealtimeDashboard() {
                             className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 transition-colors"
                           >
                             <td className="py-2 px-3 text-slate-500 font-medium">{c.time}</td>
-                            <td className="py-2 px-2 text-right text-slate-800">
+                      <td className="py-2 px-2 text-right text-slate-800">
                               {c.close.toLocaleString("en-US", {
                                 minimumFractionDigits: 2,
                               })}
-                            </td>
+                      </td>
                             <td className="py-2 px-2 text-right text-slate-500 font-medium">
                               {c.volume.toFixed(0)}
                             </td>
-                            <td className="py-2 px-3 text-right">
+                      <td className="py-2 px-3 text-right">
                               <span
                                 className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${
                                   isUp
@@ -1015,9 +1034,9 @@ export default function RealtimeDashboard() {
                                 }`}
                               >
                                 {isUp ? "BUY" : "SELL"}
-                              </span>
-                            </td>
-                          </tr>
+                        </span>
+                      </td>
+                    </tr>
                         );
                       });
                   })()}
@@ -1029,7 +1048,7 @@ export default function RealtimeDashboard() {
           {/* Chú thích */}
           <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
             <h3 className="text-sm font-extrabold text-slate-800">Chú thích</h3>
-
+            
             <div className="flex flex-col gap-3 text-xs font-semibold text-slate-600">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   ChevronDown, 
   HelpCircle, 
@@ -31,6 +31,47 @@ export default function Backtest() {
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  
+  // Independent state for chart highlight vs trade detail modal dialog
+  const [highlightedTrade, setHighlightedTrade] = useState<TradeItemApi | null>(null);
+  const [activeModalTrade, setActiveModalTrade] = useState<TradeItemApi | null>(null);
+
+  const handleSelectTrade = (trade: TradeItemApi) => {
+    setHighlightedTrade(trade);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('HIGHLIGHT_TRADE_ON_CHART', {
+          detail: {
+            tradeId: trade.id,
+            symbol: selectedPair,
+            entryTime: trade.entryTime,
+            exitTime: trade.exitTime,
+            entryPrice: trade.entryPrice,
+            exitPrice: trade.exitPrice,
+            direction: trade.direction,
+          },
+        })
+      );
+    }
+  };
+
+  const handleClearHighlight = () => {
+    setHighlightedTrade(null);
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('HIGHLIGHT_TRADE_ON_CHART', {
+          detail: { tradeId: null },
+        })
+      );
+    }
+  };
+
+  const handleOpenTradeModal = (trade: TradeItemApi) => {
+    setActiveModalTrade(trade);
+    if (highlightedTrade?.id !== trade.id) {
+      handleSelectTrade(trade);
+    }
+  };
 
   // Dynamic backtest result state
   const [metrics, setMetrics] = useState<BacktestMetricsApi>({
@@ -51,7 +92,38 @@ export default function Backtest() {
     { id: 'trade-2', entryTime: Date.now() - 3600000 * 4, exitTime: Date.now() - 3600000 * 3, direction: 'SHORT', quantity: 0.1, entryPrice: 69450.2, exitPrice: 68430.1, fee: 5.5, slippage: 3.5, profitLoss: 102.0, profitLossPct: 1.02, entryReason: 'MA_CROSSOVER', exitReason: 'TAKE_PROFIT' },
     { id: 'trade-3', entryTime: Date.now() - 3600000 * 3, exitTime: Date.now() - 3600000 * 2, direction: 'LONG', quantity: 0.1, entryPrice: 68600.1, exitPrice: 67980.0, fee: 5.4, slippage: 3.4, profitLoss: -62.0, profitLossPct: -0.62, entryReason: 'MA_CROSSOVER', exitReason: 'STOP_LOSS' },
     { id: 'trade-4', entryTime: Date.now() - 3600000 * 2, exitTime: Date.now() - 3600000 * 1, direction: 'SHORT', quantity: 0.1, entryPrice: 69320.3, exitPrice: 68310.4, fee: 5.5, slippage: 3.5, profitLoss: 101.0, profitLossPct: 1.01, entryReason: 'MA_CROSSOVER', exitReason: 'TAKE_PROFIT' },
+    { id: 'trade-5', entryTime: Date.now() - 3600000 * 1, exitTime: Date.now(), direction: 'LONG', quantity: 0.1, entryPrice: 68900.0, exitPrice: 69420.0, fee: 5.4, slippage: 3.4, profitLoss: 52.0, profitLossPct: 0.52, entryReason: 'BUY_SIGNAL', exitReason: 'END_OF_DATA' },
   ]);
+
+  useEffect(() => {
+    const handleHighlightEvent = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      if (customEvent.detail) {
+        const found = trades.find((t) => t.id === customEvent.detail.tradeId);
+        if (found) {
+          setHighlightedTrade(found);
+        } else if (customEvent.detail.tradeId) {
+          setHighlightedTrade({
+            id: customEvent.detail.tradeId,
+            entryTime: customEvent.detail.entryTime || Date.now(),
+            exitTime: customEvent.detail.exitTime || Date.now(),
+            direction: customEvent.detail.direction || 'LONG',
+            quantity: 0.1,
+            entryPrice: customEvent.detail.entryPrice || 68500,
+            exitPrice: customEvent.detail.exitPrice || 69200,
+            fee: 5.0,
+            slippage: 3.0,
+            profitLoss: 70.0,
+            profitLossPct: 0.7,
+            entryReason: 'SIGNAL',
+            exitReason: 'TAKE_PROFIT',
+          });
+        }
+      }
+    };
+    window.addEventListener('HIGHLIGHT_TRADE_ON_CHART', handleHighlightEvent);
+    return () => window.removeEventListener('HIGHLIGHT_TRADE_ON_CHART', handleHighlightEvent);
+  }, [trades]);
 
   const [equityCurve, setEquityCurve] = useState<EquityPointApi[]>([
     { timestamp: Date.now() - 3600000 * 5, capital: 10000, drawdownPct: 0 },
@@ -143,6 +215,15 @@ export default function Backtest() {
     return { open, high, low, close, volume, time: `0${i}:00` };
   });
 
+  // Highlight positioning calculation based on highlightedTrade index or prices
+  const highlightedTradeIdx = highlightedTrade ? trades.findIndex(t => t.id === highlightedTrade.id) : -1;
+  const xHighlightEntry = highlightedTradeIdx >= 0 ? Math.min(460, Math.max(30, (highlightedTradeIdx * 90) + 50)) : 110;
+  const xHighlightExit = highlightedTradeIdx >= 0 ? Math.min(530, xHighlightEntry + 100) : 220;
+  
+  const scaleChartY = (val: number) => 300 - ((val - 67500) * 220) / 2400;
+  const yHighlightEntry = highlightedTrade ? Math.min(290, Math.max(40, scaleChartY(highlightedTrade.entryPrice))) : 210;
+  const yHighlightExit = highlightedTrade ? Math.min(290, Math.max(40, scaleChartY(highlightedTrade.exitPrice))) : 110;
+
   return (
     <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto relative">
       {/* Top Header */}
@@ -172,6 +253,23 @@ export default function Backtest() {
         <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-xs font-bold flex items-center gap-2">
           <AlertCircle className="w-4 h-4 shrink-0" />
           <span>{errorMsg}</span>
+        </div>
+      )}
+
+      {highlightedTrade && (
+        <div className="bg-blue-50 border border-blue-200 text-blue-900 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-between shadow-xs">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-blue-600 animate-pulse" />
+            <span>
+              Đang Highlight Lệnh trên Biểu Đồ: <strong className="text-blue-700 font-extrabold">{highlightedTrade.id}</strong> [{highlightedTrade.direction}] — Giá vào: <strong>${highlightedTrade.entryPrice.toLocaleString('en-US')}</strong> → Giá ra: <strong>${highlightedTrade.exitPrice.toLocaleString('en-US')}</strong> (PnL: <span className={highlightedTrade.profitLoss >= 0 ? 'text-emerald-600 font-black' : 'text-red-600 font-black'}>{highlightedTrade.profitLoss >= 0 ? '+' : ''}{highlightedTrade.profitLoss} USD</span> — Lý do đóng: <strong className="text-slate-900 font-extrabold">{highlightedTrade.exitReason}</strong>)
+            </span>
+          </div>
+          <button 
+            onClick={() => setHighlightedTrade(null)} 
+            className="text-blue-600 hover:text-blue-800 bg-blue-100 hover:bg-blue-200 px-3 py-1 rounded-lg text-xs font-extrabold transition-colors cursor-pointer"
+          >
+            Tắt Highlight
+          </button>
         </div>
       )}
 
@@ -444,6 +542,43 @@ export default function Backtest() {
                 <text x={45} y={3} fill="#10b981" fontSize="7.5" fontWeight="extrabold">TP Target</text>
               </g>
 
+              {/* Highlight Trade Overlay on SVG Chart */}
+              {highlightedTrade && (
+                <g id="highlight-trade-overlay">
+                  {/* Highlighted zone background rectangle */}
+                  <rect
+                    x={xHighlightEntry - 8}
+                    y={30}
+                    width={Math.max(45, xHighlightExit - xHighlightEntry + 16)}
+                    height={270}
+                    fill={highlightedTrade.direction === 'LONG' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)'}
+                    stroke={highlightedTrade.direction === 'LONG' ? '#10b981' : '#ef4444'}
+                    strokeWidth={1.5}
+                    strokeDasharray="4,4"
+                    rx={6}
+                  />
+
+                  {/* Vertical Entry Line */}
+                  <line x1={xHighlightEntry} y1={30} x2={xHighlightEntry} y2={300} stroke="#2563eb" strokeWidth={1.5} strokeDasharray="3,3" />
+                  {/* Vertical Exit Line */}
+                  <line x1={xHighlightExit} y1={30} x2={xHighlightExit} y2={300} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="3,3" />
+
+                  {/* Horizontal Entry Price Line & Badge */}
+                  <line x1={Math.max(10, xHighlightEntry - 30)} y1={yHighlightEntry} x2={540} y2={yHighlightEntry} stroke="#10b981" strokeWidth={1.5} strokeDasharray="3,3" />
+                  <rect x={Math.min(435, xHighlightEntry)} y={Math.max(35, yHighlightEntry - 10)} width={100} height={18} fill="#10b981" rx={4} />
+                  <text x={Math.min(435, xHighlightEntry) + 5} y={Math.max(35, yHighlightEntry - 10) + 12} fill="#ffffff" fontSize="9" fontWeight="extrabold">Entry: ${highlightedTrade.entryPrice.toLocaleString('en-US')}</text>
+
+                  {/* Horizontal Exit Price Line & Badge */}
+                  <line x1={Math.max(10, xHighlightEntry - 30)} y1={yHighlightExit} x2={540} y2={yHighlightExit} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="3,3" />
+                  <rect x={Math.min(435, Math.max(10, xHighlightExit - 50))} y={Math.max(35, yHighlightExit - 10)} width={100} height={18} fill="#ef4444" rx={4} />
+                  <text x={Math.min(435, Math.max(10, xHighlightExit - 50)) + 5} y={Math.max(35, yHighlightExit - 10) + 12} fill="#ffffff" fontSize="9" fontWeight="extrabold">Exit: ${highlightedTrade.exitPrice.toLocaleString('en-US')}</text>
+
+                  {/* Highlight Label Badge top */}
+                  <rect x={xHighlightEntry - 5} y={35} width={105} height={16} fill="#0f172a" rx={3} />
+                  <text x={xHighlightEntry} y={46} fill="#38bdf8" fontSize="8" fontWeight="black">HIGHLIGHT: {highlightedTrade.id}</text>
+                </g>
+              )}
+
               {/* Price Axis on Right */}
               <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
                 <text x={546} y={54}>70,400</text>
@@ -467,8 +602,20 @@ export default function Backtest() {
         {/* Right Column: Danh sách lệnh giao dịch */}
         <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between min-h-[460px]">
           <div className="flex flex-col gap-4">
-            <div className="flex justify-between items-center">
-              <h3 className="text-sm font-extrabold text-slate-800">Danh sách lệnh giao dịch ({trades.length} lệnh)</h3>
+            <div className="flex justify-between items-center flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-extrabold text-slate-800">Danh sách lệnh giao dịch ({trades.length} lệnh)</h3>
+                {highlightedTrade && (
+                  <button
+                    onClick={() => handleClearHighlight()}
+                    className="px-2.5 py-1 rounded-lg bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-700 text-[10px] font-extrabold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                    title="Tắt Highlight lệnh hiện tại"
+                  >
+                    <span>Tắt Highlight ({highlightedTrade.id})</span>
+                    <span className="text-amber-600 font-black">✕</span>
+                  </button>
+                )}
+              </div>
               <span className="text-xs font-bold text-slate-400">Score: {metrics.overallScore}</span>
             </div>
             
@@ -484,18 +631,25 @@ export default function Backtest() {
                     <th className="py-2.5 px-2 text-right">Slippage</th>
                     <th className="py-2.5 px-3 text-right">PnL (USD)</th>
                     <th className="py-2.5 px-2 text-right">Lý do đóng</th>
+                    <th className="py-2.5 px-3 text-center">Thao tác</th>
                   </tr>
                 </thead>
                 <tbody>
                   {trades.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-6 text-slate-400 text-xs font-semibold">
+                      <td colSpan={9} className="text-center py-6 text-slate-400 text-xs font-semibold">
                         Chưa có dữ liệu lệnh. Hãy nhấn "Bắt đầu backtest" để chạy mô phỏng.
                       </td>
                     </tr>
                   ) : (
                     trades.map((item, idx) => (
-                      <tr key={item.id || idx} className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 transition-colors">
+                      <tr 
+                        key={item.id || idx} 
+                        onClick={() => handleOpenTradeModal(item)}
+                        className={`border-b border-slate-50 last:border-b-0 cursor-pointer transition-colors ${
+                          highlightedTrade?.id === item.id ? 'bg-blue-50/80 font-bold' : 'hover:bg-slate-50'
+                        }`}
+                      >
                         <td className="py-2 px-3 text-slate-400 font-medium">{idx + 1}</td>
                         <td className="py-2 px-2">
                           <span className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wide ${
@@ -514,6 +668,31 @@ export default function Backtest() {
                           {item.profitLoss >= 0 ? '+' : ''}{item.profitLoss} ({item.profitLossPct}%)
                         </td>
                         <td className="py-2 px-2 text-right text-slate-400 text-[10px] font-medium">{item.exitReason}</td>
+                        <td className="py-2 px-3 text-center">
+                          {highlightedTrade?.id === item.id ? (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleClearHighlight();
+                              }}
+                              className="px-2 py-0.5 rounded bg-amber-500 hover:bg-amber-600 text-white text-[9px] font-black transition-colors cursor-pointer shadow-2xs"
+                              title="Bấm để Tắt Highlight lệnh này"
+                            >
+                              Tắt Highlight
+                            </button>
+                          ) : (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSelectTrade(item);
+                              }}
+                              className="px-2 py-0.5 rounded bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-600 text-[9px] font-extrabold transition-colors cursor-pointer"
+                              title="Bấm để Highlight lệnh này trên Chart"
+                            >
+                              Highlight
+                            </button>
+                          )}
+                        </td>
                       </tr>
                     ))
                   )}
@@ -612,6 +791,84 @@ export default function Backtest() {
         </div>
 
       </section>
+
+      {/* Trade Detail Drawer / Modal */}
+      {activeModalTrade && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl p-6 border border-slate-100 shadow-2xl max-w-md w-full flex flex-col gap-4 text-left">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <h4 className="text-base font-extrabold text-slate-900">Chi tiết lệnh: {activeModalTrade.id}</h4>
+              <button 
+                onClick={() => setActiveModalTrade(null)} 
+                className="text-slate-400 hover:text-slate-600 text-sm font-bold p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs">
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-slate-400 text-[10px] font-bold block uppercase">Hướng lệnh</span>
+                <span className={`font-black text-sm ${activeModalTrade.direction === 'LONG' ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {activeModalTrade.direction}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-slate-400 text-[10px] font-bold block uppercase">Lợi nhuận (PnL)</span>
+                <span className={`font-black text-sm ${activeModalTrade.profitLoss >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                  {activeModalTrade.profitLoss >= 0 ? '+' : ''}{activeModalTrade.profitLoss} USD ({activeModalTrade.profitLossPct}%)
+                </span>
+              </div>
+
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-slate-400 text-[10px] font-bold block uppercase">Giá mở cửa (Entry)</span>
+                <span className="font-bold text-slate-800">{activeModalTrade.entryPrice.toLocaleString('en-US')}</span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-slate-400 text-[10px] font-bold block uppercase">Giá đóng cửa (Exit)</span>
+                <span className="font-bold text-slate-800">{activeModalTrade.exitPrice.toLocaleString('en-US')}</span>
+              </div>
+
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-slate-400 text-[10px] font-bold block uppercase">Lý do vào</span>
+                <span className="font-semibold text-slate-700">{activeModalTrade.entryReason}</span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-100">
+                <span className="text-slate-400 text-[10px] font-bold block uppercase">Lý do đóng</span>
+                <span className="font-semibold text-slate-700">{activeModalTrade.exitReason}</span>
+              </div>
+            </div>
+
+            <div className="flex gap-2 mt-2">
+              {highlightedTrade?.id === activeModalTrade.id ? (
+                <button
+                  onClick={() => {
+                    handleClearHighlight();
+                  }}
+                  className="flex-1 py-2.5 px-4 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                >
+                  Tắt Highlight lệnh này
+                </button>
+              ) : (
+                <button
+                  onClick={() => {
+                    handleSelectTrade(activeModalTrade);
+                  }}
+                  className="flex-1 py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-colors shadow-sm cursor-pointer"
+                >
+                  Highlight trên Chart
+                </button>
+              )}
+              <button
+                onClick={() => setActiveModalTrade(null)}
+                className="py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+              >
+                Đóng
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

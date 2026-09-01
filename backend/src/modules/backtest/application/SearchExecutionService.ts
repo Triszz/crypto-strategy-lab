@@ -1,6 +1,6 @@
 import { logger } from "../../../shared/logger/logger";
-import { BacktestService, type RunBacktestParams } from "./BacktestService";
-import { getBacktestQueue, type BacktestJobProgress } from "../infrastructure/BacktestQueue";
+import type { RunBacktestParams } from "./BacktestService";
+import type { BacktestJobProgress } from "../infrastructure/BacktestQueue";
 import { getBacktestWorker } from "../infrastructure/BacktestWorker";
 import type { BacktestResultDomain } from "../domain/types";
 
@@ -26,15 +26,6 @@ export interface CandidateExecutionResult {
 }
 
 export class SearchExecutionService {
-  private readonly backtestService: BacktestService;
-
-  constructor() {
-    this.backtestService = new BacktestService();
-  }
-
-  /**
-   * Executes backtest directly for a candidate generated during search space traversal.
-   */
   public async executeCandidateBacktest(
     params: CandidateExecutionParams
   ): Promise<CandidateExecutionResult> {

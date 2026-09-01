@@ -287,5 +287,102 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
     }
   });
 
+  /**
+   * GET /api/search/:id/candidates
+   *
+   * Returns all CandidateStrategy rows persisted for the given SearchRun,
+   * enriched with the linked StrategyVersion + StrategyDefinition data
+   * so the frontend can show "what strategy this candidate represents".
+   *
+   * Response 200:
+   *   {
+   *     "success": true,
+   *     "data": [
+   *       {
+   *         "id": "uuid",
+   *         "searchRunId": "uuid",
+   *         "strategyVersionId": "uuid",
+   *         "parameters": { ... },
+   *         "status": "PENDING",
+   *         "errorMessage": null,
+   *         "createdAt": "...",
+   *         "strategyVersion": {
+   *           "id": "uuid",
+   *           "name": "Relative Strength Index (Wilder)",
+   *           "implementationRef": "strategy.rsi",
+   *           "definition": { "type": "BASE", "family": "TREND" }
+   *         }
+   *       }
+   *     ]
+   *   }
+   *
+   * Response 404: SearchRun not found
+   */
+  router.get("/:id/candidates", async (req: Request, res: Response, next: NextFunction) => {
+    const parsed = SearchIdSchema.safeParse(req.params);
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        error: "INVALID_PARAMS",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+
+    try {
+      const prisma = getPrismaClient();
+
+      // Verify the SearchRun exists (return 404 if not).
+      const searchRun = await prisma.searchRun.findUnique({
+        where: { id: parsed.data.id },
+        select: { id: true },
+      });
+      if (!searchRun) {
+        res.status(404).json({ success: false, error: "NOT_FOUND" });
+        return;
+      }
+
+      const rows = await prisma.candidateStrategy.findMany({
+        where: { searchRunId: parsed.data.id },
+        orderBy: { createdAt: "asc" },
+        include: {
+          strategyVersion: {
+            select: {
+              id: true,
+              name: true,
+              implementationRef: true,
+              definition: { select: { type: true, family: true } },
+            },
+          },
+        },
+      });
+
+      res.json({
+        success: true,
+        data: rows.map((r) => ({
+          id: r.id,
+          searchRunId: r.searchRunId,
+          strategyVersionId: r.strategyVersionId,
+          parameters: r.parameters as Record<string, unknown>,
+          status: r.status,
+          errorMessage: r.errorMessage,
+          createdAt: r.createdAt.toISOString(),
+          strategyVersion: r.strategyVersion
+            ? {
+                id: r.strategyVersion.id,
+                name: r.strategyVersion.name,
+                implementationRef: r.strategyVersion.implementationRef,
+                definitionType: r.strategyVersion.definition.type,
+                definitionFamily: r.strategyVersion.definition.family,
+              }
+            : null,
+        })),
+      });
+    } catch (err) {
+      log.error({ err, id: parsed.data.id }, "search.api.candidates.error");
+      next(err);
+    }
+  });
+
   return router;
 }

@@ -1,4 +1,6 @@
 export interface RunBacktestPayload {
+  /** UUID of a persisted CandidateStrategy (Search → Backtest path). */
+  candidateId?: string;
   symbol?: string;
   timeframe?: string;
   strategyName?: string;

@@ -204,3 +204,38 @@ export async function startSearch(params: RunSearchParams): Promise<StartSearchR
 export async function getSearchRun(id: string): Promise<SearchRunSummary> {
   return get<SearchRunSummary>(`/api/search/${encodeURIComponent(id)}`);
 }
+
+/**
+ * CandidateStrategy metadata enriched with its StrategyVersion.
+ * Returned by GET /api/search/:id/candidates.
+ */
+export interface CandidateItem {
+  readonly id: string;
+  readonly searchRunId: string;
+  readonly strategyVersionId: string;
+  readonly parameters: Record<string, unknown>;
+  readonly status: "PENDING" | "QUEUED" | "RUNNING" | "DONE" | "FAILED" | "SKIPPED";
+  readonly errorMessage: string | null;
+  readonly createdAt: string;
+  readonly strategyVersion: {
+    readonly id: string;
+    readonly name: string;
+    readonly implementationRef: string;
+    readonly definitionType: "BASE" | "COMPOSITE";
+    readonly definitionFamily: string;
+  } | null;
+}
+
+/**
+ * GET /api/search/:id/candidates
+ * Returns all CandidateStrategy rows produced by a SearchRun, with
+ * StrategyVersion data joined. Used to drive the Search → Backtest
+ * integration (each row has a "Run Backtest" action in the UI).
+ */
+export async function fetchSearchRunCandidates(
+  searchRunId: string,
+): Promise<CandidateItem[]> {
+  return get<CandidateItem[]>(
+    `/api/search/${encodeURIComponent(searchRunId)}/candidates`,
+  );
+}

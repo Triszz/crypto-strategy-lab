@@ -23,5 +23,5 @@ export {
 export { BacktestQueue, getBacktestQueue, type BacktestJobData, type BacktestJobProgress } from "./infrastructure/BacktestQueue";
 export { BacktestWorker, getBacktestWorker } from "./infrastructure/BacktestWorker";
 
-export { backtestController } from "./presentation/backtest.controller";
-export { backtestRoutes } from "./presentation/backtest.routes";
+export { BacktestController } from "./presentation/backtest.controller";
+export { backtestRouter } from "./presentation/backtest.routes";

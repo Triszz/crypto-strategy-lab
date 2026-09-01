@@ -9,6 +9,8 @@ export default defineConfig({
     exclude: ["node_modules", "dist"],
     setupFiles: ["./tests/setup.ts"],
     testTimeout: 10_000,
+    fileParallelism: false,
+    maxWorkers: 1,
   },
   resolve: {
     alias: {

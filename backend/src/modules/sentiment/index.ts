@@ -1,2 +1,5 @@
-// Placeholder barrel for the sentiment module.
-export {};
+export * from "./domain/sentiment.entity";
+export * from "./application/sentiment.service";
+export * from "./infrastructure/prisma-sentiment.repository";
+export * from "./infrastructure/lexicon-sentiment.analyzer";
+export * from "./presentation/sentiment.routes";

@@ -1,0 +1,51 @@
+import { Request, Response } from "express";
+import { LeaderboardService } from "../application/leaderboard.service";
+import { ApiResponse } from "../../../shared/types";
+
+export class LeaderboardController {
+  constructor(private readonly leaderboardService: LeaderboardService) {}
+
+  public getTopK = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const symbol = req.query.symbol as string | undefined;
+      const symbolId = req.query.symbolId as string | undefined;
+      const timeframe = req.query.timeframe as string | undefined;
+      const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 10;
+
+      const items = await this.leaderboardService.getTopK({ symbol, symbolId, timeframe, limit });
+
+      const response: ApiResponse<typeof items> = {
+        success: true,
+        data: items,
+        meta: { timestamp: new Date().toISOString() },
+      };
+      res.json(response);
+    } catch (err) {
+      const response: ApiResponse<null> = {
+        success: false,
+        error: { code: "LEADERBOARD_FETCH_ERROR", message: (err as Error).message },
+      };
+      res.status(500).json(response);
+    }
+  };
+
+  public getHistory = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { strategyVersionId } = req.params;
+      const history = await this.leaderboardService.getRankHistory(strategyVersionId);
+
+      const response: ApiResponse<typeof history> = {
+        success: true,
+        data: history,
+        meta: { timestamp: new Date().toISOString() },
+      };
+      res.json(response);
+    } catch (err) {
+      const response: ApiResponse<null> = {
+        success: false,
+        error: { code: "LEADERBOARD_HISTORY_ERROR", message: (err as Error).message },
+      };
+      res.status(500).json(response);
+    }
+  };
+}

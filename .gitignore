@@ -1,0 +1,47 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+logs/
+
+# Local env (NEVER commit real secrets)
+.env
+.env.local
+.env.*.local
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Coverage
+coverage/
+*.lcov
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+prisma/migrations/dev.db*
+
+# Vitest
+.vitest-cache/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# =========================================================
+# Personal knowledge base (KHÔNG commit lên repo chung)
+# - Chứa ghi chú học tập cá nhân
+# - Mỗi thành viên tự quản lý nội dung riêng trong này
+# =========================================================
+Knowledge/

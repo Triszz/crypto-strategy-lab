@@ -28,6 +28,14 @@ const RawEnvSchema = z.object({
   GEMINI_API_KEY: z.string().optional().default(""),
 
   CORS_ORIGINS: z.string().optional().default("*"),
+
+  // Reconciliation tuning (see docs/Market Data Service.md §15)
+  RECONCILE_ON_RECONNECT: z.coerce.boolean().default(true),
+  RECONCILE_INTERVAL_MS: z.coerce.number().int().nonnegative().default(60_000),
+
+  // Retention cap per (symbol, timeframe) — applied on boot to keep
+  // the candles table bounded. See docs/Market Data Service.md §6.3.
+  MAX_CANDLES_PER_CHART: z.coerce.number().int().positive().default(100),
 });
 
 export type RawEnv = z.infer<typeof RawEnvSchema>;

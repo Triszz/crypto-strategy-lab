@@ -2,6 +2,7 @@ import type { Logger } from "../../../shared/logger/logger";
 import type { Candle } from "../domain/Candle";
 import type { ChartConfig } from "../domain/ChartConfig";
 import { type Timeframe } from "../domain/Timeframe";
+import type { WsConnectionStatus } from "../domain/events";
 import {
   CANDLE_CLOSED_EVENT_VERSION,
   MARKET_DATA_EVENTS,
@@ -9,6 +10,7 @@ import {
 import type { BinanceWsAdapter } from "../infrastructure/BinanceWsAdapter";
 import { BackfillService } from "./BackfillService";
 import { DefaultChartSeeder, type DefaultChartSeederResult } from "./DefaultChartSeeder";
+import { ReconciliationService } from "./ReconciliationService";
 import { SymbolSyncService } from "./SymbolSyncService";
 import type { EventBus } from "../../../shared/event-bus/EventBus";
 import { getEventBus } from "../../../shared/event-bus/EventBus";
@@ -27,23 +29,28 @@ export interface MarketDataStartResult {
  *
  *   1. Refresh the symbols table from Binance.
  *   2. Seed default timeframes + chart panes if missing.
- *   3. Backfill the latest 1000 candles per default chart.
+ *   3. Backfill any candles newer than what's already in the DB
+ *      (incremental catch-up; preserves existing data).
  *   4. Connect the WebSocket adapter and subscribe to the 4 default
  *      streams so live updates flow as soon as the boot completes.
  *   5. Bridge WS events into the in-process EventBus for downstream
  *      consumers (Strategy, Search, Backtest, ...).
+ *   6. Start gap reconciliation (reconnect-triggered + periodic).
  *
  * `stop()` tears down the WebSocket cleanly and removes the in-process
  * subscribers. Re-running `start()` is supported — useful for tests.
  */
 export class MarketDataService {
   private wireDispose: (() => void) | null = null;
+  private unsubscribeWsStatus: (() => void) | null = null;
+  private reconnecting = false;
 
   constructor(
     private readonly symbolSync: SymbolSyncService,
     private readonly chartSeeder: DefaultChartSeeder,
     private readonly backfill: BackfillService,
     private readonly wsAdapter: BinanceWsAdapter,
+    private readonly reconciliation: ReconciliationService,
     private readonly repo: PostgresCandleRepository,
     private readonly logger: Logger,
     private readonly eventBus: EventBus = getEventBus(),
@@ -62,33 +69,33 @@ export class MarketDataService {
       "market-data.charts.loaded",
     );
 
-    // Clear old candles and re-backfill on every restart to ensure fresh data
-    await this.clearAndBackfill(chartConfigs);
+    // On boot, only fetch candles that are missing since the last
+    // run — keep existing data intact. If the DB is empty for a
+    // chart, `backfillMissing` falls back to seeding the latest N.
+    await this.backfill.backfillMissing(chartConfigs);
 
     // Wire WS -> EventBus *before* connecting so we never miss the
     // first "CandleClosed" emitted by the freshly opened stream.
     this.wireWsToEventBus();
+    this.wireReconnectReconciliation();
     await this.wsAdapter.connect();
     for (const chart of chartConfigs) {
       await this.wsAdapter.subscribe(chart.symbol, chart.timeframe);
     }
 
+    // Start the periodic reconciliation loop only after the WS is up.
+    // First reconnect transition is ignored (boot backfill already did
+    // the work), but the periodic timer provides the fallback net.
+    this.reconciliation.startPeriodic();
+
     this.logger.info("market-data.start.complete");
     return { symbols, defaults, chartConfigs };
   }
 
-  private async clearAndBackfill(chartConfigs: ChartConfig[]): Promise<void> {
-    if (chartConfigs.length === 0) return;
-
-    this.logger.info({ count: chartConfigs.length }, "market-data.clearing-old-candles");
-    await this.repo.deleteAll();
-
-    this.logger.info({ charts: chartConfigs.length }, "market-data.backfilling-after-clear");
-    await this.backfill.backfillInitial(chartConfigs);
-  }
-
   async stop(): Promise<void> {
     this.logger.info("market-data.stop");
+    this.reconciliation.stopPeriodic();
+    this.unwireWsStatus();
     this.unwire();
     try {
       await this.wsAdapter.disconnect();
@@ -179,6 +186,60 @@ export class MarketDataService {
       this.wsAdapter.off("CandleClosed", onClosedPersist);
       this.wsAdapter.off("CandleUpdating", onUpdating);
     };
+  }
+
+  /**
+   * Bridge `wsAdapter.status` into the reconciliation service. We track
+   * the edge `reconnecting → connected` so that the FIRST `connected`
+   * after boot (which is just the initial open) is ignored — boot
+   * backfill has already populated the DB. Subsequent transitions
+   * (i.e. genuine reconnects) trigger a per-stream gap fill.
+   *
+   * See docs/Market Data Service.md §15.4 (Giải pháp 1).
+   */
+  private wireReconnectReconciliation(): void {
+    if (this.unsubscribeWsStatus) return;
+
+    const onStatus = (status: WsConnectionStatus): void => {
+      if (status.state === "reconnecting") {
+        this.reconnecting = true;
+        return;
+      }
+      if (status.state === "connected" && this.reconnecting) {
+        // Edge: reconnecting → connected. Fire-and-forget; errors are
+        // logged inside `reconcileAll`.
+        this.reconnecting = false;
+        this.logger.info(
+          { since: status.since },
+          "market-data.reconcile.reconnect-triggered",
+        );
+        void this.reconciliation.reconcileAll("reconnect").then((results) => {
+          const filled = results.filter((r) => !r.skipped);
+          if (filled.length > 0) {
+            this.logger.info(
+              {
+                streams: filled.length,
+                totalFetched: filled.reduce((s, r) => s + r.fetched, 0),
+                totalUpserted: filled.reduce((s, r) => s + r.upserted, 0),
+              },
+              "market-data.reconcile.reconnect-filled",
+            );
+          }
+        });
+      }
+    };
+
+    this.wsAdapter.on("status", onStatus);
+    this.unsubscribeWsStatus = (): void => {
+      this.wsAdapter.off("status", onStatus);
+    };
+  }
+
+  private unwireWsStatus(): void {
+    if (this.unsubscribeWsStatus) {
+      this.unsubscribeWsStatus();
+      this.unsubscribeWsStatus = null;
+    }
   }
 
   private unwire(): void {

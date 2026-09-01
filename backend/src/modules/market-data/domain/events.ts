@@ -35,6 +35,13 @@ export interface CandleClosedEvent {
   payload: CandleClosedEventPayload;
 }
 
+export interface CandleUpdatingEvent {
+  event: "CandleUpdating";
+  version: typeof CANDLE_CLOSED_EVENT_VERSION;
+  timestamp: number;
+  payload: CandleClosedEventPayload;
+}
+
 export type WsConnectionStatus =
   | { state: "connecting" }
   | { state: "connected"; since: number }

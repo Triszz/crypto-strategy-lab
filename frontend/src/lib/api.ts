@@ -31,51 +31,110 @@ interface ApiSuccess<T> {
   data: T;
 }
 
+/**
+ * Backend error shapes are inconsistent (legacy routes return a plain
+ * string; the global error middleware returns an object). We accept both
+ * and normalise to a single string message at the boundary.
+ */
+interface ApiErrorBody {
+  code?: string;
+  message?: string;
+  details?: unknown;
+}
+
 interface ApiError {
   success: false;
-  error: string;
-  details?: unknown[];
+  error: string | ApiErrorBody;
+  details?: unknown;
 }
 
 type ApiResponse<T> = ApiSuccess<T> | ApiError;
 
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
+/** Extract a printable error message from any backend error response shape. */
+function extractErrorMessage(json: unknown, status: number): string {
+  if (typeof json !== "object" || json === null) return `HTTP ${status}`;
+  const e = (json as { error?: unknown }).error;
+  if (typeof e === "string" && e.length > 0) return e;
+  if (typeof e === "object" && e !== null) {
+    const m = (e as { message?: unknown }).message;
+    const c = (e as { code?: unknown }).code;
+    if (typeof m === "string" && m.length > 0) return m;
+    if (typeof c === "string" && c.length > 0) return c;
+  }
+  return `HTTP ${status}`;
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    credentials: "include",
-  });
-  const json: ApiResponse<T> = await res.json();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, { credentials: "include" });
+  } catch (e) {
+    throw new Error(`Network error: ${(e as Error).message ?? "unknown"}`);
+  }
+
+  let json: ApiResponse<T>;
+  try {
+    json = (await res.json()) as ApiResponse<T>;
+  } catch {
+    throw new Error(`Invalid JSON from server (HTTP ${res.status})`);
+  }
+
   if (!json.success) {
-    throw new Error((json as ApiError).error ?? `HTTP ${res.status}`);
+    throw new Error(extractErrorMessage(json, res.status));
   }
   return (json as ApiSuccess<T>).data;
 }
 
 async function post<T, B = unknown>(path: string, body: B): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body),
-  });
-  const json: ApiResponse<T> = await res.json();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error(`Network error: ${(e as Error).message ?? "unknown"}`);
+  }
+
+  let json: ApiResponse<T>;
+  try {
+    json = (await res.json()) as ApiResponse<T>;
+  } catch {
+    throw new Error(`Invalid JSON from server (HTTP ${res.status})`);
+  }
+
   if (!json.success) {
-    throw new Error((json as ApiError).error ?? `HTTP ${res.status}`);
+    throw new Error(extractErrorMessage(json, res.status));
   }
   return (json as ApiSuccess<T>).data;
 }
 
 async function put<T, B = unknown>(path: string, body: B): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    credentials: "include",
-    body: JSON.stringify(body),
-  });
-  const json: ApiResponse<T> = await res.json();
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      credentials: "include",
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    throw new Error(`Network error: ${(e as Error).message ?? "unknown"}`);
+  }
+
+  let json: ApiResponse<T>;
+  try {
+    json = (await res.json()) as ApiResponse<T>;
+  } catch {
+    throw new Error(`Invalid JSON from server (HTTP ${res.status})`);
+  }
+
   if (!json.success) {
-    throw new Error((json as ApiError).error ?? `HTTP ${res.status}`);
+    throw new Error(extractErrorMessage(json, res.status));
   }
   return (json as ApiSuccess<T>).data;
 }

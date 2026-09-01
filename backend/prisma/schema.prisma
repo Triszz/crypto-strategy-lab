@@ -5,13 +5,14 @@ generator client {
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 model Timeframe {
   id           String        @id @default(uuid()) @db.Uuid
-  code         String        @unique @db.VarChar(8) // "1m", "5m", "15m", "1h", "4h", "1d"
-  label        String        @map("label") @db.VarChar(32) // "1 Minute", "5 Minutes"
-  seconds      Int           @db.Integer // 60, 300, 900, 3600, 14400, 86400
+  code         String        @unique @db.VarChar(8)
+  label        String        @map("label") @db.VarChar(32)
+  seconds      Int
   isActive     Boolean       @default(true) @map("is_active")
   createdAt    DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
   candles      Candle[]
@@ -22,7 +23,7 @@ model Timeframe {
 
 model Symbol {
   id                 String             @id @default(uuid()) @db.Uuid
-  symbol             String             @db.VarChar(32)
+  symbol             String             @unique @db.VarChar(32)
   baseAsset          String             @map("base_asset") @db.VarChar(16)
   quoteAsset         String             @map("quote_asset") @db.VarChar(16)
   isActive           Boolean            @default(true) @map("is_active")
@@ -35,27 +36,24 @@ model Symbol {
   searchRuns         SearchRun[]
   trades             Trade[]
 
-  @@unique([symbol])
   @@map("symbols")
 }
 
 model ChartConfig {
   id          String    @id @default(uuid()) @db.Uuid
-  chartIndex  Int       @map("chart_index")
+  chartIndex  Int       @unique @map("chart_index")
   pair        String    @default("BTCUSDT")
   timeframeId String    @map("timeframe_id") @db.Uuid
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime  @default(now()) @map("updated_at") @db.Timestamptz(3)
   timeframe   Timeframe @relation(fields: [timeframeId], references: [id])
 
-  @@unique([chartIndex])
   @@map("chart_configs")
 }
 
 model Candle {
   id          String    @id @default(uuid()) @db.Uuid
   symbolId    String    @map("symbol_id") @db.Uuid
-  timeframeId String    @map("timeframe_id") @db.Uuid
   openTime    BigInt    @map("open_time")
   closeTime   BigInt    @map("close_time")
   open        Decimal   @db.Decimal(24, 10)
@@ -66,6 +64,7 @@ model Candle {
   quoteVolume Decimal   @map("quote_volume") @db.Decimal(32, 10)
   trades      Int
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  timeframeId String    @map("timeframe_id") @db.Uuid
   symbol      Symbol    @relation(fields: [symbolId], references: [id], onDelete: Cascade)
   timeframe   Timeframe @relation(fields: [timeframeId], references: [id])
 

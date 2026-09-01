@@ -1,7 +1,7 @@
 import { getEventBus } from "../../../shared/event-bus/EventBus";
 import { logger } from "../../../shared/logger/logger";
 import { BacktestService, type RunBacktestParams } from "../application/BacktestService";
-import { getBacktestQueue, type BacktestJobProgress } from "./BacktestQueue";
+import type { BacktestJobProgress } from "./BacktestQueue";
 
 export interface BacktestWorkerConfig {
   concurrency?: number;

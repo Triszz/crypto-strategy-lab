@@ -14,30 +14,47 @@ export class BacktestController {
   /**
    * POST /api/backtests/run
    * Triggers a backtest job asynchronously via BacktestQueue or executes synchronously if requested.
+   *
+   * Accepts either:
+   *   - candidateId (UUID of a CandidateStrategy from Search) → candidate-driven backtest
+   *   - strategyName (string, legacy) → name-based backtest
+   *
+   * symbol / timeframe are optional overrides. When `candidateId` is
+   * supplied WITHOUT explicit symbol/timeframe, the controller passes
+   * `undefined` so `runBacktest` falls through to the candidate's
+   * SearchRun values. The defaults below only apply when no candidateId
+   * is provided (the legacy strategyName path).
    */
   public async runBacktest(req: Request, res: Response): Promise<void> {
     try {
-      const {
-        symbol = "BTCUSDT",
-        timeframe = "5m",
-        strategyName = "MA Crossover",
-        initialCapital = 10000,
-        feePercent = 0.08,
-        slippageBps = 5,
-        stopLossPct,
-        takeProfitPct,
-        sync = false,
-      } = req.body || {};
+      const body = req.body || {};
+      const candidateId = body.candidateId as string | undefined;
+
+      // If candidateId is supplied, only override symbol/timeframe when the
+      // caller explicitly passed them — otherwise the candidate's own
+      // SearchRun values should win.
+      const symbol =
+        body.symbol ?? (candidateId ? undefined : "BTCUSDT");
+      const timeframe =
+        body.timeframe ?? (candidateId ? undefined : "5m");
+      const strategyName = body.strategyName ?? "MA Crossover";
+      const initialCapital = body.initialCapital ?? 10000;
+      const feePercent = body.feePercent ?? 0.08;
+      const slippageBps = body.slippageBps ?? 5;
+      const stopLossPct = body.stopLossPct;
+      const takeProfitPct = body.takeProfitPct;
+      const sync = body.sync ?? false;
 
       const params = {
+        candidateId,
         symbol,
         timeframe,
         strategyName,
         initialCapital: Number(initialCapital),
         feePercent: Number(feePercent),
         slippageBps: Number(slippageBps),
-        stopLossPct: stopLossPct ? Number(stopLossPct) : undefined,
-        takeProfitPct: takeProfitPct ? Number(takeProfitPct) : undefined,
+        stopLossPct: stopLossPct !== undefined ? Number(stopLossPct) : undefined,
+        takeProfitPct: takeProfitPct !== undefined ? Number(takeProfitPct) : undefined,
       };
 
       if (sync) {

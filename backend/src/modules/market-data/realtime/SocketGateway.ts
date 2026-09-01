@@ -1,5 +1,4 @@
 import type { Server as IOServer, Socket } from "socket.io";
-import type { Logger } from "../../../shared/logger/logger";
 import { getSocketServer } from "../../../infrastructure/websocket/socket";
 import type { Candle } from "../domain/Candle";
 import {
@@ -10,6 +9,7 @@ import {
 import {
   CANDLE_CLOSED_EVENT_VERSION,
   type CandleClosedEvent,
+  type CandleUpdatingEvent,
 } from "../domain/events";
 import { candleKey, candleRoom } from "../domain/Candle";
 import type { BinanceWsAdapter } from "../infrastructure/BinanceWsAdapter";
@@ -24,20 +24,27 @@ const MAX_TIMEFRAMES_PER_SUBSCRIBE = 4;
  *     them into ref-counted `wsAdapter.subscribe(...)` calls.
  *   - Joins clients into Socket.IO rooms keyed by stream so updates
  *     only land on interested subscribers.
- *   - Re-broadcasts every `CandleClosed` from the WS adapter as the
- *     canonical wire event (matches `docs/Market Data Service.md` §7.2).
+ *   - Re-broadcasts every `CandleClosed` and `CandleUpdating` from
+ *     the WS adapter as the canonical wire events (see
+ *     `docs/Market Data Service.md` §8.2 and §11.3).
  *
- * Per-event protocol (version "1.0"):
+ * Per-event protocol (version "1.0", payload schema shared across
+ * both event names — see `CandleClosedEventPayload`):
  *
  *   client → server
  *     { type: "subscribe",   symbol: "BTCUSDT", timeframes: ["1m","1h"] }
  *     { type: "unsubscribe", symbol: "BTCUSDT", timeframes: ["1m"] }
  *
  *   server → client
- *     { type: "subscribed",   symbol, timeframes }
- *     { type: "unsubscribed", symbol, timeframes }
- *     { type: "CandleClosed", version, timestamp, payload: {...} }
- *     { type: "error", code, message }
+ *     { type: "subscribed",    symbol, timeframes }
+ *     { type: "unsubscribed",  symbol, timeframes }
+ *     { type: "CandleClosed",  version, timestamp, payload: {...} }
+ *     { type: "CandleUpdating",version, timestamp, payload: {...} }
+ *     { type: "error",         code, message }
+ *
+ * Subscribed clients join Socket.IO rooms keyed by stream
+ * (`candles:{symbol-lowercase}@{timeframe}`) so each tick only reaches
+ * interested subscribers.
  */
 export class SocketGateway {
   private readonly clientSubs = new Map<string, Set<string>>();
@@ -47,7 +54,6 @@ export class SocketGateway {
   constructor(
     private readonly wsAdapter: BinanceWsAdapter,
     private readonly marketData: MarketDataService,
-    private readonly logger: Logger,
   ) {}
 
   private resolveIo(): IOServer {
@@ -59,11 +65,16 @@ export class SocketGateway {
   start(): void {
     if (this.detach) return;
     const io = this.resolveIo();
-    const handleClosed = (candle: Candle): void => this.broadcast(candle);
+    const handleClosed = (candle: Candle): void => {
+      this.broadcast(candle, "CandleClosed");
+    };
+    const handleUpdating = (candle: Candle): void => {
+      this.broadcast(candle, "CandleUpdating");
+    };
     this.wsAdapter.on("CandleClosed", handleClosed);
+    this.wsAdapter.on("CandleUpdating", handleUpdating);
 
     io.on("connection", (socket: Socket) => {
-      this.logger.info({ socketId: socket.id }, "market-data.client.connected");
       this.clientSubs.set(socket.id, new Set());
 
       socket.on("subscribe", async (raw: unknown) => {
@@ -114,20 +125,17 @@ export class SocketGateway {
         }
       });
 
-      socket.on("disconnect", (reason) => {
+      socket.on("disconnect", () => {
         // We intentionally do NOT call wsAdapter.unsubscribe here —
         // the upstream is ref-counted and other clients may still be
         // subscribed to the same stream.
         this.clientSubs.delete(socket.id);
-        this.logger.info(
-          { socketId: socket.id, reason },
-          "market-data.client.disconnected",
-        );
       });
     });
 
     this.detach = (): void => {
       this.wsAdapter.off("CandleClosed", handleClosed);
+      this.wsAdapter.off("CandleUpdating", handleUpdating);
       this.clientSubs.clear();
     };
   }
@@ -139,30 +147,44 @@ export class SocketGateway {
     }
   }
 
-  private broadcast(candle: Candle): void {
+  private broadcast(
+    candle: Candle,
+    eventName: "CandleClosed" | "CandleUpdating",
+  ): void {
     const room = candleRoom(candle);
-    const event: CandleClosedEvent = {
-      event: "CandleClosed",
-      version: CANDLE_CLOSED_EVENT_VERSION,
-      timestamp: Date.now(),
-      payload: {
-        symbol: candle.symbol,
-        timeframe: candle.timeframe,
-        candle: {
-          openTime: candle.openTime,
-          closeTime: candle.closeTime,
-          open: candle.open,
-          high: candle.high,
-          low: candle.low,
-          close: candle.close,
-          volume: candle.volume,
-          quoteVolume: candle.quoteVolume,
-          trades: candle.trades,
-        },
-        candleKey: candleKey(candle),
+    const payload = {
+      symbol: candle.symbol,
+      timeframe: candle.timeframe,
+      candle: {
+        openTime: candle.openTime,
+        closeTime: candle.closeTime,
+        open: candle.open,
+        high: candle.high,
+        low: candle.low,
+        close: candle.close,
+        volume: candle.volume,
+        quoteVolume: candle.quoteVolume,
+        trades: candle.trades,
       },
+      candleKey: candleKey(candle),
     };
-    this.resolveIo().to(room).emit("CandleClosed", event);
+    if (eventName === "CandleClosed") {
+      const event: CandleClosedEvent = {
+        event: "CandleClosed",
+        version: CANDLE_CLOSED_EVENT_VERSION,
+        timestamp: Date.now(),
+        payload,
+      };
+      this.resolveIo().to(room).emit("CandleClosed", event);
+    } else {
+      const event: CandleUpdatingEvent = {
+        event: "CandleUpdating",
+        version: CANDLE_CLOSED_EVENT_VERSION,
+        timestamp: Date.now(),
+        payload,
+      };
+      this.resolveIo().to(room).emit("CandleUpdating", event);
+    }
   }
 
   private ensureSubs(socketId: string): Set<string> {

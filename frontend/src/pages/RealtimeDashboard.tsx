@@ -1,9 +1,15 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
 import {
-  ChevronDown,
-  HelpCircle,
-  Bell,
-  ArrowUpRight,
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
+import { 
+  ChevronDown, 
+  HelpCircle, 
+  Bell, 
+  ArrowUpRight, 
   ArrowDownRight,
   Loader2,
   AlertCircle,
@@ -15,9 +21,11 @@ import {
   disconnect,
   subscribe,
   onCandleClosed,
+  onCandleUpdating,
   onWsStatus,
   isConnected,
   type CandleClosedEvent,
+  type CandleUpdatingEvent,
   type Timeframe,
 } from "../lib/socket";
 import {
@@ -28,6 +36,7 @@ import {
   type ChartConfig,
   type RawCandle,
 } from "../lib/api";
+import LightweightCandlestickChart from "../components/LightweightCandlestickChart";
 
 // ── local candle shape for the chart ──────────────────────────────────────────
 
@@ -63,24 +72,51 @@ function rawToLocal(c: RawCandle, tf: Timeframe): LocalCandle {
   };
 }
 
+/** Convert any thrown value (Error, object, string) into a printable message. */
+function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === "string") return err;
+  if (typeof err === "object" && err !== null) {
+    const anyErr = err as { message?: unknown; error?: unknown };
+    if (typeof anyErr.message === "string") return anyErr.message;
+    if (typeof anyErr.error === "string") return anyErr.error;
+    if (typeof anyErr.error === "object" && anyErr.error !== null) {
+      const nested = anyErr.error as { message?: unknown };
+      if (typeof nested.message === "string") return nested.message;
+    }
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return "Unknown error";
+    }
+  }
+  return "Unknown error";
+}
+
 function updateCandleList(
   list: LocalCandle[],
   raw: RawCandle,
   tf: Timeframe,
 ): LocalCandle[] {
   const incoming = rawToLocal(raw, tf);
-  const last = list[list.length - 1];
 
-  if (last && last.openTime === incoming.openTime) {
-    // Same candle → update in place
+  const existingIndex = list.findIndex(
+    (c) => c.openTime === incoming.openTime,
+  );
+
+  // Existing candle → update
+  if (existingIndex !== -1) {
     const updated = [...list];
-    updated[updated.length - 1] = incoming;
+    updated[existingIndex] = incoming;
     return updated;
   }
 
-  // New candle → append, keep last 100
-  const next = [...list, incoming];
-  return next.length > 100 ? next.slice(next.length - 100) : next;
+  // New candle → append, then sort by openTime and keep last 500
+  const next = [...list, incoming].sort(
+    (a, b) => a.openTime - b.openTime,
+  );
+
+  return next.length > 500 ? next.slice(-500) : next;
 }
 
 function computeMA(candles: LocalCandle[], period: number = 20): (number | null)[] {
@@ -124,15 +160,101 @@ function StatusPill({ status, latency }: { status: WsStatusState; latency: numbe
   );
 }
 
-// ── chart pane ────────────────────────────────────────────────────────────────
+// ── lightweight chart pane ──────────────────────────────────────────────────
 
-// Viewport state: which candles are visible and offset
+function LightweightChartPane({
+  chartIndex,
+  tf,
+  candles,
+  priceChangePct,
+  onTimeframeChange,
+  isLoadingTf,
+  onLoadOlder,
+}: {
+  chartIndex: number;
+  tf: Timeframe;
+  candles: LocalCandle[];
+  priceChangePct: number;
+  onTimeframeChange: (chartIndex: number, newTf: Timeframe) => void;
+  isLoadingTf: boolean;
+  onLoadOlder: () => void;
+}) {
+  const lastCandle = candles[candles.length - 1];
+  const isUp = priceChangePct >= 0;
+
+  return (
+    <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 relative overflow-hidden group hover:shadow-md hover:border-slate-200/70 transition-all">
+      <div className="flex justify-between items-start">
+        <div>
+          <div className="flex items-center gap-2">
+            <span className="font-extrabold text-sm text-slate-800">
+              {lastCandle ? "BTCUSDT" : "—"}
+            </span>
+            <div className="relative">
+              <select
+                className="appearance-none bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-600 text-xs font-bold px-2.5 py-1 rounded-lg cursor-pointer pr-7 transition-colors focus:outline-none focus:ring-2 focus:ring-blue-400"
+                value={tf}
+                onChange={(e) => onTimeframeChange(chartIndex, e.target.value as Timeframe)}
+              >
+                {(["1m", "5m", "15m", "1h", "4h", "1d"] as Timeframe[]).map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+              <ChevronDown className="w-3 h-3 text-blue-500 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+            {isLoadingTf && <Loader2 className="w-3.5 h-3.5 animate-spin text-blue-500" />}
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+          </div>
+          <div className="flex items-center gap-2 mt-1">
+            <span className="text-[11px] font-bold text-blue-500 uppercase">MA(15)</span>
+            {lastCandle && (
+              <span className="text-[11px] font-semibold text-slate-500">
+                {lastCandle.close.toLocaleString("en-US", { minimumFractionDigits: 2 })}
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div className="ml-3">
+          <span
+            className={`px-3 py-1 rounded-lg text-xs font-black tracking-wider ${
+              isUp
+                ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                : "bg-red-50 text-red-700 border border-red-200"
+            }`}
+          >
+            {isUp ? "BUY" : "SELL"}
+          </span>
+        </div>
+      </div>
+
+      <LightweightCandlestickChart
+        candles={candles}
+        onLoadOlder={onLoadOlder}
+      />
+
+      <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
+          <span className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm bg-emerald-500" />
+        </div>
+        {candles.length > 0 && (
+          <span className="text-[10px] font-medium text-slate-400">
+            {candles.length} candles
+          </span>
+        )}
+      </div>
+    </article>
+  );
+}
+
+
 interface ViewportState {
-  candleOffset: number; // how many candles we've scrolled left from the latest
+  startIdx: number;
   isLoadingOlder: boolean;
 }
 
-function ChartPane({
+export function LegacyChartPane({
   chartIndex,
   tf,
   candles,
@@ -158,78 +280,155 @@ function ChartPane({
   const maVals = computeMA(candles, 15);
 
   // SVG dimensions
-  const W = 500, H = 260;
-  const padR = 65, padTop = 24, padBot = 28;
+  const W = 500;
+  const priceH = 180;
+  const volH = 70;
+  const padR = 65, padTop = 20, padBot = 20;
+  const volGap = 8;
 
-  // Candles visible in viewport
   const VISIBLE_CANDLES = 60;
+  const LOAD_MARGIN = 8; // candles from edge before triggering load
 
-  // Viewport state
+  // Viewport: startIdx = leftmost candle index (0 = oldest, len-1 = newest)
   const [viewport, setViewport] = useState<ViewportState>({
-    candleOffset: 0,
+    startIdx: 0,
     isLoadingOlder: false,
   });
 
   // Drag state
   const [isDragging, setIsDragging] = useState(false);
   const [dragStartX, setDragStartX] = useState(0);
-  const [dragStartOffset, setDragStartOffset] = useState(0);
+  const [dragStartStartIdx, setDragStartStartIdx] = useState(0);
 
-  // Candles to render: from (total - offset - visible) to (total - offset)
+  // liveMode: true when user is viewing the rightmost (newest) edge
+  const [liveMode, setLiveMode] = useState(true);
+
   const totalCandles = candles.length;
-  const maxOffset = Math.max(0, totalCandles - VISIBLE_CANDLES);
-  const clampedOffset = Math.min(viewport.candleOffset, maxOffset);
-  const startIdx = Math.max(0, totalCandles - clampedOffset - VISIBLE_CANDLES);
-  const endIdx = totalCandles - clampedOffset;
-  const visibleCandles = candles.slice(startIdx, endIdx);
+  const maxStartIdx = Math.max(0, totalCandles - VISIBLE_CANDLES);
 
-  // Price range for visible candles only
-  const prices = visibleCandles.flatMap((c) => [c.open, c.close, c.high, c.low]);
+  // Newest candle openTime — used to detect a *new* candle arrival
+  // (same openTime just means an update to the current candle, not a new one)
+  const newestOpenTime = candles[candles.length - 1]?.openTime ?? null;
+  const previousNewestRef = useRef<number | null>(null);
+
+  // Initialize viewport to show newest candles ONLY when timeframe changes.
+  // IMPORTANT: do NOT depend on totalCandles — otherwise loading older data
+  // would jump the viewport back to the newest edge.
+  useEffect(() => {
+    setViewport({
+      startIdx: Math.max(0, totalCandles - VISIBLE_CANDLES),
+      isLoadingOlder: false,
+    });
+    setLiveMode(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tf]);
+
+  // Auto-follow realtime: when a new candle (by openTime) arrives AND liveMode
+  // is on, jump viewport to newest. Same-candle updates do NOT trigger this.
+  useEffect(() => {
+    if (newestOpenTime === null) return;
+
+    const previous = previousNewestRef.current;
+
+    if (
+      liveMode &&
+      previous !== null &&
+      newestOpenTime > previous
+    ) {
+      setViewport((prev) => ({
+        ...prev,
+        startIdx: Math.max(0, totalCandles - VISIBLE_CANDLES),
+      }));
+    }
+
+    previousNewestRef.current = newestOpenTime;
+  }, [newestOpenTime, totalCandles, liveMode]);
+
+  // Clamp startIdx
+  const clampedStartIdx = Math.min(viewport.startIdx, maxStartIdx);
+  const endIdx = Math.min(clampedStartIdx + VISIBLE_CANDLES, totalCandles);
+
+  // Visible candles in chronological order:
+// candles[0]=oldest ... candles[len-1]=newest
+// visibleCandles[0]=oldest (LEFT) ... visibleCandles[N-1]=newest (RIGHT)
+  const visibleCandles = candles.slice(clampedStartIdx, endIdx);
+
+  // Candlesticks:
+  // LEFT  = oldest
+  // RIGHT = newest
+  const drawCandles = visibleCandles;
+  const chartWidth = W - padR;
+  const candleWidth = chartWidth / Math.max(drawCandles.length, 1);
+
+  const getX = (localIdx: number) => localIdx * candleWidth + candleWidth / 2;
+
+  // Price range (needed for getPriceY)
+  const prices = drawCandles.flatMap((c) => [c.open, c.close, c.high, c.low]);
   const minP = prices.length ? Math.min(...prices) * 0.9995 : currentPrice * 0.998;
   const maxP = prices.length ? Math.max(...prices) * 1.0005 : currentPrice * 1.002;
 
-  const chartWidth = W - padR;
-  const candleWidth = chartWidth / Math.max(visibleCandles.length, 1);
+  // Y axis
+  const getPriceY = (v: number) =>
+    priceH - padTop - ((v - minP) * (priceH - padTop - padBot)) / (maxP - minP);
 
-  const getX = (localIdx: number) => localIdx * candleWidth + candleWidth / 2;
-  const getY = (v: number) =>
-    H - padBot - ((v - minP) * (H - padTop - padBot)) / (maxP - minP);
+  // MA path — drawCandles[0] is oldest (LEFT), drawCandles[length-1] is newest (RIGHT)
+  const maPath = drawCandles.reduce((path, _c, localIdx) => {
+    const globalIdx = clampedStartIdx + localIdx;
+    const v = maVals[globalIdx];
+    if (v === null) return path;
+    const cmd = path === "" ? "M" : "L";
+    return `${path} ${cmd} ${getX(localIdx)} ${getPriceY(v)}`;
+  }, "");
 
-  const maxVol = visibleCandles.length
-    ? Math.max(...visibleCandles.map((c) => c.volume))
+  const volTop = 4;
+  const volBottom = volH - 14;
+  const maxVol = drawCandles.length
+    ? Math.max(...drawCandles.map((c) => c.volume))
     : 1000;
   const getVolY = (v: number) =>
-    H - padBot - (v * 50) / maxVol;
+    volBottom - ((v / maxVol) * (volBottom - volTop));
 
-  // Mouse handlers for pan
+  // ── Mouse drag ─────────────────────────────────────────────────────────────
   const handleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault();
     setIsDragging(true);
     setDragStartX(e.clientX);
-    setDragStartOffset(viewport.candleOffset);
+    setDragStartStartIdx(clampedStartIdx);
   };
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       if (!isDragging) return;
-      const dx = e.clientX - dragStartX; // drag RIGHT = older data
+
+      // Drag LEFT  (dx < 0) → startIdx tăng → xem NEWER
+      // Drag RIGHT (dx > 0) → startIdx giảm → xem OLDER
+      const dx = e.clientX - dragStartX;
       const candleShift = dx / candleWidth;
-      const newOffset = Math.max(0, dragStartOffset + candleShift);
+      const newStartIdx = Math.max(0, Math.min(
+        Math.round(dragStartStartIdx - candleShift),
+        maxStartIdx,
+      ));
 
-      setViewport((prev) => ({ ...prev, candleOffset: newOffset }));
+      // Update liveMode: at rightmost edge → liveMode on
+      const atRightEdge = newStartIdx >= maxStartIdx - 1;
+      setLiveMode(atRightEdge);
 
-      // Auto-load when near the right edge (older data)
-      const nearRightEdge = newOffset >= maxOffset - 5 && !viewport.isLoadingOlder;
-      if (nearRightEdge && candles.length > 0) {
+      setViewport((prev) => ({ ...prev, startIdx: newStartIdx }));
+
+      // Near LEFT edge (viewing oldest data) → load older
+      const nearLeftEdge = newStartIdx <= LOAD_MARGIN && !viewport.isLoadingOlder;
+      if (nearLeftEdge && totalCandles > 0) {
         setViewport((prev) => ({ ...prev, isLoadingOlder: true }));
         onLoadOlder();
-        // Reset loading flag after a delay
         setTimeout(() => {
           setViewport((prev) => ({ ...prev, isLoadingOlder: false }));
-        }, 1000);
+        }, 1500);
       }
+      // NOTE: load newer is intentionally removed — WebSocket continuously
+      // appends/updates the latest candle in real time.
     },
-    [isDragging, dragStartX, dragStartOffset, candleWidth, clampedOffset, maxOffset, candles.length, onLoadOlder],
+    [isDragging, dragStartX, dragStartStartIdx, candleWidth, maxStartIdx,
+     viewport.isLoadingOlder, totalCandles, onLoadOlder],
   );
 
   const handleMouseUp = useCallback(() => {
@@ -240,23 +439,20 @@ function ChartPane({
     setIsDragging(false);
   }, []);
 
-  // Handle scroll wheel for zoom (optional)
-  const handleWheel = useCallback(
-    (e: React.WheelEvent) => {
-      e.preventDefault();
-      const delta = e.deltaY > 0 ? 5 : -5;
-      setViewport((prev) => ({
-        ...prev,
-        candleOffset: Math.max(0, Math.min(prev.candleOffset + delta, maxOffset)),
-      }));
-    },
-    [maxOffset],
-  );
+  // NOTE: scroll wheel intentionally does NOT pan the chart.
+  // Only mouse drag pans the viewport.
 
-  // Button to scroll to latest (rightmost)
+  // ── Buttons ─────────────────────────────────────────────────────────────────
   const scrollToLatest = () => {
-    setViewport((prev) => ({ ...prev, candleOffset: maxOffset }));
+    setViewport((prev) => ({ ...prev, startIdx: maxStartIdx }));
+    setLiveMode(true);
   };
+
+  // How far the user has scrolled from the newest (for "Historical" badge)
+  const candlesFromNewest = Math.max(
+    0,
+    totalCandles - (clampedStartIdx + VISIBLE_CANDLES),
+  );
 
   return (
     <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 relative overflow-hidden group hover:shadow-md hover:border-slate-200/70 transition-all">
@@ -306,178 +502,175 @@ function ChartPane({
         </div>
       </div>
 
-      {/* SVG Chart */}
+      {/* SVG Charts */}
       <div
-        className="h-[260px] relative w-full mt-2 select-none"
+        className="relative w-full select-none mt-2"
+        style={{ height: priceH + volGap + volH + 20, cursor: isDragging ? "grabbing" : "grab" }}
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseLeave}
-        onWheel={handleWheel}
-        style={{ cursor: isDragging ? "grabbing" : "grab" }}
       >
-        {visibleCandles.length > 0 ? (
-          <svg
-            className="w-full h-full"
-            viewBox={`0 0 ${W} ${H}`}
-            preserveAspectRatio="none"
-          >
-            {/* Grid */}
-            <line
-              x1={0} y1={getY(minP + (maxP - minP) * 0.25)}
-              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.25)}
-              stroke="#f1f5f9" strokeDasharray="3,3"
-            />
-            <line
-              x1={0} y1={getY(minP + (maxP - minP) * 0.5)}
-              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.5)}
-              stroke="#f1f5f9" strokeDasharray="3,3"
-            />
-            <line
-              x1={0} y1={getY(minP + (maxP - minP) * 0.75)}
-              x2={W - padR} y2={getY(minP + (maxP - minP) * 0.75)}
-              stroke="#f1f5f9" strokeDasharray="3,3"
-            />
+        {drawCandles.length > 0 ? (
+          <>
+            {/* Price Chart SVG */}
+            <svg
+              className="w-full absolute"
+              style={{ height: priceH }}
+              viewBox={`0 0 ${W} ${priceH}`}
+              preserveAspectRatio="none"
+            >
+              {/* Grid lines */}
+              <line x1={0} y1={getPriceY(minP + (maxP - minP) * 0.25)} x2={W - padR} y2={getPriceY(minP + (maxP - minP) * 0.25)} stroke="#f1f5f9" strokeDasharray="3,3" />
+              <line x1={0} y1={getPriceY(minP + (maxP - minP) * 0.5)} x2={W - padR} y2={getPriceY(minP + (maxP - minP) * 0.5)} stroke="#f1f5f9" strokeDasharray="3,3" />
+              <line x1={0} y1={getPriceY(minP + (maxP - minP) * 0.75)} x2={W - padR} y2={getPriceY(minP + (maxP - minP) * 0.75)} stroke="#f1f5f9" strokeDasharray="3,3" />
 
-            {/* Volume bars */}
-            {visibleCandles.map((c, i) => {
-              const x = getX(i);
-              const y = getVolY(c.volume);
-              const isGreen = c.close >= c.open;
-              const bw = Math.max(2, candleWidth * 0.7);
-              return (
-                <rect
-                  key={`vol-${startIdx + i}`}
-                  x={x - bw / 2}
-                  y={y}
-                  width={bw}
-                  height={H - padBot - y}
-                  fill={isGreen ? "#a7f3d0" : "#fecaca"}
-                  opacity={0.65}
-                />
-              );
-            })}
+              {/* Candlesticks — LEFT = oldest, RIGHT = newest */}
+              {drawCandles.map((c, localIdx) => {
+                const x = getX(localIdx);
+                const isGreen = c.close >= c.open;
+                const color = isGreen ? "#10b981" : "#ef4444";
+                const bw = Math.max(3, candleWidth * 0.7);
+                // Global index: drawCandles[0] is the leftmost (oldest) visible candle.
+                const globalIdx = clampedStartIdx + localIdx;
+                return (
+                  <g key={`candle-${globalIdx}`}>
+                    <line x1={x} y1={getPriceY(c.high)} x2={x} y2={getPriceY(c.low)} stroke={color} strokeWidth={1.2} />
+                    <rect
+                      x={x - bw / 2}
+                      y={Math.min(getPriceY(c.open), getPriceY(c.close))}
+                      width={bw}
+                      height={Math.max(1.5, Math.abs(getPriceY(c.open) - getPriceY(c.close)))}
+                      fill={color} stroke={color} strokeWidth={0.5} rx={0.5}
+                    />
+                  </g>
+                );
+              })}
 
-            {/* Candlesticks */}
-            {visibleCandles.map((c, i) => {
-              const x = getX(i);
-              const isGreen = c.close >= c.open;
-              const color = isGreen ? "#10b981" : "#ef4444";
-              const bw = Math.max(3, candleWidth * 0.7);
-              return (
-                <g key={`candle-${startIdx + i}`}>
-                  <line
-                    x1={x} y1={getY(c.high)} x2={x} y2={getY(c.low)}
-                    stroke={color} strokeWidth={1.2}
-                  />
-                  <rect
-                    x={x - bw / 2}
-                    y={Math.min(getY(c.open), getY(c.close))}
-                    width={bw}
-                    height={Math.max(1.5, Math.abs(getY(c.open) - getY(c.close)))}
-                    fill={color} stroke={color} strokeWidth={0.5} rx={0.5}
-                  />
+              {/* MA line */}
+              <path
+                d={maPath}
+                fill="none" stroke="#3b82f6" strokeWidth={1.5}
+              />
+
+              {/* Current price line */}
+              {lastCandle && liveMode && (
+                <g>
+                  <line x1={0} y1={getPriceY(currentPrice)} x2={W - padR} y2={getPriceY(currentPrice)} stroke="#10b981" strokeWidth={1} strokeDasharray="2,2" />
+                  <rect x={W - padR + 2} y={getPriceY(currentPrice) - 6} width={54} height={12} fill="#10b981" rx={2} />
+                  <text x={W - padR + 5} y={getPriceY(currentPrice) + 3} fill="#fff" fontSize="8" fontWeight="extrabold">
+                    {currentPrice.toLocaleString("en-US", { maximumFractionDigits: 1 })}
+                  </text>
                 </g>
-              );
-            })}
+              )}
 
-            {/* MA line */}
-            <path
-              d={visibleCandles.reduce((path, _c, i) => {
-                const globalIdx = startIdx + i;
-                const v = maVals[globalIdx];
-                if (v === null) return path;
-                const cmd = path === "" ? "M" : "L";
-                return `${path} ${cmd} ${getX(i)} ${getY(v)}`;
-              }, "")}
-              fill="none" stroke="#3b82f6" strokeWidth={1.5}
-            />
-
-            {/* Current price dotted line */}
-            {lastCandle && (
-              <g>
-                <line
-                  x1={0} y1={getY(currentPrice)}
-                  x2={W - padR} y2={getY(currentPrice)}
-                  stroke="#10b981" strokeWidth={1} strokeDasharray="2,2"
-                />
-                <rect
-                  x={W - padR + 2} y={getY(currentPrice) - 6}
-                  width={54} height={12} fill="#10b981" rx={2}
-                />
-                <text
-                  x={W - padR + 5} y={getY(currentPrice) + 3}
-                  fill="#fff" fontSize="8" fontWeight="extrabold"
-                >
-                  {currentPrice.toLocaleString("en-US", { maximumFractionDigits: 1 })}
-                </text>
+              {/* Y-axis labels */}
+              <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
+                <text x={W - padR + 6} y={getPriceY(maxP) + 8}>{maxP.toLocaleString("en-US", { maximumFractionDigits: 0 })}</text>
+                <text x={W - padR + 6} y={getPriceY((minP + maxP) / 2) + 3}>{((minP + maxP) / 2).toLocaleString("en-US", { maximumFractionDigits: 0 })}</text>
+                <text x={W - padR + 6} y={getPriceY(minP) - 3}>{minP.toLocaleString("en-US", { maximumFractionDigits: 0 })}</text>
               </g>
-            )}
+            </svg>
 
-            {/* Y-axis labels */}
-            <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
-              <text x={W - padR + 6} y={getY(maxP) + 8}>
-                {maxP.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-              </text>
-              <text x={W - padR + 6} y={getY((minP + maxP) / 2) + 3}>
-                {((minP + maxP) / 2).toLocaleString("en-US", { maximumFractionDigits: 0 })}
-              </text>
-              <text x={W - padR + 6} y={getY(minP) - 3}>
-                {minP.toLocaleString("en-US", { maximumFractionDigits: 0 })}
-              </text>
-            </g>
+            {/* Volume Chart SVG */}
+            <svg
+              className="w-full absolute"
+              style={{ height: volH, top: priceH + volGap }}
+              viewBox={`0 0 ${W} ${volH}`}
+              preserveAspectRatio="none"
+            >
+              {/* Divider line */}
+              <line x1={0} y1={volTop - 4} x2={W - padR} y2={volTop - 4} stroke="#e2e8f0" strokeDasharray="4,4" />
 
-            {/* X-axis labels */}
-            {visibleCandles.map((c, i) => {
-              if (i % Math.max(1, Math.floor(visibleCandles.length / 8)) !== 0) return null;
-              return (
-                <text
-                  key={`xl-${startIdx + i}`} x={getX(i)} y={H - 6}
-                  fill="#94a3b8" fontSize="7.5" fontWeight="bold"
-                  textAnchor="middle"
-                >
-                  {c.time}
-                </text>
-              );
-            })}
-          </svg>
+              {/* Volume bars — LEFT = oldest, RIGHT = newest */}
+              {drawCandles.map((c, localIdx) => {
+                const x = getX(localIdx);
+                const y = getVolY(c.volume);
+                const isGreen = c.close >= c.open;
+                const bw = Math.max(2, candleWidth * 0.7);
+                const barTop = Math.max(volTop, y);
+                const barHeight = Math.max(0, volBottom - barTop);
+                const globalIdx = clampedStartIdx + localIdx;
+                return (
+                  <g key={`vol-${globalIdx}`}>
+                    <rect
+                      x={x - bw / 2}
+                      y={barTop}
+                      width={bw}
+                      height={barHeight}
+                      fill={isGreen ? "#10b981" : "#ef4444"}
+                      opacity={0.9}
+                    />
+                    {localIdx % 5 === 0 && barHeight > 15 && (
+                      <text
+                        x={x}
+                        y={barTop + 10}
+                        fill={isGreen ? "#059669" : "#dc2626"}
+                        fontSize="6"
+                        fontWeight="bold"
+                        textAnchor="middle"
+                      >
+                        {(c.volume / 1000).toFixed(0)}k
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+
+              {/* X-axis labels — LEFT = oldest, RIGHT = newest */}
+              <g fill="#94a3b8" fontSize="7.5" fontWeight="bold" textAnchor="middle">
+                {drawCandles.map((c, localIdx) => {
+                  if (localIdx % Math.max(1, Math.floor(drawCandles.length / 8)) !== 0) return null;
+                  const globalIdx = clampedStartIdx + localIdx;
+                  return (
+                    <text key={`xl-${globalIdx}`} x={getX(localIdx)} y={volH - 4}>
+                      {c.time}
+                    </text>
+                  );
+                })}
+              </g>
+
+              {/* Volume label */}
+              <text x={W - padR + 6} y={volTop + 12} fill="#94a3b8" fontSize="7" fontWeight="bold">VOL</text>
+            </svg>
+          </>
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400 text-xs">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-slate-400 text-xs" style={{ height: priceH + volGap + volH }}>
             <Loader2 className="w-5 h-5 animate-spin" />
             <span>Đang tải dữ liệu…</span>
           </div>
         )}
 
-        {/* Auto-load indicator */}
+        {/* Loading indicators */}
         {viewport.isLoadingOlder && (
           <div className="absolute bottom-8 left-1/2 -translate-x-1/2 bg-blue-600 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-lg flex items-center gap-2 z-10">
             <Loader2 className="w-3.5 h-3.5 animate-spin" />
-            Đang tải thêm…
+            Đang tải dữ liệu cũ…
           </div>
         )}
 
-        {/* Scroll to latest button */}
-        {clampedOffset > 10 && (
+        {/* Scroll to latest */}
+        {!liveMode && (
           <button
             onClick={scrollToLatest}
             className="absolute top-2 right-2 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded-lg text-xs font-bold shadow-lg transition-colors flex items-center gap-1 z-10"
           >
             <ArrowDownRight className="w-3 h-3" />
-            Latest
+            Live
           </button>
         )}
 
         {/* Drag hint */}
         {candles.length > 0 && (
           <div className="absolute bottom-2 left-1/2 -translate-x-1/2 text-[10px] text-slate-300 font-medium opacity-0 group-hover:opacity-100 transition-opacity select-none pointer-events-none flex items-center gap-1">
-            <span>→</span>
-            <span>Kéo phải xem thêm</span>
             <span>←</span>
+            <span>Kéo trái xem thêm</span>
+            <span>→</span>
           </div>
         )}
 
-        {/* Historical data indicator */}
-        {clampedOffset > 0 && (
+        {/* Historical indicator */}
+        {candlesFromNewest > 5 && (
           <div className="absolute top-2 left-2 bg-slate-800/80 text-white px-2 py-0.5 rounded text-[10px] font-bold flex items-center gap-1 z-10">
             <ArrowUpRight className="w-3 h-3" />
             Historical
@@ -487,14 +680,27 @@ function ChartPane({
 
       {/* Footer */}
       <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
-          <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-white shadow-sm" />
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
+            <span className={`w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm ${liveMode ? "bg-emerald-500" : "bg-amber-500"}`} />
+          </div>
+          
+          {/* Load 100 candles button */}
+          <button
+            onClick={onLoadOlder}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200/60 hover:border-blue-300 text-blue-700 hover:text-blue-800 transition-all text-[10px] font-bold shadow-sm hover:shadow group/btn"
+            title="Load thêm 100 nến lịch sử"
+          >
+            <ArrowUpRight className="w-3 h-3 group-hover/btn:scale-110 transition-transform" />
+            <span>Load 100 nến</span>
+          </button>
         </div>
+        
         {totalCandles > 0 && (
           <span className="text-[10px] font-medium text-slate-400">
             {totalCandles} candles
-            {clampedOffset > 0 && ` · xem ${clampedOffset} cũ hơn`}
+            {candlesFromNewest > 0 && ` · ${candlesFromNewest} cũ hơn`}
           </span>
         )}
       </div>
@@ -513,7 +719,7 @@ export default function RealtimeDashboard() {
 
   // Candle data keyed by timeframe (each chart has unique tf)
   const [candlesData, setCandlesData] = useState<Record<string, LocalCandle[]>>({});
-
+  console.log(candlesData);
   // Loading states
   const [loadingConfigs, setLoadingConfigs] = useState(true);
   // Which chart indices are currently loading a tf change
@@ -552,8 +758,8 @@ export default function RealtimeDashboard() {
         }
         setLoadingConfigs(false);
       })
-      .catch(() => {
-        setChartConfigs(DEFAULT_FALLBACK_CONFIGS);
+      .catch((err) => {
+        setError(`Không tải được chart config: ${errorMessage(err)}`);
         setLoadingConfigs(false);
       });
   }, []);
@@ -570,29 +776,23 @@ export default function RealtimeDashboard() {
     }
     setTimeframes(initTf);
 
-    // Fetch candles for each config's timeframe in parallel
-    Promise.all(
-      chartConfigs.map((cfg) =>
-        fetchCandles({
-          symbol: cfg.symbol,
-          timeframe: cfg.timeframe,
-          limit: 100,
-        }).then((candles) => ({
-          timeframe: cfg.timeframe,
-          candles: candles.map((c) => rawToLocal(c, cfg.timeframe)),
-        })),
-      ),
-    )
-      .then((results) => {
-        const next: Record<string, LocalCandle[]> = {};
-        for (const r of results) {
-          next[r.timeframe] = r.candles;
+    // Fetch candles for each config's timeframe sequentially
+    (async () => {
+      const next: Record<string, LocalCandle[]> = {};
+      try {
+        for (const cfg of chartConfigs) {
+          const candles = await fetchCandles({
+            symbol: cfg.symbol,
+            timeframe: cfg.timeframe,
+            limit: 100,
+          });
+          next[cfg.timeframe] = candles.map((c) => rawToLocal(c, cfg.timeframe));
         }
         setCandlesData(next);
-      })
-      .catch((err) => {
-        setError(`Không tải được candle: ${err.message}`);
-      });
+      } catch (err) {
+        setError(`Không tải được candle: ${errorMessage(err)}`);
+      }
+    })();
   }, [chartConfigs]);
 
   // ── 3. Socket connection ─────────────────────────────────────────────────
@@ -613,8 +813,8 @@ export default function RealtimeDashboard() {
       }
     });
 
-    // Candle listener
-    const offCandle = onCandleClosed((event: CandleClosedEvent) => {
+    // Candle listener — single mutator shared by both Closed and Updating events
+    const applyCandle = (event: CandleClosedEvent | CandleUpdatingEvent): void => {
       const { candle } = event.payload;
       const tf = event.payload.timeframe as Timeframe;
 
@@ -625,7 +825,10 @@ export default function RealtimeDashboard() {
           [tf]: updateCandleList(list, candle as RawCandle, tf),
         };
       });
-    });
+    };
+
+    const offCandle = onCandleClosed(applyCandle);
+    const offUpdating = onCandleUpdating(applyCandle);
 
     // Connect
     connect();
@@ -633,6 +836,7 @@ export default function RealtimeDashboard() {
     return () => {
       offStatus();
       offCandle();
+      offUpdating();
       disconnect();
     };
   }, []);
@@ -707,7 +911,7 @@ export default function RealtimeDashboard() {
           ),
         );
       } catch (err) {
-        console.warn(`[handleTimeframeChange] Error changing timeframe to ${newTf}:`, err);
+        setError(`Không tải được candle ${newTf}: ${errorMessage(err)}`);
         // Revert timeframe on error
         setTimeframes((prev) => ({ ...prev, [chartIndex]: currentTf }));
         setCandlesData((prev) => ({ ...prev, [currentTf]: prev[currentTf] ?? [] }));
@@ -722,7 +926,7 @@ export default function RealtimeDashboard() {
     [timeframes, chartConfigs],
   );
 
-  // ── 6. Load older data handlers per chart ──────────────────────────────────
+  // ── 6. Load older data handler per chart ────────────────────────────────
   const loadOlderHandlers = useMemo(() => {
     const handlers: Record<number, () => void> = {};
     for (const cfg of chartConfigs) {
@@ -741,10 +945,16 @@ export default function RealtimeDashboard() {
           }).then(({ candles: older }) => {
             if (older.length === 0) return;
             const olderLocal = older.map((c) => rawToLocal(c, tf));
-            setCandlesData((prev) => ({
-              ...prev,
-              [tf]: [...olderLocal, ...(prev[tf] ?? [])].slice(0, 500),
-            }));
+            setCandlesData((prev) => {
+              const existing = prev[tf] ?? [];
+              const merged = [...olderLocal, ...existing].sort(
+                (a, b) => a.openTime - b.openTime,
+              );
+              return {
+                ...prev,
+                [tf]: merged.length > 500 ? merged.slice(-500) : merged,
+              };
+            });
           }).catch(() => {});
 
           return currentData;
@@ -753,6 +963,10 @@ export default function RealtimeDashboard() {
     }
     return handlers;
   }, [chartConfigs, timeframes]);
+
+  // NOTE: load-newer handlers intentionally removed.
+  // Realtime WebSocket continuously appends/updates the latest candle,
+  // so explicit REST loading of newer data is unnecessary.
 
   // ── render ────────────────────────────────────────────────────────────────
 
@@ -769,7 +983,7 @@ export default function RealtimeDashboard() {
               BTCUSDT · {currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })} USDT
             </p>
           )}
-        </div>
+                  </div>
         <div className="flex items-center gap-4">
           <StatusPill status={wsStatus} latency={latency} />
           <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors">
@@ -779,7 +993,7 @@ export default function RealtimeDashboard() {
             <Bell className="w-5 h-5" />
             <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
           </button>
-        </div>
+                  </div>
       </header>
 
       {/* ── Error banner ────────────────────────────────────────────────────── */}
@@ -793,7 +1007,7 @@ export default function RealtimeDashboard() {
           >
             Đóng
           </button>
-        </div>
+                  </div>
       )}
 
       {/* ── Control bar ─────────────────────────────────────────────────────── */}
@@ -814,9 +1028,9 @@ export default function RealtimeDashboard() {
                 </span>
                 <ChevronDown className="w-4 h-4 text-slate-500" />
               </button>
-            </div>
-          </div>
-        </div>
+                  </div>
+                  </div>
+                  </div>
 
         {/* Realtime toggle */}
         <div className="flex items-center gap-5">
@@ -839,8 +1053,8 @@ export default function RealtimeDashboard() {
                 }`}
               />
             </button>
-          </div>
-        </div>
+                </div>
+              </div>
       </section>
 
       {/* ── Main grid ────────────────────────────────────────────────────────── */}
@@ -856,7 +1070,7 @@ export default function RealtimeDashboard() {
                 >
                   <div className="h-4 bg-slate-100 rounded w-1/2" />
                   <div className="flex-1 bg-slate-50 rounded" />
-                </div>
+                  </div>
               ))}
             </>
           ) : chartConfigs.length === 0 ? (
@@ -864,18 +1078,17 @@ export default function RealtimeDashboard() {
               <AlertCircle className="w-8 h-8" />
               <p className="font-semibold">Không tìm thấy chart config nào.</p>
               <p className="text-sm">Kiểm tra lại backend và database.</p>
-            </div>
+                  </div>
           ) : (
             chartConfigs.map((cfg) => {
             const tf = timeframes[cfg.chartIndex] ?? cfg.timeframe;
             const candles = candlesData[tf] ?? [];
             return (
-              <ChartPane
+              <LightweightChartPane
                 key={cfg.chartIndex}
                 chartIndex={cfg.chartIndex}
                 tf={tf}
                 candles={candles}
-                currentPrice={currentPrice}
                 priceChangePct={priceChangePct}
                 onTimeframeChange={handleTimeframeChange}
                 isLoadingTf={loadingTfCharts.has(cfg.chartIndex)}
@@ -884,8 +1097,8 @@ export default function RealtimeDashboard() {
             );
           })
           )}
-        </div>
-
+                </div>
+                
         {/* Sidebar */}
         <div className="flex flex-col gap-6">
           {/* Logic cập nhật candle */}
@@ -902,7 +1115,7 @@ export default function RealtimeDashboard() {
               <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
                 openTime giống nến cuối → ghi đè dữ liệu mới nhất.
               </p>
-            </div>
+                  </div>
 
             <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-100 flex flex-col gap-2">
               <span className="text-xs font-bold text-slate-700">
@@ -937,7 +1150,7 @@ export default function RealtimeDashboard() {
                     : "Chưa kết nối"}
               </span>
             </div>
-
+            
             <table className="w-full text-xs font-semibold text-slate-600">
               <tbody>
                 <tr className="border-b border-slate-50">
@@ -982,7 +1195,7 @@ export default function RealtimeDashboard() {
                 {chartConfigs[0] ? (timeframes[chartConfigs[0].chartIndex] ?? chartConfigs[0].timeframe) : "—"}
               </span>
             </div>
-
+            
             <div className="overflow-hidden rounded-xl border border-slate-100">
               <table className="w-full text-xs font-bold text-slate-600">
                 <thead>
@@ -1009,15 +1222,15 @@ export default function RealtimeDashboard() {
                             className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 transition-colors"
                           >
                             <td className="py-2 px-3 text-slate-500 font-medium">{c.time}</td>
-                            <td className="py-2 px-2 text-right text-slate-800">
+                      <td className="py-2 px-2 text-right text-slate-800">
                               {c.close.toLocaleString("en-US", {
                                 minimumFractionDigits: 2,
                               })}
-                            </td>
+                      </td>
                             <td className="py-2 px-2 text-right text-slate-500 font-medium">
                               {c.volume.toFixed(0)}
                             </td>
-                            <td className="py-2 px-3 text-right">
+                      <td className="py-2 px-3 text-right">
                               <span
                                 className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${
                                   isUp
@@ -1026,9 +1239,9 @@ export default function RealtimeDashboard() {
                                 }`}
                               >
                                 {isUp ? "BUY" : "SELL"}
-                              </span>
-                            </td>
-                          </tr>
+                        </span>
+                      </td>
+                    </tr>
                         );
                       });
                   })()}
@@ -1040,7 +1253,7 @@ export default function RealtimeDashboard() {
           {/* Chú thích */}
           <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
             <h3 className="text-sm font-extrabold text-slate-800">Chú thích</h3>
-
+            
             <div className="flex flex-col gap-3 text-xs font-semibold text-slate-600">
               <div className="flex items-center justify-between">
                 <span className="flex items-center gap-2">

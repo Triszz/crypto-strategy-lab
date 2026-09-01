@@ -1,2 +1,2 @@
-// Placeholder barrel for the evaluation module.
-export {};
+export * from "./domain/evaluator.engine";
+export * from "./application/evaluation.service";

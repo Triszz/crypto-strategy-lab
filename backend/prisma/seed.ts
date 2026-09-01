@@ -16,19 +16,7 @@ const prisma = new PrismaClient();
 async function main(): Promise<void> {
   console.log("[seed] Reference data only — no business fixtures.");
 
-  // 1. Market data provider reference row (Binance — public endpoint).
-  await prisma.marketDataProvider.upsert({
-    where: { code: "binance" },
-    update: {},
-    create: {
-      code: "binance",
-      name: "Binance",
-      baseUrl: "https://api.binance.com",
-      isActive: true,
-    },
-  });
-
-  // 2. News provider reference row (CryptoPanic — requires API key).
+  // 1. News provider reference row (CryptoPanic — requires API key).
   await prisma.newsProvider.upsert({
     where: { code: "cryptopanic" },
     update: {},
@@ -41,7 +29,7 @@ async function main(): Promise<void> {
     },
   });
 
-  // 3. Default settings (leaderboard top-K, search defaults).
+  // 2. Default settings (leaderboard top-K, search defaults).
   await prisma.setting.upsert({
     where: { key: "leaderboard.top_k" },
     update: {},
@@ -51,6 +39,35 @@ async function main(): Promise<void> {
       description: "Default number of strategies displayed on the leaderboard.",
     },
   });
+
+  // 3. Search algorithms consumed by /api/search/start and the SearchService
+  //    `buildGenerator` dispatcher. implementationRef values match the
+  //    path the route documentation expects so any client (and the API
+  //    docs) can reference them unambiguously.
+  const searchAlgorithms: ReadonlyArray<{
+    code: string;
+    name: string;
+    implementationRef: string;
+  }> = [
+    {
+      code: "random",
+      name: "Random Search",
+      implementationRef: "strategy.generator.random",
+    },
+    {
+      code: "domain_guided",
+      name: "Domain-guided Search",
+      implementationRef: "strategy.generator.domain_guided",
+    },
+  ];
+
+  for (const algo of searchAlgorithms) {
+    await prisma.searchAlgorithm.upsert({
+      where: { code: algo.code },
+      update: { name: algo.name, implementationRef: algo.implementationRef },
+      create: algo,
+    });
+  }
 
   console.log("[seed] Done.");
 }

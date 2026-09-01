@@ -2,10 +2,12 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
 import RealtimeDashboard from './pages/RealtimeDashboard';
 import StrategyEngine from './pages/StrategyEngine';
+import Strategy from './pages/Strategy';
 import Discovery from './pages/Discovery';
 import Backtest from './pages/Backtest';
 import NewsCrawler from './pages/NewsCrawler';
 import Settings from './pages/Settings';
+import Search from './pages/Search';
 
 export default function App() {
   return (
@@ -15,6 +17,10 @@ export default function App() {
           <Route path="/" element={<Navigate to="/realtime" replace />} />
           <Route path="/realtime" element={<RealtimeDashboard />} />
           <Route path="/strategy-engine" element={<StrategyEngine />} />
+          <Route path="/strategy" element={<Strategy />} />
+          <Route path="/strategy/:strategyId" element={<Strategy />} />
+          <Route path="/search" element={<Navigate to="/strategy" replace />} />
+          <Route path="/search/:searchRunId" element={<Search />} />
           <Route path="/discovery" element={<Discovery />} />
           <Route path="/backtest" element={<Backtest />} />
           <Route path="/news-crawler" element={<NewsCrawler />} />

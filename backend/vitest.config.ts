@@ -9,6 +9,12 @@ export default defineConfig({
     exclude: ["node_modules", "dist"],
     setupFiles: ["./tests/setup.ts"],
     testTimeout: 10_000,
+    pool: "forks",
+    poolOptions: {
+      forks: {
+        singleFork: true,
+      },
+    },
   },
   resolve: {
     alias: {

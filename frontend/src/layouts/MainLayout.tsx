@@ -8,13 +8,15 @@ import {
   Settings, 
   FlaskConical, 
   ChevronDown, 
-  GraduationCap
+  GraduationCap,
+  ListFilter
 } from 'lucide-react';
 
 export default function MainLayout() {
   const menuItems = [
     { path: '/realtime', label: 'Realtime', icon: Activity },
     { path: '/strategy-engine', label: 'Strategy Engine', icon: Cpu },
+    { path: '/strategy', label: 'Strategy Library', icon: ListFilter },
     { path: '/discovery', label: 'Discovery', icon: Search },
     { path: '/backtest', label: 'Backtest', icon: LineChart },
     { path: '/news-crawler', label: 'News Crawler', icon: Newspaper },

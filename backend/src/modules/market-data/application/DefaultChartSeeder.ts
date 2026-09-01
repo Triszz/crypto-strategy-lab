@@ -149,7 +149,7 @@ export class DefaultChartSeeder {
     return created;
   }
 
-  private async pickDefaultSymbol(): Promise<string | null> {
+  private async pickDefaultSymbol(): Promise<string> {
     const btc = await this.prisma.symbol.findFirst({
       where: { symbol: "BTCUSDT", isActive: true },
       select: { symbol: true },
@@ -160,6 +160,22 @@ export class DefaultChartSeeder {
       orderBy: { symbol: "asc" },
       select: { symbol: true },
     });
-    return row?.symbol ?? null;
+    if (row) return row.symbol;
+
+    // Seed default active symbols if table is empty
+    const defaultSymbols = [
+      { symbol: "BTCUSDT", baseAsset: "BTC", quoteAsset: "USDT" },
+      { symbol: "ETHUSDT", baseAsset: "ETH", quoteAsset: "USDT" },
+      { symbol: "SOLUSDT", baseAsset: "SOL", quoteAsset: "USDT" },
+      { symbol: "BNBUSDT", baseAsset: "BNB", quoteAsset: "USDT" },
+    ];
+    for (const s of defaultSymbols) {
+      await this.prisma.symbol.upsert({
+        where: { symbol: s.symbol },
+        update: { isActive: true },
+        create: { ...s, isActive: true },
+      });
+    }
+    return "BTCUSDT";
   }
 }

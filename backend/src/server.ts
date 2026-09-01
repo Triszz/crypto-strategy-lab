@@ -7,7 +7,9 @@ import { closeRedisConnection, getRedisConnection, pingRedis } from "./infrastru
 import { closeSocketServer, getSocketServer } from "./infrastructure/websocket/socket";
 import { getEventBus } from "./shared/event-bus";
 import { buildMarketDataContainer } from "./modules/market-data";
-import { mountMarketData } from "./api/routes";
+import { buildSearchContainer } from "./modules/search";
+import { mountMarketData, mountSearch, mountStrategy } from "./api/routes";
+import { bootstrapStrategies } from "./modules/strategy";
 
 /**
  * Process entrypoint. Responsibilities:
@@ -48,7 +50,25 @@ async function main(): Promise<void> {
     );
   });
 
-  await new Promise<void>((resolve) => {
+  // Build and mount the Search container.
+  const search = buildSearchContainer();
+  mountSearch(search);
+
+  // Mount Strategy catalogue routes (stateless, no container needed).
+  bootstrapStrategies();
+  mountStrategy();
+
+  await new Promise<void>((resolve, reject) => {
+    httpServer.on("error", (err: unknown) => {
+      const error = err as { code?: string };
+      if (error.code === "EADDRINUSE") {
+        logger.error(
+          { port: env.PORT },
+          `Port ${env.PORT} is already in use by a running backend instance. You do not need to run "npm run dev" again.`,
+        );
+      }
+      reject(err);
+    });
     httpServer.listen(env.PORT, () => {
       logger.info({ port: env.PORT }, "HTTP server listening");
       resolve();
@@ -65,12 +85,13 @@ async function main(): Promise<void> {
   // health checks immediately while backfill + WS connect happen.
   void marketStartPromise;
 
-  installShutdown(httpServer, marketData);
+  installShutdown(httpServer, marketData, search);
 }
 
 function installShutdown(
   httpServer: http.Server,
   marketData: ReturnType<typeof buildMarketDataContainer>,
+  _search: ReturnType<typeof buildSearchContainer>,
 ): void {
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {

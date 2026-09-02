@@ -11,6 +11,9 @@ import { buildSearchContainer } from "./modules/search";
 import { buildNewsContainer } from "./modules/news/news.container";
 import { mountMarketData, mountSearch, mountStrategy } from "./api/routes";
 import { bootstrapStrategies } from "./modules/strategy";
+import { EvaluationService } from "./modules/evaluation/application/evaluation.service";
+import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
+import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
 
 /**
  * Process entrypoint. Responsibilities:
@@ -34,6 +37,10 @@ async function main(): Promise<void> {
   getEventBus();
   getRedisConnection();
 
+  // Instantiate Event Listeners for Evaluation and Leaderboard modules
+  new EvaluationService();
+  new LeaderboardService(new PrismaLeaderboardRepository());
+
   const app = createApp();
   const httpServer = http.createServer(app);
   initSocketServer(httpServer);
@@ -55,13 +62,7 @@ async function main(): Promise<void> {
   const search = buildSearchContainer();
   mountSearch(search);
 
-  // Build and start the News module. `buildNewsContainer()` returns
-  // the shared service + crawler singleton; `crawler.start()` registers
-  // the periodic cron (interval from env, default 5 minutes) and fires
-  // one initial crawl so /news has data immediately. A value of 0
-  // disables the periodic run but still triggers the initial crawl.
-  // Phase B: pass the Socket.IO server so `NewsCollected` events are
-  // forwarded to the FE in real-time.
+  // Build and start the News module.
   const news = buildNewsContainer(
     undefined,
     undefined,

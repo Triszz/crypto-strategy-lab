@@ -1,14 +1,9 @@
 /**
- * News Crawler page — Phase B (wire FE thật).
+ * News Crawler page — Phase B & Phase C (wired to real REST APIs & WebSocket).
  *
- * Replaces the Phase 1 mock data with real API + WebSocket calls.
- * - Initial load:  `fetchNews({ symbol })`
- * - Realtime:      `onNewsCollected` appends new items as they arrive.
- * - Manual crawl:  `triggerCrawl(symbol)` triggers a backend crawl.
- *
- * See `Knowledge/specs/01-news-module.md` §7.1 for the contract
- * behind this page, and `Knowledge/specs/05-frontend.md` §7.5 for the
- * refactor checklist.
+ * - Initial load:  `fetchNews({ symbol })` & `fetchSentimentSummary(symbol)`
+ * - Realtime:      `onNewsCollected` & `onSentimentAnalyzed`
+ * - Manual crawl:  `triggerCrawl(symbol)`
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -31,16 +26,15 @@ import {
 } from 'lucide-react';
 
 import { fetchNews, triggerCrawl } from '../lib/newsApi';
-import { onNewsCollected, connect } from '../lib/socket';
+import { fetchSentimentSummary, type SentimentSummary } from '../lib/sentimentApi';
+import { onNewsCollected, onSentimentAnalyzed, connect } from '../lib/socket';
 import { newsCollectedToListItem, type NewsItem } from '../types/news';
 import { HttpError } from '../lib/http';
 
-/** User-selectable symbol filter. `ALL` disables the filter. */
 type SymbolFilter = 'ALL' | 'BTC' | 'ETH' | 'SOL';
 
 const SYMBOL_FILTERS: SymbolFilter[] = ['ALL', 'BTC', 'ETH', 'SOL'];
 
-/** Map base asset → emoji used in the asset pill on each news row. */
 function assetIcon(asset: string): string {
   if (asset === 'BTC') return '₿';
   if (asset === 'ETH') return 'Ξ';
@@ -48,7 +42,6 @@ function assetIcon(asset: string): string {
   return asset.slice(0, 1).toUpperCase();
 }
 
-/** Map base asset → Tailwind color class for the asset pill. */
 function assetColor(asset: string): string {
   if (asset === 'BTC') return 'bg-amber-50 text-amber-600 border-amber-100';
   if (asset === 'ETH') return 'bg-blue-50 text-blue-600 border-blue-100';
@@ -56,7 +49,6 @@ function assetColor(asset: string): string {
   return 'bg-slate-50 text-slate-600 border-slate-200';
 }
 
-/** Format an ISO timestamp as `HH:MM` for the news row chip. */
 function formatTime(iso: string): string {
   try {
     const d = new Date(iso);
@@ -70,10 +62,7 @@ function formatTime(iso: string): string {
   }
 }
 
-/** Pull the first available sentiment for a news row (Phase B placeholder). */
 function inferSentiment(item: NewsItem): 'positive' | 'neutral' | 'negative' {
-  // The real sentiment arrives via the Sentiment module (Phase B Day 2).
-  // For now, infer a coarse signal from the title so the chip has a colour.
   const t = item.title.toLowerCase();
   const pos = ['surge', 'rally', 'gain', 'bull', 'ath', 'inflow', 'adoption', 'approval', 'partnership', 'pump', 'high'];
   const neg = ['crash', 'hack', 'drop', 'fall', 'bear', 'dump', 'ban', 'lawsuit', 'liquidation', 'panic', 'collapse'];
@@ -85,34 +74,30 @@ function inferSentiment(item: NewsItem): 'positive' | 'neutral' | 'negative' {
 export default function NewsCrawler() {
   const navigate = useNavigate();
 
-  // Filter state — drives both REST fetch and WS subscriber callback.
   const [symbolFilter, setSymbolFilter] = useState<SymbolFilter>('ALL');
 
-  // News feed state.
   const [news, setNews] = useState<NewsItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [totalNews, setTotalNews] = useState(0);
 
-  // Crawl state.
   const [isCrawling, setIsCrawling] = useState(false);
   const [lastCrawlMessage, setLastCrawlMessage] = useState<string | null>(null);
 
-  // Sentiment gauge — left as Phase B Day 2 (Sentiment module).
-  // We animate it when the WS fires so the page "feels live".
-  const [posPct, setPosPct] = useState(58);
-  const [negPct, setNegPct] = useState(15);
-  const [analyzedCount, setAnalyzedCount] = useState(0);
-  const neuPct = Math.max(0, 100 - posPct - negPct);
+  // Real sentiment summary state from backend Sentiment API
+  const [sentimentSummary, setSentimentSummary] = useState<SentimentSummary>({
+    symbol: 'ALL',
+    averageScore: 0,
+    totalNews: 0,
+    positiveCount: 0,
+    neutralCount: 0,
+    negativeCount: 0,
+  });
 
-  // UI-only state (LLM extraction template — out of scope for News phase).
   const [sources] = useState<string[]>(['Website']);
   const [selfHealingActive, setSelfHealingActive] = useState(true);
-  const [refreshInterval] = useState('1m'); // Phase C: env-driven
+  const [refreshInterval] = useState('1m');
 
-  // Track the latest in-flight filter so stale responses don't overwrite
-  // a newer one. Without this, switching BTC → ETH quickly could leave
-  // the screen showing BTC data (the older response arrives last).
   const inflightRef = useRef(0);
 
   // ── Initial fetch + refetch on filter change ──────────────────────────
@@ -121,15 +106,18 @@ export default function NewsCrawler() {
     setIsLoading(true);
     setError(null);
 
-    const ac = new AbortController();
     void (async () => {
       try {
         const symbolParam = symbolFilter === 'ALL' ? undefined : symbolFilter;
-        const result = await fetchNews({ symbol: symbolParam, pageSize: 20 });
-        if (requestId !== inflightRef.current) return; // stale, ignore
-        setNews(result.items);
-        setTotalNews(result.total);
-        setAnalyzedCount((c) => c + result.items.length); // running tally
+        const [newsResult, summaryResult] = await Promise.all([
+          fetchNews({ symbol: symbolParam, pageSize: 20 }),
+          fetchSentimentSummary(symbolParam),
+        ]);
+
+        if (requestId !== inflightRef.current) return;
+        setNews(newsResult.items);
+        setTotalNews(newsResult.total);
+        setSentimentSummary(summaryResult);
       } catch (err) {
         if (requestId !== inflightRef.current) return;
         const msg =
@@ -143,46 +131,56 @@ export default function NewsCrawler() {
         if (requestId === inflightRef.current) setIsLoading(false);
       }
     })();
-
-    return () => ac.abort();
   }, [symbolFilter]);
 
   // ── WebSocket subscription ────────────────────────────────────────────
-  // Ensures the socket singleton has been created (idempotent).
   useEffect(() => {
     connect();
   }, []);
 
   useEffect(() => {
-    const off = onNewsCollected((event) => {
+    const offNews = onNewsCollected((event) => {
       const newItem = newsCollectedToListItem(event);
-
-      // Apply the same client-side filter the REST query used.
       const matchesFilter =
         symbolFilter === 'ALL' ||
         newItem.coinSymbols.includes(symbolFilter);
       if (!matchesFilter) return;
 
       setNews((prev) => {
-        // De-dupe in case the user triggered both a manual crawl and the
-        // cron fired within seconds of each other.
         if (prev.some((p) => p.id === newItem.id)) return prev;
         return [newItem, ...prev].slice(0, 20);
       });
       setTotalNews((t) => t + 1);
-
-      // Bump sentiment gauge heuristically so the right column reacts.
-      const s = inferSentiment(newItem);
-      if (s === 'positive') {
-        setPosPct((p) => Math.min(p + 1, 100));
-        setNegPct((p) => Math.max(p - 1, 0));
-      } else if (s === 'negative') {
-        setPosPct((p) => Math.max(p - 1, 0));
-        setNegPct((p) => Math.min(p + 1, 100));
-      }
-      setAnalyzedCount((c) => c + 1);
     });
-    return off;
+
+    const offSentiment = onSentimentAnalyzed((payload) => {
+      const matchesFilter =
+        symbolFilter === 'ALL' ||
+        payload.coinSymbols.includes(symbolFilter);
+      if (!matchesFilter) return;
+
+      setSentimentSummary((prev) => {
+        const total = prev.totalNews + 1;
+        const pos = payload.classification === 'POSITIVE' ? prev.positiveCount + 1 : prev.positiveCount;
+        const neg = payload.classification === 'NEGATIVE' ? prev.negativeCount + 1 : prev.negativeCount;
+        const neu = payload.classification === 'NEUTRAL' ? prev.neutralCount + 1 : prev.neutralCount;
+        const newScore = Math.round(((prev.averageScore * prev.totalNews + payload.score) / total) * 1000) / 1000;
+
+        return {
+          symbol: prev.symbol,
+          averageScore: newScore,
+          totalNews: total,
+          positiveCount: pos,
+          neutralCount: neu,
+          negativeCount: neg,
+        };
+      });
+    });
+
+    return () => {
+      offNews();
+      offSentiment();
+    };
   }, [symbolFilter]);
 
   // ── Manual crawl handler ─────────────────────────────────────────────
@@ -198,14 +196,14 @@ export default function NewsCrawler() {
           ? `Thu thập được ${res.count} tin mới.`
           : 'Crawl hoàn tất — không có tin mới.',
       );
-      // Re-fetch to pick up provider/externalId/etc. fields that aren't
-      // present in the WS broadcast payload.
-      const list = await fetchNews({
-        symbol: symbolParam,
-        pageSize: 20,
-      });
+
+      const [list, summary] = await Promise.all([
+        fetchNews({ symbol: symbolParam, pageSize: 20 }),
+        fetchSentimentSummary(symbolParam),
+      ]);
       setNews(list.items);
       setTotalNews(list.total);
+      setSentimentSummary(summary);
     } catch (err) {
       const msg =
         err instanceof HttpError
@@ -217,13 +215,14 @@ export default function NewsCrawler() {
     }
   };
 
-  const toggleSource = (_src: string): void => {
-    // Phase C will replace this with a real source switcher (RSS/HTML
-    // adapter selection via /api/admin/sources). Left as no-op for now
-    // so the UI doesn't bitrot.
-  };
+  const toggleSource = (_src: string): void => {};
 
-  // ── Render ────────────────────────────────────────────────────────────
+  // Calculate percentages for sentiment gauge
+  const totalSentimentCount = Math.max(1, sentimentSummary.totalNews);
+  const posPct = Math.round((sentimentSummary.positiveCount / totalSentimentCount) * 100);
+  const negPct = Math.round((sentimentSummary.negativeCount / totalSentimentCount) * 100);
+  const neuPct = Math.max(0, 100 - posPct - negPct);
+
   return (
     <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto">
       {/* Top Header */}
@@ -233,13 +232,13 @@ export default function NewsCrawler() {
             News Crawler & Phân tích thị trường
           </h2>
           <p className="text-xs text-slate-400 font-semibold mt-1">
-            Thu nhập tin tức, hiểu HTML bằng LLM, lưu template và phân tích sentiment
+            Thu nhập tin tức, trích xuất dữ liệu và phân tích Sentiment tích hợp WebSocket
           </p>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
             <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-            <span>BE + WebSocket · Phase B (live)</span>
+            <span>BE + WebSocket · Sentiment Module Realtime</span>
           </div>
           <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors">
             <HelpCircle className="w-5 h-5" />
@@ -254,7 +253,6 @@ export default function NewsCrawler() {
       {/* Crawl Control Panel */}
       <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-wrap gap-6 items-end justify-between">
         <div className="flex flex-wrap gap-6">
-          {/* Sources Selector — Phase C wire-up */}
           <div className="flex flex-col gap-2">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
               Nguồn
@@ -279,7 +277,6 @@ export default function NewsCrawler() {
             </div>
           </div>
 
-          {/* Asset filter (now wired to REST + WS) */}
           <div className="flex flex-col gap-2">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
               Asset
@@ -300,7 +297,6 @@ export default function NewsCrawler() {
             </div>
           </div>
 
-          {/* Auto Refresh (display-only for now) */}
           <div className="flex flex-col gap-2">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
               Auto refresh (cron)
@@ -321,12 +317,11 @@ export default function NewsCrawler() {
               ))}
             </div>
             <span className="text-[9px] text-slate-400 italic">
-              Cron chạy theo biến môi trường NEWS_CRAWL_INTERVAL_MS (mặc định 5 phút).
+              Cron chạy theo biến môi trường NEWS_CRAWL_INTERVAL_MS.
             </span>
           </div>
         </div>
 
-        {/* Action buttons */}
         <div className="flex gap-3">
           <button
             className="p-2.5 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-colors"
@@ -345,7 +340,6 @@ export default function NewsCrawler() {
         </div>
       </section>
 
-      {/* Last-crawl feedback (success / error toast row) */}
       {(lastCrawlMessage || error) && (
         <div
           role={error ? 'alert' : 'status'}
@@ -389,7 +383,6 @@ export default function NewsCrawler() {
             </div>
 
             <div className="flex flex-col gap-3 max-h-[750px] overflow-y-auto pr-1">
-              {/* Empty state — no news at all */}
               {!isLoading && news.length === 0 && !error && (
                 <div className="flex flex-col items-center justify-center gap-2 py-10 text-slate-400">
                   <Inbox className="w-10 h-10" />
@@ -401,7 +394,6 @@ export default function NewsCrawler() {
                 </div>
               )}
 
-              {/* Loading skeleton */}
               {isLoading && news.length === 0 && (
                 <div className="flex flex-col gap-3">
                   {Array.from({ length: 4 }).map((_, i) => (
@@ -420,10 +412,7 @@ export default function NewsCrawler() {
                 </div>
               )}
 
-              {/* News list */}
               {news.map((item) => {
-                // Choose a representative asset pill. Use the first
-                // coinSymbol; fall back to a generic label if none.
                 const headAsset = item.coinSymbols[0] ?? '?';
                 const sentiment = inferSentiment(item);
                 return (
@@ -645,11 +634,13 @@ export default function NewsCrawler() {
           </article>
         </div>
 
-        {/* Right column — Analysis output + Strategy integration */}
+        {/* Right column — Real Analysis Output from Backend Sentiment API */}
         <div className="flex flex-col gap-6">
           <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 text-left">
             <div className="flex justify-between items-center">
-              <h3 className="text-sm font-extrabold text-slate-800">Đầu ra phân tích</h3>
+              <h3 className="text-sm font-extrabold text-slate-800">
+                Đầu ra phân tích Sentiment {symbolFilter !== 'ALL' && <span className="text-blue-600">({symbolFilter})</span>}
+              </h3>
               <span className="text-[10px] text-slate-400 font-bold flex items-center gap-1">
                 <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
                 {isLoading ? 'Đang tải...' : 'Cập nhật: ' + new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })}
@@ -657,9 +648,12 @@ export default function NewsCrawler() {
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <span className="text-[10px] font-bold text-slate-400 uppercase">Sentiment tổng hợp (24h)</span>
+              <div className="flex justify-between items-center">
+                <span className="text-[10px] font-bold text-slate-400 uppercase">Sentiment tổng hợp (Realtime API)</span>
+                <span className="text-xs font-black text-slate-700">Điểm TB: <span className={sentimentSummary.averageScore > 0 ? 'text-emerald-600' : sentimentSummary.averageScore < 0 ? 'text-red-500' : 'text-slate-600'}>{sentimentSummary.averageScore}</span></span>
+              </div>
 
-              <div className="w-full h-3 rounded-full overflow-hidden flex mt-1">
+              <div className="w-full h-3 rounded-full overflow-hidden flex mt-1 bg-slate-100">
                 <div className="bg-emerald-500 h-full transition-all duration-300" style={{ width: `${posPct}%` }} title={`Positive: ${posPct}%`} />
                 <div className="bg-slate-300 h-full transition-all duration-300" style={{ width: `${neuPct}%` }} title={`Neutral: ${neuPct}%`} />
                 <div className="bg-red-500 h-full transition-all duration-300" style={{ width: `${negPct}%` }} title={`Negative: ${negPct}%`} />
@@ -679,29 +673,28 @@ export default function NewsCrawler() {
                 <span className="bg-slate-100 border border-slate-200/50 text-slate-700 px-2 py-0.75 rounded-lg">Protocol Upgrade <span className="text-slate-400 ml-0.5">22%</span></span>
                 <span className="bg-slate-100 border border-slate-200/50 text-slate-700 px-2 py-0.75 rounded-lg">Regulation <span className="text-slate-400 ml-0.5">15%</span></span>
                 <span className="bg-slate-100 border border-slate-200/50 text-slate-700 px-2 py-0.75 rounded-lg">Partnership <span className="text-slate-400 ml-0.5">12%</span></span>
-                <span className="bg-slate-100 border border-slate-200/50 text-slate-700 px-2 py-0.75 rounded-lg">Market Trend <span className="text-slate-400 ml-0.5">23%</span></span>
               </div>
             </div>
 
             <table className="w-full text-xs font-bold text-slate-600 pt-2 border-t border-slate-50">
               <tbody>
                 <tr className="border-b border-slate-50">
-                  <td className="py-2.5 text-slate-400">Confidence Score (TB)</td>
-                  <td className="py-2.5 text-right text-slate-800">0.78</td>
+                  <td className="py-2.5 text-slate-400">Tổng số tin đã phân tích</td>
+                  <td className="py-2.5 text-right text-slate-800">{sentimentSummary.totalNews.toLocaleString('en-US')}</td>
                 </tr>
                 <tr className="border-b border-slate-50">
-                  <td className="py-2.5 text-slate-400">Số tin đã phân tích (24h)</td>
-                  <td className="py-2.5 text-right text-slate-800">{analyzedCount.toLocaleString('en-US')}</td>
+                  <td className="py-2.5 text-slate-400">Số tin tích cực (Positive)</td>
+                  <td className="py-2.5 text-right text-emerald-600">{sentimentSummary.positiveCount}</td>
                 </tr>
                 <tr className="border-b border-slate-50">
-                  <td className="py-2.5 text-slate-400">Độ bao phủ nguồn</td>
-                  <td className="py-2.5 text-right text-emerald-600">92%</td>
+                  <td className="py-2.5 text-slate-400">Số tin tiêu cực (Negative)</td>
+                  <td className="py-2.5 text-right text-red-500">{sentimentSummary.negativeCount}</td>
                 </tr>
                 <tr>
-                  <td className="py-2.5 text-slate-400">Nguồn hoạt động</td>
+                  <td className="py-2.5 text-slate-400">Analyzer Active</td>
                   <td className="py-2.5 text-right text-slate-800 flex items-center justify-end gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    <span>23 / 25</span>
+                    <span>{sentimentSummary.analyzerCode || 'LEXICON_V1'}</span>
                   </td>
                 </tr>
               </tbody>
@@ -727,7 +720,7 @@ export default function NewsCrawler() {
 
                 <div className="bg-white border border-slate-200/80 p-2.5 rounded-lg text-[9.5px] font-bold text-slate-700 w-full flex flex-col gap-1 items-center shadow-xs">
                   <span className="text-slate-400 font-semibold text-[8px] uppercase">Điều kiện vào lệnh</span>
-                  <span>Sentiment &gt; 0.65</span>
+                  <span>Sentiment &gt; 0.15 (Bullish)</span>
                 </div>
 
                 <div className="text-[10px] text-slate-400 font-bold">

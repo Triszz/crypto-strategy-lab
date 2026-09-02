@@ -2,11 +2,7 @@
  * Socket.IO client singleton for the Market Data module.
  *
  * Connects once, exposes typed subscribe/unsubscribe, and relays
- * `CandleClosed`, `CandleUpdating`, and `NewsCollected` events to React consumers.
- *
- * - `CandleClosed` / `CandleUpdating`: market data realtime updates.
- * - `NewsCollected` (Phase B): forward news updates from
- *   `backend/src/infrastructure/event-bridge/socket-bridge.ts`.
+ * `CandleClosed`, `CandleUpdating`, `NewsCollected`, and `SentimentAnalyzed` events to React consumers.
  */
 
 import { io, type Socket } from "socket.io-client";
@@ -45,6 +41,14 @@ export interface CandleUpdatingEvent {
   version: string;
   timestamp: number;
   payload: CandleClosedPayload;
+}
+
+export interface SentimentAnalyzedPayload {
+  newsId: string;
+  sentimentId: string;
+  classification: "POSITIVE" | "NEUTRAL" | "NEGATIVE";
+  score: number;
+  coinSymbols: string[];
 }
 
 type WsStatus =
@@ -125,9 +129,6 @@ function getSocket(): Socket {
       emit("CandleUpdating", data);
     });
 
-    // Phase B — forward NewsCollected to consumers registered via
-    // `onNewsCollected()`. Payload shape mirrors the backend
-    // `NewsCollectedPayload` (see `infrastructure/event-bridge/socket-bridge.ts`).
     socket.on("NewsCollected", (data: NewsCollectedEvent) => {
       debug("IN ← NewsCollected", {
         newsId: data?.newsId,
@@ -135,6 +136,11 @@ function getSocket(): Socket {
         title: data?.title?.slice(0, 60),
       });
       emit("NewsCollected", data);
+    });
+
+    socket.on("SentimentAnalyzed", (data: SentimentAnalyzedPayload) => {
+      debug("IN ← SentimentAnalyzed", data);
+      emit("SentimentAnalyzed", data);
     });
 
     socket.on("subscribed", (data: unknown) => {
@@ -153,9 +159,8 @@ function getSocket(): Socket {
       emit("ws:error", data);
     });
 
-    // Log ALL other incoming events
     socket.onAny((event: string, ...args: unknown[]) => {
-      if (!["connect", "disconnect", "connect_error", "CandleClosed", "CandleUpdating", "NewsCollected", "subscribed", "unsubscribed", "error"].includes(event)) {
+      if (!["connect", "disconnect", "connect_error", "CandleClosed", "CandleUpdating", "NewsCollected", "SentimentAnalyzed", "subscribed", "unsubscribed", "error"].includes(event)) {
         debug(`IN ← ${event}`, args);
       }
     });
@@ -168,18 +173,15 @@ function emit(event: string, ...args: unknown[]): void {
   listeners.get(event)?.forEach((fn) => fn(...args));
 }
 
-/** Connect (or reconnect) the socket. */
 export function connect(): void {
   getSocket();
 }
 
-/** Disconnect the socket. */
 export function disconnect(): void {
   socket?.disconnect();
   socket = null;
 }
 
-/** Subscribe to one or more timeframes for a symbol. */
 export function subscribe(
   symbol: string,
   timeframes: Timeframe[],
@@ -188,7 +190,6 @@ export function subscribe(
   getSocket().emit("subscribe", { symbol, timeframes });
 }
 
-/** Unsubscribe from one or more timeframes for a symbol. */
 export function unsubscribe(
   symbol: string,
   timeframes: Timeframe[],
@@ -197,7 +198,6 @@ export function unsubscribe(
   getSocket().emit("unsubscribe", { symbol, timeframes });
 }
 
-/** Listen for a socket event. Automatically reconnects listeners after reconnect. */
 export function on(
   event: string,
   handler: (...args: unknown[]) => void,
@@ -223,20 +223,16 @@ export function onCandleUpdating(
   return on("CandleUpdating", handler as (...args: unknown[]) => void);
 }
 
-/**
- * Phase B: subscribe to `NewsCollected` realtime events.
- *
- * The handler receives the event payload broadcast by the backend's
- * `socket-bridge.ts` whenever a new article is persisted. Use
- * `newsCollectedToListItem()` (from `types/news.ts`) to convert it
- * into a `NewsItem` for rendering alongside REST-fetched items.
- *
- * @returns A cleanup function that unsubscribes the handler.
- */
 export function onNewsCollected(
   handler: (event: NewsCollectedEvent) => void,
 ): () => void {
   return on("NewsCollected", handler as (...args: unknown[]) => void);
+}
+
+export function onSentimentAnalyzed(
+  handler: (event: SentimentAnalyzedPayload) => void,
+): () => void {
+  return on("SentimentAnalyzed", handler as (...args: unknown[]) => void);
 }
 
 export function onWsStatus(handler: (status: WsStatus) => void): () => void {

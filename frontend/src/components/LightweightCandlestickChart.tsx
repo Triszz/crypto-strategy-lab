@@ -23,6 +23,7 @@ export interface LightweightCandle {
 interface LightweightChartProps {
   candles: LightweightCandle[];
   onLoadOlder: () => void;
+  hasMoreData?: boolean;
 }
 
 type CandleSeries = ISeriesApi<"Candlestick">;
@@ -58,6 +59,7 @@ function makeMovingAverage(candles: LightweightCandle[], period: number) {
 export default function LightweightCandlestickChart({
   candles,
   onLoadOlder,
+  hasMoreData = true,
 }: LightweightChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -67,7 +69,13 @@ export default function LightweightCandlestickChart({
   const previousLastTimeRef = useRef<number | null>(null);
   const previousFirstTimeRef = useRef<number | null>(null);
   const loadingOlderRef = useRef(false);
+  const hasMoreDataRef = useRef(true); // Track if backend has more historical data
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+
+  // Sync external hasMoreData prop to ref
+  useEffect(() => {
+    hasMoreDataRef.current = hasMoreData;
+  }, [hasMoreData]);
 
   const sortedCandles = useMemo(() => {
     // Sort by time first
@@ -181,10 +189,12 @@ export default function LightweightCandlestickChart({
       if (!range) return;
 
       // Auto-load older candles when user scrolls to the left edge
+      // Stop if we've hit the end of available historical data
       if (
         range.from <= 2 &&
         sortedCandles.length > 0 &&
-        !loadingOlderRef.current
+        !loadingOlderRef.current &&
+        hasMoreDataRef.current
       ) {
         loadingOlderRef.current = true;
         setIsLoadingOlder(true);

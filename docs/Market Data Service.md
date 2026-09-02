@@ -1002,3 +1002,142 @@ Module được coi là "xong" khi:
 - [ ] Test integration: simulate outage 5 phút → verify DB fill đầy đủ sau reconnect.
 - [ ] Load test: 100 client subscribe cùng stream → không duplicate SUBSCRIBE message.
 - [ ] Memory profiling trong 24h stream — không có leak.
+
+---
+
+## 20. Multi-Symbol Support — Frontend Symbol Switching
+
+> **Trạng thái:** TUẦN 3 — ĐÃ SPEC, ĐANG IMPLEMENT
+
+### 20.1 Mục tiêu
+
+Cho phép user chọn symbol khác (ETHUSDT, BNBUSDT, ...) từ frontend dashboard → reset 4 charts → fetch + subscribe realtime cho symbol mới.
+
+### 20.2 Backend support hiện tại
+
+✅ Backend ĐÃ SẴN SÀNG — không cần thay đổi:
+
+- `BinanceWsAdapter` hỗ trợ multi-symbol stream qua ref-count mechanism.
+- `BinanceRestAdapter.fetchLatest` / `fetchKlines` accept bất kỳ symbol nào.
+- `PostgresCandleRepository` query theo `(symbol, timeframe)` pair — không hardcode BTCUSDT.
+- `SocketGateway` broadcast theo room `candles:{symbol}@{timeframe}` — dynamic symbol.
+
+### 20.3 Frontend changes required
+
+#### State additions
+
+```
+selectedSymbol: string            // "BTCUSDT" | "ETHUSDT" | ...
+availableSymbols: string[]        // ["BTCUSDT", "ETHUSDT", "BNBUSDT", ...]
+isChangingSymbol: boolean         // Loading state khi đổi symbol
+```
+
+#### UI component
+
+**Location:** Header section của `RealtimeDashboard`, bên trái timeframe dropdowns.
+
+**Component:** Dropdown selector (styled giống timeframe dropdown).
+
+**Options:** 8-10 major USDT pairs (BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, MATICUSDT).
+
+**Visual state:**
+- Default: `BTCUSDT` selected.
+- Hover: highlight, cursor pointer.
+- Active (đang đổi): disable dropdown + spinner icon.
+- After change: flash success (optional).
+
+#### Symbol change flow
+
+```
+User clicks new symbol
+  ↓
+1. Set isChangingSymbol = true
+  ↓
+2. Unsubscribe WebSocket cho 4 charts (old symbol)
+   → socket.emit("unsubscribe", { symbol: oldSymbol, timeframes: [tf0, tf1, tf2, tf3] })
+  ↓
+3. Clear candle data state
+   → setCandleData({})    // Wipe tất cả keys
+  ↓
+4. Update selectedSymbol state
+   → setSelectedSymbol(newSymbol)
+  ↓
+5. useEffect với dependency [selectedSymbol] trigger:
+   a. Fetch historical data cho 4 charts
+      → Promise.all([
+           api.fetchCandles(newSymbol, timeframes[0], 100),
+           api.fetchCandles(newSymbol, timeframes[1], 100),
+           api.fetchCandles(newSymbol, timeframes[2], 100),
+           api.fetchCandles(newSymbol, timeframes[3], 100),
+         ])
+   b. Subscribe WebSocket cho 4 charts (new symbol)
+      → socket.emit("subscribe", { symbol: newSymbol, timeframes: [...] })
+  ↓
+6. Charts auto-rerender với data mới (candleData state updated)
+  ↓
+7. Set isChangingSymbol = false
+```
+
+#### Edge cases
+
+**Race condition:** user đổi symbol 2 lần nhanh (BTCUSDT → ETHUSDT → BNBUSDT).
+- **Solution:** disable dropdown khi `isChangingSymbol = true`. Queue không cần thiết vì user không thể click.
+
+**WebSocket subscription overlap:** unsubscribe chưa xong, subscribe đã gửi.
+- **Solution:** backend ref-count xử lý — unsubscribe giảm count, subscribe tăng count. Nếu stream đang active cho chart khác, không ảnh hưởng.
+
+**Stale candle data:** sau clear, nhận được 1 tick cuối từ old symbol (latency).
+- **Solution:** check `event.payload.symbol === selectedSymbol` trước khi update candleData. Drop event nếu không match.
+
+**Historical fetch fail:** 1 trong 4 API call lỗi.
+- **Solution:** fail-soft — chart nào lỗi show empty + error badge. Các chart khác vẫn render. Retry button (optional).
+
+#### Memory cleanup
+
+**Old candle data:** `setCandleData({})` clear toàn bộ — JS GC tự dọn.
+
+**WebSocket listeners:** không cần remove listener vì `SocketGateway` broadcast theo room — client auto unsubscribe khi emit `unsubscribe`.
+
+### 20.4 Implementation checklist
+
+- [ ] Add symbol state (`selectedSymbol`, `availableSymbols`, `isChangingSymbol`) vào `RealtimeDashboard`.
+- [ ] Build UI dropdown component (styled theo design_sense palette).
+- [ ] Implement `handleSymbolChange(newSymbol)` function:
+  - [ ] Unsubscribe old symbol (4 timeframes).
+  - [ ] Clear `candleData` state.
+  - [ ] Update `selectedSymbol`.
+- [ ] Update `useEffect` dependency array: thêm `selectedSymbol`.
+- [ ] Add symbol guard trong WebSocket message handler: `if (payload.symbol !== selectedSymbol) return;`.
+- [ ] Update all `fetchCandles` / `socket.emit` calls: replace hardcoded `"BTCUSDT"` bằng `selectedSymbol`.
+- [ ] Test scenario:
+  - [ ] Đổi BTCUSDT → ETHUSDT → verify 4 charts load ETHUSDT data.
+  - [ ] Đổi symbol khi đang nhận realtime tick → verify không có stale data từ old symbol.
+  - [ ] Đổi timeframe SAU KHI đổi symbol → verify vẫn work (symbol + timeframe independent).
+
+### 20.5 Backend changes
+
+**KHÔNG CẦN THAY ĐỔI** — backend architecture đã hỗ trợ multi-symbol từ đầu. Chỉ frontend cần adapt.
+
+### 20.6 Testing notes
+
+**Manual test:**
+1. Boot backend + frontend.
+2. Default dashboard shows BTCUSDT × 4 timeframes.
+3. Click symbol dropdown → chọn ETHUSDT.
+4. Verify:
+   - 4 charts clear trong ~200ms.
+   - 4 charts load lại ETHUSDT historical candles.
+   - Realtime tick cho ETHUSDT stream vào (check DevTools Network → WS frame).
+   - KHÔNG còn BTCUSDT tick nào (check console log).
+5. Đổi timeframe của 1 chart → verify chart đó fetch ETHUSDT data cho timeframe mới, 3 chart kia giữ nguyên.
+6. Đổi lại về BTCUSDT → verify reset + load lại.
+
+**Load test:** chưa cần thiết ở giai đoạn này — backend đã test ref-count stability (§15 reconciliation test cover điều này gián tiếp).
+
+### 20.7 Known limitations
+
+- **Symbol list hardcoded:** `availableSymbols` là array tĩnh trong frontend. Nếu muốn dynamic (fetch từ `/api/symbols`), cần thêm endpoint + query lúc mount. Không làm trong scope này.
+- **No symbol search:** dropdown chỉ list 8-10 coins phổ biến. Nếu cần search bar (type "SOL" → filter), làm sau.
+- **No persistence:** reload page → về lại BTCUSDT default. Nếu cần persist user choice (localStorage / query param), làm sau.
+
+---

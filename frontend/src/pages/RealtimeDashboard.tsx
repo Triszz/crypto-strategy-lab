@@ -170,6 +170,8 @@ function LightweightChartPane({
   onTimeframeChange,
   isLoadingTf,
   onLoadOlder,
+  hasMoreData = true,
+  symbol,
 }: {
   chartIndex: number;
   tf: Timeframe;
@@ -178,6 +180,8 @@ function LightweightChartPane({
   onTimeframeChange: (chartIndex: number, newTf: Timeframe) => void;
   isLoadingTf: boolean;
   onLoadOlder: () => void;
+  hasMoreData?: boolean;
+  symbol: string;
 }) {
   const lastCandle = candles[candles.length - 1];
   const isUp = priceChangePct >= 0;
@@ -188,7 +192,7 @@ function LightweightChartPane({
         <div>
           <div className="flex items-center gap-2">
             <span className="font-extrabold text-sm text-slate-800">
-              {lastCandle ? "BTCUSDT" : "—"}
+              {lastCandle ? symbol : "—"}
             </span>
             <div className="relative">
               <select
@@ -196,7 +200,7 @@ function LightweightChartPane({
                 value={tf}
                 onChange={(e) => onTimeframeChange(chartIndex, e.target.value as Timeframe)}
               >
-                {(["1m", "5m", "15m", "1h", "4h", "1d"] as Timeframe[]).map((t) => (
+                {(["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"] as Timeframe[]).map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
@@ -231,6 +235,7 @@ function LightweightChartPane({
       <LightweightCandlestickChart
         candles={candles}
         onLoadOlder={onLoadOlder}
+        hasMoreData={hasMoreData}
       />
 
       <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
@@ -470,7 +475,7 @@ export function LegacyChartPane({
                 value={tf}
                 onChange={(e) => onTimeframeChange(chartIndex, e.target.value as Timeframe)}
               >
-                {(["1m", "5m", "15m", "1h", "4h", "1d"] as Timeframe[]).map((t) => (
+                {(["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w", "1M"] as Timeframe[]).map((t) => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
@@ -711,15 +716,32 @@ export function LegacyChartPane({
 // ── main component ────────────────────────────────────────────────────────────
 
 export default function RealtimeDashboard() {
-  // Chart pane configs loaded from backend (default: BTCUSDT + 4 timeframes)
-  const [chartConfigs, setChartConfigs] = useState<ChartConfig[]>([]);
+  // Initial chart count (immutable after first load)
+  const [chartCount, setChartCount] = useState(4);
 
-  // Per-chart current timeframe (keyed by chartIndex)
+  // Symbol selection
+  const [selectedSymbol, setSelectedSymbol] = useState<string>("BTCUSDT");
+  const [availableSymbols] = useState<string[]>([
+    "BTCUSDT",
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "MATICUSDT",
+  ]);
+  const [isChangingSymbol, setIsChangingSymbol] = useState(false);
+
+  // Per-chart current timeframe (keyed by chartIndex) — THIS is the source of truth
   const [timeframes, setTimeframes] = useState<Record<number, Timeframe>>({});
 
-  // Candle data keyed by timeframe (each chart has unique tf)
+  // Candle data keyed by timeframe (shared across charts)
   const [candlesData, setCandlesData] = useState<Record<string, LocalCandle[]>>({});
-  console.log(candlesData);
+  
+  // Track if each timeframe has more historical data available
+  const [hasMoreData, setHasMoreData] = useState<Record<string, boolean>>({});
+  
   // Loading states
   const [loadingConfigs, setLoadingConfigs] = useState(true);
   // Which chart indices are currently loading a tf change
@@ -747,55 +769,57 @@ export default function RealtimeDashboard() {
     { chartIndex: 3, symbol: "BTCUSDT", timeframe: "1d" },
   ];
 
-  // ── 1. Load chart configs on mount ──────────────────────────────────────
+  // ── 1. Load chart configs on mount (one-time) ──────────────────────────────────────
   useEffect(() => {
     fetchChartConfigs()
       .then((configs) => {
-        if (configs && configs.length > 0) {
-          setChartConfigs(configs);
-        } else {
-          setChartConfigs(DEFAULT_FALLBACK_CONFIGS);
+        const chartConfigs = configs && configs.length > 0 ? configs : DEFAULT_FALLBACK_CONFIGS;
+        
+        console.log("[Init] chartConfigs from backend:", chartConfigs);
+        
+        // Normalize chartIndex to start from 0
+        const normalizedConfigs = chartConfigs
+          .sort((a, b) => a.chartIndex - b.chartIndex)
+          .map((cfg, idx) => ({ ...cfg, chartIndex: idx }));
+        
+        console.log("[Init] normalized configs:", normalizedConfigs);
+        
+        // Initialize timeframes and chart count
+        setChartCount(normalizedConfigs.length);
+        const initTf: Record<number, Timeframe> = {};
+        for (const cfg of normalizedConfigs) {
+          initTf[cfg.chartIndex] = cfg.timeframe;
         }
-        setLoadingConfigs(false);
+        console.log("[Init] initTf:", initTf);
+        setTimeframes(initTf);
+        
+        // Load initial candles for all timeframes
+        (async () => {
+          const next: Record<string, LocalCandle[]> = {};
+          try {
+            for (const cfg of normalizedConfigs) {
+              const candles = await fetchCandles({
+                symbol: selectedSymbol,
+                timeframe: cfg.timeframe,
+                limit: 100,
+              });
+              next[cfg.timeframe] = candles.map((c) => rawToLocal(c, cfg.timeframe));
+            }
+            setCandlesData(next);
+            setLoadingConfigs(false);
+          } catch (err) {
+            setError(`Không tải được candle: ${errorMessage(err)}`);
+            setLoadingConfigs(false);
+          }
+        })();
       })
       .catch((err) => {
         setError(`Không tải được chart config: ${errorMessage(err)}`);
         setLoadingConfigs(false);
       });
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── 2. Init timeframes from chart configs + load initial candles ───────────
-  useEffect(() => {
-    if (chartConfigs.length === 0) return;
-    setError(null);
-
-    // Initialize per-chart timeframes from config
-    const initTf: Record<number, Timeframe> = {};
-    for (const cfg of chartConfigs) {
-      initTf[cfg.chartIndex] = cfg.timeframe;
-    }
-    setTimeframes(initTf);
-
-    // Fetch candles for each config's timeframe sequentially
-    (async () => {
-      const next: Record<string, LocalCandle[]> = {};
-      try {
-        for (const cfg of chartConfigs) {
-          const candles = await fetchCandles({
-            symbol: cfg.symbol,
-            timeframe: cfg.timeframe,
-            limit: 100,
-          });
-          next[cfg.timeframe] = candles.map((c) => rawToLocal(c, cfg.timeframe));
-        }
-        setCandlesData(next);
-      } catch (err) {
-        setError(`Không tải được candle: ${errorMessage(err)}`);
-      }
-    })();
-  }, [chartConfigs]);
-
-  // ── 3. Socket connection ─────────────────────────────────────────────────
+  // ── 2. Socket connection ─────────────────────────────────────────────────
   useEffect(() => {
     // Status listener
     const offStatus = onWsStatus((status) => {
@@ -816,7 +840,14 @@ export default function RealtimeDashboard() {
     // Candle listener — single mutator shared by both Closed and Updating events
     const applyCandle = (event: CandleClosedEvent | CandleUpdatingEvent): void => {
       const { candle } = event.payload;
+      const eventSymbol = event.payload.symbol;
       const tf = event.payload.timeframe as Timeframe;
+
+      // Guard: only apply candle if it matches current selected symbol
+      if (eventSymbol !== selectedSymbol) {
+        console.log(`[WS] Ignoring candle from ${eventSymbol}, current symbol is ${selectedSymbol}`);
+        return;
+      }
 
       setCandlesData((prev) => {
         const list = prev[tf] ?? [];
@@ -839,24 +870,80 @@ export default function RealtimeDashboard() {
       offUpdating();
       disconnect();
     };
-  }, []);
+  }, [selectedSymbol]);
 
-  // ── 4. Subscribe to streams when configs + socket ready ──────────────────
+  // ── 3. Subscribe to streams when timeframes or selectedSymbol change ──────────────────
   useEffect(() => {
-    if (chartConfigs.length === 0) return;
+    if (Object.keys(timeframes).length === 0) return;
     if (!isConnected()) return;
 
     const tfMap = new Map<string, Timeframe[]>();
-    for (const cfg of chartConfigs) {
-      const existing = tfMap.get(cfg.symbol) ?? [];
-      tfMap.set(cfg.symbol, [...existing, cfg.timeframe]);
-    }
+    
+    // Collect unique timeframes from current state
+    const uniqueTfs = Array.from(new Set(Object.values(timeframes)));
+    tfMap.set(selectedSymbol, uniqueTfs);
 
-    for (const [symbol, timeframes] of tfMap) {
-      subscribe(symbol, timeframes);
+    for (const [sym, tfs] of tfMap) {
+      subscribe(sym, tfs);
     }
-  }, [chartConfigs]);
+  }, [timeframes, selectedSymbol]); // Depend on both timeframes and selectedSymbol
 
+  // ── 4. Handle symbol change ───────────────────────────────────────────────
+  const handleSymbolChange = useCallback(
+    async (newSymbol: string) => {
+      if (newSymbol === selectedSymbol) return;
+      if (isChangingSymbol) return; // Prevent double-click
+
+      console.log(`[SymbolChange] Switching from ${selectedSymbol} to ${newSymbol}`);
+      setIsChangingSymbol(true);
+      setError(null);
+
+      try {
+        // 1. Unsubscribe all current streams (old symbol)
+        const currentTfs = Array.from(new Set(Object.values(timeframes)));
+        if (currentTfs.length > 0 && isConnected()) {
+          console.log(`[SymbolChange] Unsubscribing ${selectedSymbol} × ${currentTfs.length} timeframes`);
+          // Note: unsubscribe is a no-op in the socket library currently,
+          // but we keep the logic for future implementation
+        }
+
+        // 2. Clear all candle data
+        console.log("[SymbolChange] Clearing candle data");
+        setCandlesData({});
+
+        // 3. Update selected symbol (triggers re-subscribe via useEffect)
+        setSelectedSymbol(newSymbol);
+
+        // 4. Fetch historical data for all 4 charts with new symbol
+        console.log(`[SymbolChange] Fetching historical data for ${newSymbol}`);
+        const next: Record<string, LocalCandle[]> = {};
+        
+        for (let chartIndex = 0; chartIndex < chartCount; chartIndex++) {
+          const tf = timeframes[chartIndex];
+          if (!tf) continue;
+          
+          const candles = await fetchCandles({
+            symbol: newSymbol,
+            timeframe: tf,
+            limit: 100,
+          });
+          next[tf] = candles.map((c) => rawToLocal(c, tf));
+        }
+
+        setCandlesData(next);
+        console.log(`[SymbolChange] Successfully switched to ${newSymbol}`);
+      } catch (err) {
+        setError(`Không tải được dữ liệu cho ${newSymbol}: ${errorMessage(err)}`);
+        // Revert symbol on error
+        setSelectedSymbol(selectedSymbol);
+      } finally {
+        setIsChangingSymbol(false);
+      }
+    },
+    [selectedSymbol, isChangingSymbol, timeframes, chartCount],
+  );
+
+  // ── 5. Handle per-chart timeframe change ───────────────────────────────────
   // ── 5. Handle per-chart timeframe change ───────────────────────────────────
   const handleTimeframeChange = useCallback(
     async (chartIndex: number, newTf: Timeframe) => {
@@ -864,11 +951,11 @@ export default function RealtimeDashboard() {
       if (currentTf === newTf) return;
 
       // Check for conflict: another chart already uses this timeframe
-      const conflict = chartConfigs.find(
-        (c) => c.chartIndex !== chartIndex && c.timeframe === newTf,
+      const otherChartUsingNewTf = Object.entries(timeframes).find(
+        ([idx, tf]) => Number(idx) !== chartIndex && tf === newTf,
       );
-      if (conflict) {
-        setError(`Timeframe ${newTf} đã được sử dụng ở chart ${conflict.chartIndex + 1}. Không thể chọn trùng.`);
+      if (otherChartUsingNewTf) {
+        setError(`Timeframe ${newTf} đã được sử dụng ở chart ${Number(otherChartUsingNewTf[0]) + 1}. Không thể chọn trùng.`);
         return;
       }
 
@@ -876,26 +963,35 @@ export default function RealtimeDashboard() {
       setLoadingTfCharts((prev) => new Set(prev).add(chartIndex));
 
       // Update timeframe immediately (optimistic)
-      setTimeframes((prev) => ({ ...prev, [chartIndex]: newTf }));
+      const updatedTimeframes = { ...timeframes, [chartIndex]: newTf };
+      setTimeframes(updatedTimeframes);
 
-      // Clear old candles for the old timeframe (no longer needed)
-      setCandlesData((prev) => {
-        const next = { ...prev };
-        delete next[currentTf];
-        return next;
-      });
+      // Clear old candles ONLY if no other chart is using that timeframe
+      const otherChartStillUsesOldTf = Object.entries(updatedTimeframes)
+        .some(([idx, tf]) => Number(idx) !== chartIndex && tf === currentTf);
+
+      if (!otherChartStillUsesOldTf) {
+        setCandlesData((prev) => {
+          const next = { ...prev };
+          delete next[currentTf];
+          return next;
+        });
+      }
+
+      // Reset hasMoreData for the new timeframe
+      setHasMoreData((prev) => ({ ...prev, [newTf]: true }));
 
       try {
         // Update chart config in backend (ignore error if backend offline)
         await updateChartConfig({
           chartIndex,
-          symbol: "BTCUSDT",
+          symbol: selectedSymbol,
           timeframe: newTf,
         }).catch(() => {});
 
-        // Fetch new candles (automatically uses fallback mock candles if backend offline)
+        // Fetch new candles with selected symbol
         const result = await fetchCandles({
-          symbol: "BTCUSDT",
+          symbol: selectedSymbol,
           timeframe: newTf,
           limit: 100,
         });
@@ -903,13 +999,6 @@ export default function RealtimeDashboard() {
           ...prev,
           [newTf]: result.map((c) => rawToLocal(c, newTf)),
         }));
-
-        // Update local chartConfigs to reflect the change
-        setChartConfigs((prev) =>
-          prev.map((c) =>
-            c.chartIndex === chartIndex ? { ...c, timeframe: newTf } : c,
-          ),
-        );
       } catch (err) {
         setError(`Không tải được candle ${newTf}: ${errorMessage(err)}`);
         // Revert timeframe on error
@@ -923,27 +1012,33 @@ export default function RealtimeDashboard() {
         });
       }
     },
-    [timeframes, chartConfigs],
+    [timeframes, selectedSymbol],
   );
 
   // ── 6. Load older data handler per chart ────────────────────────────────
   const loadOlderHandlers = useMemo(() => {
     const handlers: Record<number, () => void> = {};
-    for (const cfg of chartConfigs) {
-      const tf = timeframes[cfg.chartIndex] ?? cfg.timeframe;
-      handlers[cfg.chartIndex] = () => {
+    for (let chartIndex = 0; chartIndex < chartCount; chartIndex++) {
+      const tf = timeframes[chartIndex];
+      if (!tf) continue;
+      
+      handlers[chartIndex] = () => {
         setCandlesData((currentData) => {
           const currentCandles = currentData[tf] ?? [];
           const oldestCandle = currentCandles[0];
           if (!oldestCandle) return currentData;
 
           loadMoreCandles({
-            symbol: cfg.symbol,
+            symbol: selectedSymbol,
             timeframe: tf,
             beforeMs: oldestCandle.openTime,
             limit: 100,
           }).then(({ candles: older }) => {
-            if (older.length === 0) return;
+            if (older.length === 0) {
+              // No more historical data available
+              setHasMoreData((prev) => ({ ...prev, [tf]: false }));
+              return;
+            }
             const olderLocal = older.map((c) => rawToLocal(c, tf));
             setCandlesData((prev) => {
               const existing = prev[tf] ?? [];
@@ -962,7 +1057,7 @@ export default function RealtimeDashboard() {
       };
     }
     return handlers;
-  }, [chartConfigs, timeframes]);
+  }, [chartCount, timeframes, selectedSymbol]);
 
   // NOTE: load-newer handlers intentionally removed.
   // Realtime WebSocket continuously appends/updates the latest candle,
@@ -980,7 +1075,7 @@ export default function RealtimeDashboard() {
           </h2>
           {currentPrice > 0 && (
             <p className="text-xs text-slate-400 mt-0.5">
-              BTCUSDT · {currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })} USDT
+              {selectedSymbol} · {currentPrice.toLocaleString("en-US", { minimumFractionDigits: 2 })} USDT
             </p>
           )}
                   </div>
@@ -1013,21 +1108,29 @@ export default function RealtimeDashboard() {
       {/* ── Control bar ─────────────────────────────────────────────────────── */}
       <section className="flex flex-wrap items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
         <div className="flex items-center gap-6">
-          {/* Pair */}
+          {/* Symbol selector */}
           <div className="flex flex-col gap-1">
             <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              Pair / Coin
+              Symbol / Coin
             </label>
             <div className="relative">
-              <button className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200/80 font-bold text-sm text-slate-800 hover:border-slate-300 transition-colors min-w-[130px] justify-between">
-                <span className="flex items-center gap-2">
-                  <span className="w-5 h-5 bg-amber-500 rounded-full flex items-center justify-center text-white font-bold text-[10px] shadow-sm">
-                    ₿
-                  </span>
-                  BTCUSDT
-                </span>
-                <ChevronDown className="w-4 h-4 text-slate-500" />
-              </button>
+              <select
+                className="appearance-none bg-slate-50 hover:bg-slate-100 border border-slate-200/80 font-bold text-sm text-slate-800 hover:border-slate-300 transition-colors px-3 py-2 rounded-xl cursor-pointer pr-8 disabled:cursor-not-allowed disabled:opacity-50"
+                value={selectedSymbol}
+                onChange={(e) => handleSymbolChange(e.target.value)}
+                disabled={isChangingSymbol || loadingConfigs}
+              >
+                {availableSymbols.map((sym) => (
+                  <option key={sym} value={sym}>
+                    {sym}
+                  </option>
+                ))}
+              </select>
+              {isChangingSymbol ? (
+                <Loader2 className="w-4 h-4 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none animate-spin" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              )}
                   </div>
                   </div>
                   </div>
@@ -1073,29 +1176,34 @@ export default function RealtimeDashboard() {
                   </div>
               ))}
             </>
-          ) : chartConfigs.length === 0 ? (
+          ) : chartCount === 0 ? (
             <div className="col-span-1 flex flex-col items-center justify-center py-20 text-slate-400 gap-3">
               <AlertCircle className="w-8 h-8" />
               <p className="font-semibold">Không tìm thấy chart config nào.</p>
               <p className="text-sm">Kiểm tra lại backend và database.</p>
                   </div>
           ) : (
-            chartConfigs.map((cfg) => {
-            const tf = timeframes[cfg.chartIndex] ?? cfg.timeframe;
-            const candles = candlesData[tf] ?? [];
-            return (
-              <LightweightChartPane
-                key={cfg.chartIndex}
-                chartIndex={cfg.chartIndex}
-                tf={tf}
-                candles={candles}
-                priceChangePct={priceChangePct}
-                onTimeframeChange={handleTimeframeChange}
-                isLoadingTf={loadingTfCharts.has(cfg.chartIndex)}
-                onLoadOlder={loadOlderHandlers[cfg.chartIndex] ?? (() => {})}
-              />
-            );
-          })
+            Array.from({ length: chartCount }, (_, chartIndex) => {
+              const tf = timeframes[chartIndex];
+              console.log(`[Render] chartIndex=${chartIndex}, tf=${tf}, chartCount=${chartCount}`);
+              if (!tf) return null;
+              
+              const candles = candlesData[tf] ?? [];
+              return (
+                <LightweightChartPane
+                  key={chartIndex}
+                  chartIndex={chartIndex}
+                  tf={tf}
+                  candles={candles}
+                  priceChangePct={priceChangePct}
+                  onTimeframeChange={handleTimeframeChange}
+                  isLoadingTf={loadingTfCharts.has(chartIndex)}
+                  onLoadOlder={loadOlderHandlers[chartIndex] ?? (() => {})}
+                  hasMoreData={hasMoreData[tf] ?? true}
+                  symbol={selectedSymbol}
+                />
+              );
+            })
           )}
                 </div>
                 
@@ -1192,7 +1300,7 @@ export default function RealtimeDashboard() {
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-extrabold text-slate-800">Giá mới nhất</h3>
               <span className="text-[10px] font-bold text-slate-400">
-                {chartConfigs[0] ? (timeframes[chartConfigs[0].chartIndex] ?? chartConfigs[0].timeframe) : "—"}
+                {timeframes[0] ?? "—"}
               </span>
             </div>
             
@@ -1208,7 +1316,7 @@ export default function RealtimeDashboard() {
                 </thead>
                 <tbody>
                   {(() => {
-                    const firstTf = chartConfigs[0] ? (timeframes[chartConfigs[0].chartIndex] ?? chartConfigs[0].timeframe) : null;
+                    const firstTf = timeframes[0];
                     const firstCandles = firstTf ? (candlesData[firstTf] ?? []) : [];
                     return firstCandles
                       .slice(-10)

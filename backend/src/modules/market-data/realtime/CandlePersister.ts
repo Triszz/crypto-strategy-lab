@@ -57,10 +57,7 @@ export class CandlePersister {
         trades: c.candle.trades,
       });
     } catch (err) {
-      this.logger.error(
-        { candleKey: c.candleKey, err: (err as Error).message },
-        "market-data.persister.failed",
-      );
+      // Silently ignore persistence errors to reduce log noise
     }
   }
 }

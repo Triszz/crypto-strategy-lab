@@ -226,9 +226,34 @@ export class BackfillService {
       endMs: beforeMs,
       limit: safeLimit,
     });
-    if (rows.length === 0) return rows;
+    if (rows.length === 0) {
+      this.logger.info(
+        { symbol, timeframe, beforeMs, limit: safeLimit },
+        "market-data.load-more.empty",
+      );
+      return rows;
+    }
     await this.repo.upsertBatch(rows);
-    // Log removed: too verbose for production (fires on every scroll)
+    this.logger.info(
+      {
+        symbol,
+        timeframe,
+        beforeMs,
+        limit: safeLimit,
+        fetched: rows.length,
+        oldest: rows[0]?.openTime,
+        newest: rows[rows.length - 1]?.openTime,
+        candles: rows.map((c) => ({
+          openTime: c.openTime,
+          open: c.open,
+          high: c.high,
+          low: c.low,
+          close: c.close,
+          volume: c.volume,
+        })),
+      },
+      "market-data.load-more.success",
+    );
     return rows.sort((a, b) => a.openTime - b.openTime);
   }
 }

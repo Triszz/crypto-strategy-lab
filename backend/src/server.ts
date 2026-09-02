@@ -8,6 +8,7 @@ import { closeSocketServer, getSocketServer } from "./infrastructure/websocket/s
 import { getEventBus } from "./shared/event-bus";
 import { buildMarketDataContainer } from "./modules/market-data";
 import { buildSearchContainer } from "./modules/search";
+import { buildNewsContainer } from "./modules/news/news.container";
 import { mountMarketData, mountSearch, mountStrategy } from "./api/routes";
 import { bootstrapStrategies } from "./modules/strategy";
 
@@ -54,6 +55,20 @@ async function main(): Promise<void> {
   const search = buildSearchContainer();
   mountSearch(search);
 
+  // Build and start the News module. `buildNewsContainer()` returns
+  // the shared service + crawler singleton; `crawler.start()` registers
+  // the periodic cron (interval from env, default 5 minutes) and fires
+  // one initial crawl so /news has data immediately. A value of 0
+  // disables the periodic run but still triggers the initial crawl.
+  // Phase B: pass the Socket.IO server so `NewsCollected` events are
+  // forwarded to the FE in real-time.
+  const news = buildNewsContainer(
+    undefined,
+    undefined,
+    getSocketServer(),
+  );
+  news.crawler.start(env.NEWS_CRAWL_INTERVAL_MS > 0 ? env.NEWS_CRAWL_INTERVAL_MS : 0);
+
   // Mount Strategy catalogue routes (stateless, no container needed).
   bootstrapStrategies();
   mountStrategy();
@@ -85,13 +100,14 @@ async function main(): Promise<void> {
   // health checks immediately while backfill + WS connect happen.
   void marketStartPromise;
 
-  installShutdown(httpServer, marketData, search);
+  installShutdown(httpServer, marketData, search, news);
 }
 
 function installShutdown(
   httpServer: http.Server,
   marketData: ReturnType<typeof buildMarketDataContainer>,
   _search: ReturnType<typeof buildSearchContainer>,
+  news: ReturnType<typeof buildNewsContainer>,
 ): void {
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -129,6 +145,12 @@ function installShutdown(
       await closeRedisConnection();
     } catch (err) {
       logger.warn({ err }, "Redis close error");
+    }
+
+    try {
+      news.crawler.stop();
+    } catch (err) {
+      logger.warn({ err }, "News crawler stop error");
     }
 
     // Touch Socket.IO singleton to make sure it was initialised.

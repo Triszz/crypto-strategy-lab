@@ -42,7 +42,15 @@ export const CrawlNewsBodySchema = z.object({
     .trim()
     .toUpperCase()
     .regex(/^[A-Z]{2,10}(USDT)?$/, "Invalid symbol format (e.g. BTC, ETH, BTCUSDT)")
-    .optional(),
+    // Accept null as well as undefined — the FE used to send
+    // `{ symbol: null }` when the user picked "ALL", which Zod's
+    // `.optional()` (string | undefined) rejected with 400. Using
+    // `.nullish()` widens the accepted set to `string | null | undefined`,
+    // then we normalise both `null` and a missing field to `undefined`
+    // so the downstream service signature (`symbol?: string`) still
+    // matches without a separate coercion step in the controller.
+    .nullish()
+    .transform((v) => (v === null ? undefined : v)),
 });
 
 export type GetNewsQuery = z.infer<typeof GetNewsQuerySchema>;

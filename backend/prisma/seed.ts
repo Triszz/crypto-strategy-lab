@@ -29,7 +29,39 @@ async function main(): Promise<void> {
     },
   });
 
-  // 2. Default settings (leaderboard top-K, search defaults).
+  // 2b. Reference Symbols. Required by `NewsCoin` joins: a crawled news
+  //     can only be linked to a Symbol row that already exists. The MVP
+  //     MVP coin set matches the default crawl targets in
+  //     `NewsCrawlerQueue`.
+  const referenceSymbols = [
+    { symbol: "BTCUSDT", baseAsset: "BTC", quoteAsset: "USDT" },
+    { symbol: "ETHUSDT", baseAsset: "ETH", quoteAsset: "USDT" },
+    { symbol: "SOLUSDT", baseAsset: "SOL", quoteAsset: "USDT" },
+  ];
+  for (const s of referenceSymbols) {
+    await prisma.symbol.upsert({
+      where: { symbol: s.symbol },
+      update: { baseAsset: s.baseAsset, quoteAsset: s.quoteAsset, isActive: true },
+      create: { ...s, isActive: true },
+    });
+  }
+
+  // 2c. News provider row used by the demo RSS adapter. We upsert it
+  //     here too so the crawler doesn't race with the seed on a fresh
+  //     database.
+  await prisma.newsProvider.upsert({
+    where: { code: "CRYPTO_NEWS_RSS" },
+    update: { requiresApiKey: false, isActive: true },
+    create: {
+      code: "CRYPTO_NEWS_RSS",
+      name: "Crypto News RSS Provider",
+      baseUrl: "https://cryptonews.example.com",
+      requiresApiKey: false,
+      isActive: true,
+    },
+  });
+
+  // 3. Default settings (leaderboard top-K, search defaults).
   await prisma.setting.upsert({
     where: { key: "leaderboard.top_k" },
     update: {},

@@ -36,7 +36,18 @@ export interface NewsFilterOptions {
 
 export interface NewsRepository {
   saveNewsBatch(providerId: string, newsItems: Omit<NewsItem, "providerId">[]): Promise<NewsItem[]>;
+  saveNewsBatchAndEnqueueOutbox(
+    providerId: string,
+    newsItems: Omit<NewsItem, "providerId">[],
+    outboxPayloadFn: (savedNews: NewsItem[]) => OutboxEventPayload[],
+  ): Promise<NewsItem[]>;
   getNews(options: NewsFilterOptions): Promise<{ items: NewsItem[]; total: number }>;
   getNewsById(id: string): Promise<NewsItem | null>;
   findOrCreateProvider(code: string, name: string, baseUrl: string): Promise<NewsProviderEntity>;
+}
+
+/** Payload written to QueueJob for each outbox event. */
+export interface OutboxEventPayload {
+  eventName: string;
+  payload: Record<string, unknown>;
 }

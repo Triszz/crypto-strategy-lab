@@ -122,17 +122,18 @@ function bootstrapRegistry(): AdapterRegistry {
  * enables those adapters in the registry.
  *
  * Supported values:
- *   "cryptocompare"           → CryptoCompare API (needs CRYPTOCOMPARE_API_KEY)
+ *   "newsdata"                → NewsData.io (https://newsdata.io/) — PRIMARY; free tier: 200 credits/day
+ *   "cryptocompare"           → CryptoCompare API (https://min-api.cryptocompare.com/)
  *   "coindesk"                → CoinDesk RSS
  *   "cointelegraph"           → Cointelegraph RSS
  *   "btcmagazine"             → Bitcoin Magazine RSS
  *   "rss"                     → Mock RSS (dev / fallback)
  *
- * If NEWS_PROVIDERS is omitted → ALL adapters that have their key configured
- * are auto-enabled (cryptocompare only if key present; all RSS always).
+ * If NEWS_PROVIDERS is omitted → ALL adapters that have their API key configured
+ * are auto-enabled (newsdata/cryptocompare only when key present; RSS feeds always).
  *
  * @example
- *   NEWS_PROVIDERS=cryptocompare,coindesk,cointelegraph
+ *   NEWS_PROVIDERS=newsdata,coindesk,cointelegraph
  */
 function applyEnvOverrides(reg: AdapterRegistry): void {
   const envProviders = (process.env.NEWS_PROVIDERS ?? "")
@@ -199,8 +200,8 @@ export function buildNewsAdapter(): NewsProviderAdapter {
   if (adapters.length === 0) {
     logger.warn(
       "[adapter-factory] No news adapters are enabled. " +
-        "Set NEWS_PROVIDERS=cryptocompare,coindesk,cointelegraph in .env, " +
-        "or ensure CRYPTOCOMPARE_API_KEY is set. Using mock RSS fallback.",
+        "Set NEWS_PROVIDERS=newsdata,coindesk in .env, " +
+        "and ensure NEWSDATA_API_KEY is set at https://newsdata.io. Using mock RSS fallback.",
     );
     return new RSSNewsAdapter();
   }

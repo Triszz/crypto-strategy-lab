@@ -6,6 +6,19 @@ import {
   SentimentSummary,
 } from "../domain/sentiment.entity";
 
+/**
+ * Strip the "USDT"/"BUSD"/"USDC"/"USD" quote suffix and uppercase.
+ *
+ * Mirrors the helper of the same name in `PrismaNewsRepository` so both
+ * modules agree on what "BTC" means: the base asset ("BTC"), not the
+ * trading pair ("BTCUSDT"). Without this, callers passing "BTCUSDT"
+ * would resolve to "BTCUSDT" — a string that never matches any
+ * `Symbol.baseAsset` (we store the base/quote split, not the pair).
+ */
+function normalizeBaseAsset(symbol: string): string {
+  return symbol.toUpperCase().replace(/(USDT|USDC|BUSD|USD)$/i, "");
+}
+
 export class PrismaSentimentRepository implements SentimentRepository {
   private prisma = getPrismaClient();
 
@@ -69,16 +82,37 @@ export class PrismaSentimentRepository implements SentimentRepository {
   }
 
   public async getSentimentSummary(symbol?: string): Promise<SentimentSummary> {
-    const cleanSymbol = symbol ? symbol.toUpperCase().replace("USDT", "") : "BTC";
+    // Phase B bug fix (spec `02-sentiment-module.md` §7.1):
+    //
+    //   BEFORE: filter by free-text `title ILIKE 'BTC'` / `summary ILIKE 'BTC'`.
+    //     - False positive: a news about ETH whose title mentions "BTC" would
+    //       be returned as BTC sentiment.
+    //     - False negative: a real BTC news whose title says "Ethereum-killer"
+    //       (but is tagged `BTC` in `NewsCoin`) would be missed.
+    //
+    //   AFTER: filter via the `news.coins.some` relation through `NewsCoin`
+    //   and `Symbol.baseAsset`. The adapter explicitly tags which symbols a
+    //   news is about, and that mapping is the single source of truth.
+    //
+    //   Same pattern News module applied in Phase A.3 (see
+    //   `PrismaNewsRepository.getNews`). Using `mode: "insensitive"` so
+    //   callers passing "btc" still match.
+    const cleanSymbol = symbol ? normalizeBaseAsset(symbol) : "BTC";
 
     const sentiments = await this.prisma.sentiment.findMany({
       where: symbol
         ? {
             news: {
-              OR: [
-                { title: { contains: cleanSymbol, mode: "insensitive" } },
-                { summary: { contains: cleanSymbol, mode: "insensitive" } },
-              ],
+              coins: {
+                some: {
+                  symbol: {
+                    baseAsset: {
+                      equals: cleanSymbol,
+                      mode: "insensitive",
+                    },
+                  },
+                },
+              },
             },
           }
         : undefined,

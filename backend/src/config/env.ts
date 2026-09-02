@@ -28,7 +28,8 @@ const RawEnvSchema = z.object({
   GEMINI_API_KEY: z.string().optional().default(""),
 
   // News crawler — comma-separated list of adapter codes to enable.
-  // Supported: cryptocompare, coindesk, cointelegraph, btcmagazine, rss.
+  // Supported: newsdata, cryptocompare, coindesk, cointelegraph, btcmagazine, rss.
+  // newsdata (primary): get free key at https://newsdata.io (200 credits/day).
   // Leave blank to auto-enable all configured sources.
   // Example: NEWS_PROVIDERS=cryptocompare,coindesk,cointelegraph
   NEWS_PROVIDERS: z.string().optional().default(""),

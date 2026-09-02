@@ -91,6 +91,28 @@ export interface CreateCandidateInput {
   readonly status?: CandidateStatus;
 }
 
+/** Filter for listing SearchRuns (see `SearchRepository.listSearchRuns`). */
+export interface ListSearchRunsFilter {
+  readonly status?: SearchRunStatus;
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
+/** Minimal SearchAlgorithm summary used by list responses. */
+export interface AlgorithmSummary {
+  readonly id: string;
+  readonly code: string;
+  readonly name: string;
+}
+
+/** Minimal Symbol summary used by list responses. */
+export interface SymbolSummary {
+  readonly id: string;
+  readonly symbol: string;
+  readonly baseAsset: string;
+  readonly quoteAsset: string;
+}
+
 /**
  * Repository port for Search persistence.
  *
@@ -143,4 +165,33 @@ export interface SearchRepository {
    * @returns Rows ordered by `createdAt ASC`.
    */
   getCandidatesByRun(searchRunId: string): Promise<ReadonlyArray<CandidateRecord>>;
+
+  /**
+   * Count CandidateStrategy rows for a given SearchRun.
+   * Cheap aggregate used to summarise runs in list responses.
+   */
+  countCandidatesByRun(searchRunId: string): Promise<number>;
+
+  /**
+   * List SearchRuns, most recent first.
+   *
+   * @param filter.status  Optional SearchStatus filter.
+   * @param filter.limit   Page size (default 50, max 200).
+   * @param filter.cursor  SearchRun id — when supplied, results start
+   *                       after this row (cursor pagination).
+   * @returns             The matching SearchRun records.
+   */
+  listSearchRuns(filter?: ListSearchRunsFilter): Promise<ReadonlyArray<SearchRunRecord>>;
+
+  /**
+   * Fetch a SearchAlgorithm summary by id.
+   * Returns a fallback placeholder when not found.
+   */
+  getAlgorithmSummary(algorithmId: string): Promise<AlgorithmSummary>;
+
+  /**
+   * Fetch a Symbol summary by id.
+   * Returns a fallback placeholder when not found.
+   */
+  getSymbolSummary(symbolId: string): Promise<SymbolSummary>;
 }

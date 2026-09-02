@@ -24,7 +24,6 @@ export class GeminiSentimentAnalyzer implements SentimentAnalyzer {
     }
 
     try {
-      // In production with GEMINI_API_KEY configured, call Gemini API endpoint
       const response = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
         {
@@ -35,7 +34,7 @@ export class GeminiSentimentAnalyzer implements SentimentAnalyzer {
               {
                 parts: [
                   {
-                    text: `You are a financial crypto sentiment analyzer. Analyze the text below and respond with strictly valid JSON only: {"classification": "POSITIVE"|"NEUTRAL"|"NEGATIVE", "score": number between -1.0 and 1.0, "confidence": number between 0.0 and 1.0}.\n\nText: "${text}"`,
+                    text: `You are a financial crypto sentiment analyzer. Analyze the provided text (which may be in English or Vietnamese) and respond with strictly valid JSON only: {"classification": "POSITIVE"|"NEUTRAL"|"NEGATIVE", "score": number between -1.0 and 1.0, "confidence": number between 0.0 and 1.0}.\n\nText: "${text}"`,
                   },
                 ],
               },

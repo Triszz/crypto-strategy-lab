@@ -16,8 +16,17 @@ export interface NewsCollectedPayload {
   coinSymbols?: string[];
 }
 
+interface CacheEntry {
+  data: SentimentSummary;
+  expiresAt: number;
+}
+
 export class SentimentService {
   private prisma = getPrismaClient();
+
+  // In-memory LRU Cache with 30s TTL for getSentimentSummary
+  private summaryCache = new Map<string, CacheEntry>();
+  private readonly CACHE_TTL_MS = 30_000; // 30 seconds
 
   constructor(
     private readonly repository: SentimentRepository,
@@ -33,6 +42,10 @@ export class SentimentService {
     });
   }
 
+  public clearCache(): void {
+    this.summaryCache.clear();
+  }
+
   public async handleNewsCollected(payload: NewsCollectedPayload): Promise<SentimentRecord | null> {
     if (!payload || !payload.newsId) return null;
 
@@ -45,6 +58,9 @@ export class SentimentService {
     );
 
     const record = await this.repository.saveSentiment(payload.newsId, provider.id, result);
+
+    // Invalidate LRU cache on new sentiment analysis
+    this.summaryCache.clear();
 
     this.eventBus.publish("SentimentAnalyzed", {
       newsId: payload.newsId,
@@ -86,13 +102,28 @@ export class SentimentService {
   }
 
   public async getSentimentSummary(symbol?: string): Promise<SentimentSummary> {
+    const cacheKey = (symbol || "ALL").toUpperCase();
+    const cached = this.summaryCache.get(cacheKey);
+
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.data;
+    }
+
     // Automatically backfill any existing news items in DB that were missing sentiment records
     await this.backfillUnanalyzedNews();
 
     const summary = await this.repository.getSentimentSummary(symbol);
-    return {
+    const result: SentimentSummary = {
       ...summary,
       analyzerCode: this.analyzer.providerCode,
     };
+
+    // Cache result with 30s TTL
+    this.summaryCache.set(cacheKey, {
+      data: result,
+      expiresAt: Date.now() + this.CACHE_TTL_MS,
+    });
+
+    return result;
   }
 }

@@ -328,6 +328,7 @@ Output: `BackfillProgress[]` cùng shape với `backfillInitial` + field `trimme
 
 - Gọi `rest.fetchKlines({ symbol, timeframe, endMs: beforeMs, limit })`.
 - Persist + return candles sorted ASC by openTime.
+- **Log removed** — quá verbose khi user scroll (mỗi scroll 1 log).
 
 Limit clamp: `1 <= limit <= 1000`.
 
@@ -887,6 +888,7 @@ Service chịu trách nhiệm: `application/ReconciliationService.ts`. Được 
 |---|---|---|
 | `RECONCILE_ON_RECONNECT` | `true` | Bật/tắt §15.4.1. Nếu `false`, chỉ periodic chạy. |
 | `RECONCILE_INTERVAL_MS` | `60000` | Interval cho §15.4.2. `0` = tắt periodic (chỉ reconnect). |
+| `MAX_CANDLES_PER_CHART` | `100` | Retention cap — số candle tối đa giữ lại mỗi (symbol, timeframe). Áp dụng sau `backfillMissing` ở boot. Set `0` để tắt trim. |
 
 Test override: `buildMarketDataContainer({ reconcileIntervalMs: 1000, reconcileOnReconnect: false })`.
 
@@ -898,6 +900,7 @@ Service emit các structured log sau (prefix `market-data.reconcile.*`):
 |---|---|---|
 | `market-data.reconcile.periodic.started` | Periodic timer khởi động | `intervalMs` |
 | `market-data.reconcile.periodic.disabled` | `intervalMs <= 0` | `intervalMs` |
+| `market-data.reconcile.periodic.disabled-by-config` | `enabled = false` | — |
 | `market-data.reconcile.periodic.stopped` | Periodic timer dừng | — |
 | `market-data.reconcile.periodic.filled` | Periodic tick có stream được fill | `streams`, `total` |
 | `market-data.reconcile.periodic.skipped-overlap` | Periodic tick bị skip vì tick trước còn chạy | — |
@@ -906,7 +909,7 @@ Service emit các structured log sau (prefix `market-data.reconcile.*`):
 | `market-data.reconcile.coalesced` | Reuse promise đang chạy | `stream`, `trigger` |
 | `market-data.reconcile.start` | Bắt đầu 1 stream gap-fill | `trigger`, `stream`, `fromMs`, `untilMs`, `gapCandles` |
 | `market-data.reconcile.complete` | Fill xong 1 stream | `trigger`, `stream`, `fetched`, `upserted`, `batches`, `durationMs`, `dbLatestOpenTime`, `stillStale` |
-| `market-data.reconcile.no-gap` | DB đã caught-up | `stream`, `trigger`, `dbLatestOpenTime`, `lastClosedOpenTime` |
+| `market-data.reconcile.no-gap` | DB đã caught-up (log bị tắt trong code) | — |
 | `market-data.reconcile.skip-empty-db` | DB rỗng, skip | `stream`, `trigger` |
 | `market-data.reconcile.too-large` | Vượt MAX_REST_CALLS_PER_RUN | `stream`, `trigger`, `batches` |
 | `market-data.reconcile.failed` | Exception trong runReconcile | `trigger`, `stream`, `err` |
@@ -950,13 +953,20 @@ Mọi dependency external đều **đằng sau interface** trong application lay
 Mọi log đều dùng `Logger` (pino) với prefix `market-data.*` để grep dễ:
 
 - `market-data.start` — boot bắt đầu.
+- `market-data.start.complete` — boot hoàn tất.
 - `market-data.symbols.fetched` / `synced` — sync symbols.
 - `market-data.timeframes.seeded` / `chart-config.seeded` — seed.
 - `market-data.charts.loaded` — đọc chart configs.
-- `market-data.clearing-old-candles` / `backfilling-after-clear` / `backfill.complete` — boot backfill (legacy, không dùng kể từ khi chuyển sang incremental).
 - `market-data.backfill-missing.empty-db` / `backfill-missing.already-fresh` / `backfill-missing.complete` / `backfill-missing.failed` — incremental catch-up lúc boot.
+- `market-data.backfill-missing.trim-failed` — retention trim lỗi.
+- `market-data.backfill.complete` — backfill initial (ít dùng).
+- `market-data.backfill.failed` — backfill chart fail.
 - `market-data.persist.failed` — persist candle lỗi (gồm `candleKey` + `err.message`).
-- `market-data.stop` — shutdown.
+- `market-data.stop` / `market-data.stop.ws-error` — shutdown.
+
+**Logs đã tắt (too verbose):**
+- ❌ `market-data.backfill.load-more` — mỗi lần user scroll 1 log (quá nhiều).
+- ❌ `market-data.reconcile.no-gap` — periodic tick liên tục log khi không có gap (noise).
 
 WebSocket log ở adapter (prefix `binance.ws.*`):
 
@@ -992,3 +1002,142 @@ Module được coi là "xong" khi:
 - [ ] Test integration: simulate outage 5 phút → verify DB fill đầy đủ sau reconnect.
 - [ ] Load test: 100 client subscribe cùng stream → không duplicate SUBSCRIBE message.
 - [ ] Memory profiling trong 24h stream — không có leak.
+
+---
+
+## 20. Multi-Symbol Support — Frontend Symbol Switching
+
+> **Trạng thái:** TUẦN 3 — ĐÃ SPEC, ĐANG IMPLEMENT
+
+### 20.1 Mục tiêu
+
+Cho phép user chọn symbol khác (ETHUSDT, BNBUSDT, ...) từ frontend dashboard → reset 4 charts → fetch + subscribe realtime cho symbol mới.
+
+### 20.2 Backend support hiện tại
+
+✅ Backend ĐÃ SẴN SÀNG — không cần thay đổi:
+
+- `BinanceWsAdapter` hỗ trợ multi-symbol stream qua ref-count mechanism.
+- `BinanceRestAdapter.fetchLatest` / `fetchKlines` accept bất kỳ symbol nào.
+- `PostgresCandleRepository` query theo `(symbol, timeframe)` pair — không hardcode BTCUSDT.
+- `SocketGateway` broadcast theo room `candles:{symbol}@{timeframe}` — dynamic symbol.
+
+### 20.3 Frontend changes required
+
+#### State additions
+
+```
+selectedSymbol: string            // "BTCUSDT" | "ETHUSDT" | ...
+availableSymbols: string[]        // ["BTCUSDT", "ETHUSDT", "BNBUSDT", ...]
+isChangingSymbol: boolean         // Loading state khi đổi symbol
+```
+
+#### UI component
+
+**Location:** Header section của `RealtimeDashboard`, bên trái timeframe dropdowns.
+
+**Component:** Dropdown selector (styled giống timeframe dropdown).
+
+**Options:** 8-10 major USDT pairs (BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, ADAUSDT, DOGEUSDT, MATICUSDT).
+
+**Visual state:**
+- Default: `BTCUSDT` selected.
+- Hover: highlight, cursor pointer.
+- Active (đang đổi): disable dropdown + spinner icon.
+- After change: flash success (optional).
+
+#### Symbol change flow
+
+```
+User clicks new symbol
+  ↓
+1. Set isChangingSymbol = true
+  ↓
+2. Unsubscribe WebSocket cho 4 charts (old symbol)
+   → socket.emit("unsubscribe", { symbol: oldSymbol, timeframes: [tf0, tf1, tf2, tf3] })
+  ↓
+3. Clear candle data state
+   → setCandleData({})    // Wipe tất cả keys
+  ↓
+4. Update selectedSymbol state
+   → setSelectedSymbol(newSymbol)
+  ↓
+5. useEffect với dependency [selectedSymbol] trigger:
+   a. Fetch historical data cho 4 charts
+      → Promise.all([
+           api.fetchCandles(newSymbol, timeframes[0], 100),
+           api.fetchCandles(newSymbol, timeframes[1], 100),
+           api.fetchCandles(newSymbol, timeframes[2], 100),
+           api.fetchCandles(newSymbol, timeframes[3], 100),
+         ])
+   b. Subscribe WebSocket cho 4 charts (new symbol)
+      → socket.emit("subscribe", { symbol: newSymbol, timeframes: [...] })
+  ↓
+6. Charts auto-rerender với data mới (candleData state updated)
+  ↓
+7. Set isChangingSymbol = false
+```
+
+#### Edge cases
+
+**Race condition:** user đổi symbol 2 lần nhanh (BTCUSDT → ETHUSDT → BNBUSDT).
+- **Solution:** disable dropdown khi `isChangingSymbol = true`. Queue không cần thiết vì user không thể click.
+
+**WebSocket subscription overlap:** unsubscribe chưa xong, subscribe đã gửi.
+- **Solution:** backend ref-count xử lý — unsubscribe giảm count, subscribe tăng count. Nếu stream đang active cho chart khác, không ảnh hưởng.
+
+**Stale candle data:** sau clear, nhận được 1 tick cuối từ old symbol (latency).
+- **Solution:** check `event.payload.symbol === selectedSymbol` trước khi update candleData. Drop event nếu không match.
+
+**Historical fetch fail:** 1 trong 4 API call lỗi.
+- **Solution:** fail-soft — chart nào lỗi show empty + error badge. Các chart khác vẫn render. Retry button (optional).
+
+#### Memory cleanup
+
+**Old candle data:** `setCandleData({})` clear toàn bộ — JS GC tự dọn.
+
+**WebSocket listeners:** không cần remove listener vì `SocketGateway` broadcast theo room — client auto unsubscribe khi emit `unsubscribe`.
+
+### 20.4 Implementation checklist
+
+- [ ] Add symbol state (`selectedSymbol`, `availableSymbols`, `isChangingSymbol`) vào `RealtimeDashboard`.
+- [ ] Build UI dropdown component (styled theo design_sense palette).
+- [ ] Implement `handleSymbolChange(newSymbol)` function:
+  - [ ] Unsubscribe old symbol (4 timeframes).
+  - [ ] Clear `candleData` state.
+  - [ ] Update `selectedSymbol`.
+- [ ] Update `useEffect` dependency array: thêm `selectedSymbol`.
+- [ ] Add symbol guard trong WebSocket message handler: `if (payload.symbol !== selectedSymbol) return;`.
+- [ ] Update all `fetchCandles` / `socket.emit` calls: replace hardcoded `"BTCUSDT"` bằng `selectedSymbol`.
+- [ ] Test scenario:
+  - [ ] Đổi BTCUSDT → ETHUSDT → verify 4 charts load ETHUSDT data.
+  - [ ] Đổi symbol khi đang nhận realtime tick → verify không có stale data từ old symbol.
+  - [ ] Đổi timeframe SAU KHI đổi symbol → verify vẫn work (symbol + timeframe independent).
+
+### 20.5 Backend changes
+
+**KHÔNG CẦN THAY ĐỔI** — backend architecture đã hỗ trợ multi-symbol từ đầu. Chỉ frontend cần adapt.
+
+### 20.6 Testing notes
+
+**Manual test:**
+1. Boot backend + frontend.
+2. Default dashboard shows BTCUSDT × 4 timeframes.
+3. Click symbol dropdown → chọn ETHUSDT.
+4. Verify:
+   - 4 charts clear trong ~200ms.
+   - 4 charts load lại ETHUSDT historical candles.
+   - Realtime tick cho ETHUSDT stream vào (check DevTools Network → WS frame).
+   - KHÔNG còn BTCUSDT tick nào (check console log).
+5. Đổi timeframe của 1 chart → verify chart đó fetch ETHUSDT data cho timeframe mới, 3 chart kia giữ nguyên.
+6. Đổi lại về BTCUSDT → verify reset + load lại.
+
+**Load test:** chưa cần thiết ở giai đoạn này — backend đã test ref-count stability (§15 reconciliation test cover điều này gián tiếp).
+
+### 20.7 Known limitations
+
+- **Symbol list hardcoded:** `availableSymbols` là array tĩnh trong frontend. Nếu muốn dynamic (fetch từ `/api/symbols`), cần thêm endpoint + query lúc mount. Không làm trong scope này.
+- **No symbol search:** dropdown chỉ list 8-10 coins phổ biến. Nếu cần search bar (type "SOL" → filter), làm sau.
+- **No persistence:** reload page → về lại BTCUSDT default. Nếu cần persist user choice (localStorage / query param), làm sau.
+
+---

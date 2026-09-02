@@ -51,13 +51,19 @@ export async function fetchNewsById(id: string): Promise<NewsItem> {
  * so by the time this resolves the DB is already updated.
  *
  * Throttled by `NEWS_CRAWL_INTERVAL_MS` server-side to prevent abuse.
+ *
+ * Payload shape: the body is sent ONLY when a symbol was selected
+ * (e.g. `"BTC"`). For "ALL / no filter" we send an empty object so the
+ * request stays a clean `POST {}` rather than `POST { symbol: null }`,
+ * which historically tripped Zod's `.optional()` validator (only
+ * allowed `undefined`, not `null`).
  */
 export async function triggerCrawl(
   symbol?: string,
 ): Promise<CrawlTriggerResponse> {
-  return http.post<CrawlTriggerResponse>("/api/news/crawl", {
-    symbol: symbol ?? null,
-  });
+  const body: { symbol?: string } = {};
+  if (symbol !== undefined) body.symbol = symbol;
+  return http.post<CrawlTriggerResponse>("/api/news/crawl", body);
 }
 
 /**

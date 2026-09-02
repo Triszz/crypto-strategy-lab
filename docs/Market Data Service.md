@@ -328,6 +328,7 @@ Output: `BackfillProgress[]` cùng shape với `backfillInitial` + field `trimme
 
 - Gọi `rest.fetchKlines({ symbol, timeframe, endMs: beforeMs, limit })`.
 - Persist + return candles sorted ASC by openTime.
+- **Log removed** — quá verbose khi user scroll (mỗi scroll 1 log).
 
 Limit clamp: `1 <= limit <= 1000`.
 
@@ -887,6 +888,7 @@ Service chịu trách nhiệm: `application/ReconciliationService.ts`. Được 
 |---|---|---|
 | `RECONCILE_ON_RECONNECT` | `true` | Bật/tắt §15.4.1. Nếu `false`, chỉ periodic chạy. |
 | `RECONCILE_INTERVAL_MS` | `60000` | Interval cho §15.4.2. `0` = tắt periodic (chỉ reconnect). |
+| `MAX_CANDLES_PER_CHART` | `100` | Retention cap — số candle tối đa giữ lại mỗi (symbol, timeframe). Áp dụng sau `backfillMissing` ở boot. Set `0` để tắt trim. |
 
 Test override: `buildMarketDataContainer({ reconcileIntervalMs: 1000, reconcileOnReconnect: false })`.
 
@@ -898,6 +900,7 @@ Service emit các structured log sau (prefix `market-data.reconcile.*`):
 |---|---|---|
 | `market-data.reconcile.periodic.started` | Periodic timer khởi động | `intervalMs` |
 | `market-data.reconcile.periodic.disabled` | `intervalMs <= 0` | `intervalMs` |
+| `market-data.reconcile.periodic.disabled-by-config` | `enabled = false` | — |
 | `market-data.reconcile.periodic.stopped` | Periodic timer dừng | — |
 | `market-data.reconcile.periodic.filled` | Periodic tick có stream được fill | `streams`, `total` |
 | `market-data.reconcile.periodic.skipped-overlap` | Periodic tick bị skip vì tick trước còn chạy | — |
@@ -906,7 +909,7 @@ Service emit các structured log sau (prefix `market-data.reconcile.*`):
 | `market-data.reconcile.coalesced` | Reuse promise đang chạy | `stream`, `trigger` |
 | `market-data.reconcile.start` | Bắt đầu 1 stream gap-fill | `trigger`, `stream`, `fromMs`, `untilMs`, `gapCandles` |
 | `market-data.reconcile.complete` | Fill xong 1 stream | `trigger`, `stream`, `fetched`, `upserted`, `batches`, `durationMs`, `dbLatestOpenTime`, `stillStale` |
-| `market-data.reconcile.no-gap` | DB đã caught-up | `stream`, `trigger`, `dbLatestOpenTime`, `lastClosedOpenTime` |
+| `market-data.reconcile.no-gap` | DB đã caught-up (log bị tắt trong code) | — |
 | `market-data.reconcile.skip-empty-db` | DB rỗng, skip | `stream`, `trigger` |
 | `market-data.reconcile.too-large` | Vượt MAX_REST_CALLS_PER_RUN | `stream`, `trigger`, `batches` |
 | `market-data.reconcile.failed` | Exception trong runReconcile | `trigger`, `stream`, `err` |
@@ -950,13 +953,20 @@ Mọi dependency external đều **đằng sau interface** trong application lay
 Mọi log đều dùng `Logger` (pino) với prefix `market-data.*` để grep dễ:
 
 - `market-data.start` — boot bắt đầu.
+- `market-data.start.complete` — boot hoàn tất.
 - `market-data.symbols.fetched` / `synced` — sync symbols.
 - `market-data.timeframes.seeded` / `chart-config.seeded` — seed.
 - `market-data.charts.loaded` — đọc chart configs.
-- `market-data.clearing-old-candles` / `backfilling-after-clear` / `backfill.complete` — boot backfill (legacy, không dùng kể từ khi chuyển sang incremental).
 - `market-data.backfill-missing.empty-db` / `backfill-missing.already-fresh` / `backfill-missing.complete` / `backfill-missing.failed` — incremental catch-up lúc boot.
+- `market-data.backfill-missing.trim-failed` — retention trim lỗi.
+- `market-data.backfill.complete` — backfill initial (ít dùng).
+- `market-data.backfill.failed` — backfill chart fail.
 - `market-data.persist.failed` — persist candle lỗi (gồm `candleKey` + `err.message`).
-- `market-data.stop` — shutdown.
+- `market-data.stop` / `market-data.stop.ws-error` — shutdown.
+
+**Logs đã tắt (too verbose):**
+- ❌ `market-data.backfill.load-more` — mỗi lần user scroll 1 log (quá nhiều).
+- ❌ `market-data.reconcile.no-gap` — periodic tick liên tục log khi không có gap (noise).
 
 WebSocket log ở adapter (prefix `binance.ws.*`):
 

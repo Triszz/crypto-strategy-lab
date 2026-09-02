@@ -257,15 +257,7 @@ export class ReconciliationService {
       const lastClosedOpenTime = Math.floor(now / tfMs) * tfMs - tfMs;
 
       if (dbLatest.openTime >= lastClosedOpenTime) {
-        this.logger.debug(
-          {
-            stream,
-            trigger,
-            dbLatestOpenTime: dbLatest.openTime,
-            lastClosedOpenTime,
-          },
-          "market-data.reconcile.no-gap",
-        );
+        // Skip logging when no gap (too verbose in production)
         return {
           stream,
           symbol,

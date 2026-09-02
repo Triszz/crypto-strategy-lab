@@ -228,10 +228,7 @@ export class BackfillService {
     });
     if (rows.length === 0) return rows;
     await this.repo.upsertBatch(rows);
-    this.logger.debug(
-      { symbol, timeframe, count: rows.length, beforeMs },
-      "market-data.backfill.load-more",
-    );
+    // Log removed: too verbose for production (fires on every scroll)
     return rows.sort((a, b) => a.openTime - b.openTime);
   }
 }

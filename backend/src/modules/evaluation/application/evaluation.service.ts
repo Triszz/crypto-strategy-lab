@@ -1,6 +1,6 @@
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import { getEventBus, EventBus } from "../../../shared/event-bus/EventBus";
-import { EvaluatorEngine, EvaluationResultMetrics, TradeInput } from "../domain/evaluator.engine";
+import { EvaluatorEngine, EvaluationResultMetrics, TradeInput, EvaluationWeights } from "../domain/evaluator.engine";
 
 export interface StrategyEvaluatedPayload {
   experimentId: string;
@@ -25,9 +25,10 @@ export class EvaluationService {
     symbolId: string,
     timeframe: string,
     trades: TradeInput[],
-    initialCapital = 10000
+    initialCapital = 10000,
+    weights?: EvaluationWeights
   ): Promise<EvaluationResultMetrics> {
-    const metrics = EvaluatorEngine.calculateMetrics(trades, initialCapital);
+    const metrics = EvaluatorEngine.calculateMetrics(trades, initialCapital, weights);
 
     // Save BacktestResult
     const fromTime = trades.length > 0 ? BigInt(trades[0].entryTime) : BigInt(Date.now());
@@ -80,6 +81,8 @@ export class EvaluationService {
       { metricCode: "WIN_RATE", metricValue: metrics.winRate, metricGroup: "PROFITABILITY" },
       { metricCode: "MAX_DRAWDOWN", metricValue: metrics.maxDrawdown, metricGroup: "RISK" },
       { metricCode: "SHARPE_RATIO", metricValue: metrics.sharpeRatio, metricGroup: "RISK" },
+      { metricCode: "SORTINO_RATIO", metricValue: metrics.sortinoRatio, metricGroup: "RISK" },
+      { metricCode: "CALMAR_RATIO", metricValue: metrics.calmarRatio, metricGroup: "RISK" },
       { metricCode: "OVERALL_SCORE", metricValue: metrics.overallScore, metricGroup: "COMPOSITE" },
     ];
 

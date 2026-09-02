@@ -27,6 +27,10 @@ const RawEnvSchema = z.object({
   CRYPTOPANIC_API_KEY: z.string().optional().default(""),
   GEMINI_API_KEY: z.string().optional().default(""),
 
+  // News crawler — how often (ms) to run the periodic crawl.
+  // Default: 5 minutes. Set to 0 to disable the periodic run.
+  NEWS_CRAWL_INTERVAL_MS: z.coerce.number().int().min(0).default(5 * 60 * 1000),
+
   CORS_ORIGINS: z.string().optional().default("*"),
 });
 

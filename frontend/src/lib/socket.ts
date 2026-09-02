@@ -2,11 +2,15 @@
  * Socket.IO client singleton for the Market Data module.
  *
  * Connects once, exposes typed subscribe/unsubscribe, and relays
- * `CandleClosed` events to React consumers.
+ * CandleClosed and NewsCollected events to React consumers.
+ *
+ * Phase B: added NewsCollected forwarding so the FE can subscribe to
+ * news updates from `backend/src/infrastructure/event-bridge/socket-bridge.ts`.
  */
 
 import { io, type Socket } from "socket.io-client";
 import type { Timeframe } from "./api";
+import type { NewsCollectedEvent } from "../types/news";
 
 export type { Timeframe };
 export { type Timeframe as TimeframeType };
@@ -97,6 +101,18 @@ function getSocket(): Socket {
       emit("CandleClosed", data);
     });
 
+    // Phase B — forward NewsCollected to consumers registered via
+    // `onNewsCollected()`. Payload shape mirrors the backend
+    // `NewsCollectedPayload` (see `infrastructure/event-bridge/socket-bridge.ts`).
+    socket.on("NewsCollected", (data: NewsCollectedEvent) => {
+      debug("IN ← NewsCollected", {
+        newsId: data?.newsId,
+        symbols: data?.coinSymbols,
+        title: data?.title?.slice(0, 60),
+      });
+      emit("NewsCollected", data);
+    });
+
     socket.on("subscribed", (data: unknown) => {
       debug("IN ← subscribed", data);
       emit("subscribed", data);
@@ -115,7 +131,7 @@ function getSocket(): Socket {
 
     // Log ALL other incoming events
     socket.onAny((event: string, ...args: unknown[]) => {
-      if (!["connect", "disconnect", "connect_error", "CandleClosed", "subscribed", "unsubscribed", "error"].includes(event)) {
+      if (!["connect", "disconnect", "connect_error", "CandleClosed", "NewsCollected", "subscribed", "unsubscribed", "error"].includes(event)) {
         debug(`IN ← ${event}`, args);
       }
     });
@@ -175,6 +191,22 @@ export function onCandleClosed(
   handler: (event: CandleClosedEvent) => void,
 ): () => void {
   return on("CandleClosed", handler as (...args: unknown[]) => void);
+}
+
+/**
+ * Phase B: subscribe to `NewsCollected` realtime events.
+ *
+ * The handler receives the event payload broadcast by the backend's
+ * `socket-bridge.ts` whenever a new article is persisted. Use
+ * `newsCollectedToListItem()` (from `types/news.ts`) to convert it
+ * into a `NewsItem` for rendering alongside REST-fetched items.
+ *
+ * @returns A cleanup function that unsubscribes the handler.
+ */
+export function onNewsCollected(
+  handler: (event: NewsCollectedEvent) => void,
+): () => void {
+  return on("NewsCollected", handler as (...args: unknown[]) => void);
 }
 
 export function onWsStatus(handler: (status: WsStatus) => void): () => void {

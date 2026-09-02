@@ -1,16 +1,16 @@
 import type { Server as IOServerType } from "socket.io";
 import { logger as defaultLogger, Logger } from "../../shared/logger/logger";
 import { NewsService } from "./application/news.service";
-import { RSSNewsAdapter } from "./infrastructure/rss-news.adapter";
+import { buildNewsAdapter } from "./infrastructure/adapter-factory";
 import { PrismaNewsRepository } from "./infrastructure/prisma-news.repository";
 import { getNewsCrawlerQueue, NewsCrawlerQueue } from "./infrastructure/news-crawler.queue";
 import { startSocketEventBridge, SocketEventBridge } from "../../infrastructure/event-bridge";
+import { getOutboxWorker, NewsOutboxWorker } from "./infrastructure/news-outbox.worker";
 
 /**
  * Composition root for the News module. Holds the long-lived singletons
- * (repository, adapter, service, crawler) so that both the HTTP routes
- * and the background queue share the same instances — this prevents
- * the "two NewsService instances, two EventBus subscribers" pitfall.
+ * (repository, adapter, service, crawler, outbox-worker) so that both the
+ * HTTP routes and the background queue share the same instances.
  *
  * Phase A.4 wiring:
  *  - `service` is the same instance used by `routes.ts` and the
@@ -21,14 +21,19 @@ import { startSocketEventBridge, SocketEventBridge } from "../../infrastructure/
  * Phase B addition:
  *  - `socketBridge` forwards in-process `NewsCollected` events to all
  *    connected Socket.IO clients so the FE can update in real-time.
- *    `io` is passed in by `server.ts` after `initSocketServer()` has
- *    been called. Tests can pass `undefined` to skip the bridge.
+ *
+ * Phase C additions:
+ *  - `buildNewsAdapter()` selects RSS or Cryptopanic based on `NEWS_PROVIDER`
+ *    env variable (with graceful fallback if API key is missing).
+ *  - `outboxWorker` polls `QueueJob` for PENDING outbox rows and publishes
+ *    them via the EventBus, then marks them PUBLISHED or FAILED.
  */
 
 export interface NewsContainer {
   service: NewsService;
   crawler: NewsCrawlerQueue;
   socketBridge: SocketEventBridge;
+  outboxWorker: NewsOutboxWorker;
 }
 
 /** Internal default no-op bridge used when `io` is undefined (tests). */
@@ -45,8 +50,8 @@ export function buildNewsContainer(
   if (container) return container;
 
   const repository = new PrismaNewsRepository();
-  const adapter = new RSSNewsAdapter();
-  const service = new NewsService(repository, adapter, undefined, logger);
+  const adapter = buildNewsAdapter(); // Phase C: factory-selected adapter
+  const service = new NewsService(repository, adapter, logger);
 
   const crawler = getNewsCrawlerQueue(
     (symbol?: string) => service.fetchAndStoreLatestNews(symbol),
@@ -56,7 +61,10 @@ export function buildNewsContainer(
 
   const socketBridge = io ? startSocketEventBridge(io) : noopBridge;
 
-  container = { service, crawler, socketBridge };
+  // Phase C.6: start the outbox worker
+  const outboxWorker = getOutboxWorker(logger);
+
+  container = { service, crawler, socketBridge, outboxWorker };
   return container;
 }
 
@@ -67,6 +75,9 @@ export function buildNewsContainer(
 export function resetNewsContainer(): void {
   if (container?.socketBridge) {
     container.socketBridge.stop();
+  }
+  if (container?.outboxWorker) {
+    container.outboxWorker.stop();
   }
   container = null;
   NewsCrawlerQueue.resetInstance();

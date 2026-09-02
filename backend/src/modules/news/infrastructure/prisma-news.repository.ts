@@ -1,9 +1,11 @@
+import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import {
   NewsFilterOptions,
   NewsItem,
   NewsProviderEntity,
   NewsRepository,
+  OutboxEventPayload,
 } from "../domain/news.entity";
 
 /**
@@ -193,6 +195,141 @@ export class PrismaNewsRepository implements NewsRepository {
       }
 
       return existingRows.map((r) => this.toDomain(r));
+    });
+  }
+
+  /**
+   * Phase C.5: saves news AND enqueues outbox events in a SINGLE atomic
+   * DB transaction.
+   *
+   * Why a single transaction?
+   *   If the news inserts succeed but the outbox row insert fails, the
+   *   transaction rolls back both — no orphan news without events.
+   *   If the news insert fails, neither the news nor the outbox row
+   *   is visible to other transactions.
+   *
+   * `outboxPayloadFn` is called with the saved `NewsItem[]` so the caller
+   * can build the correct event payloads (including the generated UUIDs).
+   *
+   * This method reuses the same batch logic as `saveNewsBatch` but wraps
+   * everything inside one transaction that additionally creates QueueJob
+   * rows for the outbox.
+   */
+  public async saveNewsBatchAndEnqueueOutbox(
+    providerId: string,
+    newsItems: Omit<NewsItem, "providerId">[],
+    outboxPayloadFn: (savedNews: NewsItem[]) => OutboxEventPayload[],
+  ): Promise<NewsItem[]> {
+    if (newsItems.length === 0) return [];
+
+    return this.prisma.$transaction(async (tx) => {
+      const externalIds = newsItems.map((i) => i.externalId);
+
+      // 1. Find existing rows.
+      const existingRows = await tx.news.findMany({
+        where: { providerId, externalId: { in: externalIds } },
+        include: { coins: { select: { symbol: { select: { baseAsset: true } } } } },
+      });
+      const existingByExtId = new Map(existingRows.map((r) => [r.externalId, r]));
+
+      // 2. Identify genuinely new items.
+      const newItems = newsItems.filter((i) => !existingByExtId.has(i.externalId));
+
+      // 3. Bulk-insert new rows.
+      if (newItems.length > 0) {
+        await tx.news.createMany({
+          data: newItems.map((item) => ({
+            providerId,
+            externalId: item.externalId,
+            title: item.title,
+            summary: item.summary,
+            content: item.content,
+            url: item.url,
+            source: item.source,
+            author: item.author,
+            publishedAt: item.publishedAt,
+          })),
+          skipDuplicates: true,
+        });
+      }
+
+      // 4. Re-fetch new rows so we have their generated UUIDs.
+      let newRows: NewsWithCoins[] = [];
+      if (newItems.length > 0) {
+        newRows = await tx.news.findMany({
+          where: { providerId, externalId: { in: newItems.map((i) => i.externalId) } },
+          include: { coins: { select: { symbol: { select: { baseAsset: true } } } } },
+        });
+
+        // 5. Link coins.
+        const requestedBaseAssets = Array.from(
+          new Set(newItems.flatMap((i) => i.coinSymbols ?? []).map(normalizeBaseAsset).filter((s) => s.length > 0)),
+        );
+
+        if (requestedBaseAssets.length > 0) {
+          const symbols = await tx.symbol.findMany({
+            where: { baseAsset: { in: requestedBaseAssets }, isActive: true },
+            select: { id: true, baseAsset: true },
+          });
+          const symbolIdByBase = new Map(symbols.map((s) => [s.baseAsset, s.id]));
+
+          const links: { newsId: string; symbolId: string }[] = [];
+          for (const row of newRows) {
+            const sourceItem = newItems.find((i) => i.externalId === row.externalId);
+            if (!sourceItem) continue;
+            const seen = new Set<string>();
+            for (const raw of sourceItem.coinSymbols ?? []) {
+              const baseAsset = normalizeBaseAsset(raw);
+              const symbolId = symbolIdByBase.get(baseAsset);
+              if (symbolId && !seen.has(symbolId)) {
+                links.push({ newsId: row.id, symbolId });
+                seen.add(symbolId);
+              }
+            }
+          }
+          if (links.length > 0) {
+            await tx.newsCoin.createMany({ data: links, skipDuplicates: true });
+          }
+        }
+      }
+
+      // 6. Refresh coin relations on new rows for the return value.
+      let refreshedNewRows: NewsWithCoins[] = [];
+      if (newRows.length > 0) {
+        refreshedNewRows = await tx.news.findMany({
+          where: { id: { in: newRows.map((r) => r.id) } },
+          include: { coins: { select: { symbol: { select: { baseAsset: true } } } } },
+        });
+      }
+
+      const allSavedRows = [...existingRows, ...refreshedNewRows].map((r) => this.toDomain(r));
+
+      // 7. Enqueue outbox events (Phase C.5).
+      //    `outboxPayloadFn` maps saved news → event payloads.
+      //    We write QueueJob rows for each event in the same transaction.
+      //
+      //    Bug fix: `jobId` MUST be globally unique because of the
+      //    `@@unique([jobId])` constraint on QueueJob. The previous
+      //    expression `find(...)?.id ?? Date.now()` could collide when
+      //    multiple payloads shared the same `Date.now()` (called in
+      //    the same ms) OR when no matching row was found. Use the
+      //    payload array index + a short random suffix to guarantee
+      //    uniqueness within this transaction.
+      const outboxPayloads = outboxPayloadFn(allSavedRows);
+      if (outboxPayloads.length > 0) {
+        const uniqueSuffix = Math.random().toString(36).slice(2, 10);
+        await tx.queueJob.createMany({
+          data: outboxPayloads.map((ev, idx) => ({
+            jobId: `outbox-${ev.eventName}-${idx}-${uniqueSuffix}-${Date.now()}`,
+            queueName: "news-outbox",
+            jobType: "OUTBOX_EVENT",
+            payload: ev.payload as unknown as Prisma.InputJsonValue,
+            status: "WAITING",
+          })),
+        });
+      }
+
+      return allSavedRows;
     });
   }
 

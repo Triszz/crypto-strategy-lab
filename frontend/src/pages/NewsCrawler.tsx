@@ -694,7 +694,7 @@ export default function NewsCrawler() {
                   <td className="py-2.5 text-slate-400">Analyzer Active</td>
                   <td className="py-2.5 text-right text-slate-800 flex items-center justify-end gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    <span>LEXICON_V1</span>
+                    <span>{sentimentSummary.analyzerCode || 'LEXICON_V1'}</span>
                   </td>
                 </tr>
               </tbody>

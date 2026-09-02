@@ -26,6 +26,7 @@ const RawEnvSchema = z.object({
 
   CRYPTOPANIC_API_KEY: z.string().optional().default(""),
   GEMINI_API_KEY: z.string().optional().default(""),
+  SENTIMENT_ANALYZER: z.string().optional().default("lexicon"),
 
   // News crawler — comma-separated list of adapter codes to enable.
   // Supported: newsdata, cryptocompare, coindesk, cointelegraph, btcmagazine, rss.

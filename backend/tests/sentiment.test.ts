@@ -77,6 +77,10 @@ class MockSentimentRepository implements SentimentRepository {
       negativeCount,
     };
   }
+
+  public async findUnanalyzedNews(): Promise<Array<{ id: string; title: string; summary?: string | null; content?: string | null; coinSymbols: string[] }>> {
+    return [];
+  }
 }
 
 describe("LexiconSentimentAnalyzer", () => {

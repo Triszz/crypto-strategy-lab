@@ -7,6 +7,7 @@ export interface SentimentSummary {
   positiveCount: number;
   neutralCount: number;
   negativeCount: number;
+  analyzerCode?: string;
 }
 
 /**

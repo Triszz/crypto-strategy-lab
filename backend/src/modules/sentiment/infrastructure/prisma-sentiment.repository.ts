@@ -153,4 +153,26 @@ export class PrismaSentimentRepository implements SentimentRepository {
       negativeCount,
     };
   }
+
+  public async findUnanalyzedNews(limit = 50): Promise<Array<{ id: string; title: string; summary?: string | null; content?: string | null; coinSymbols: string[] }>> {
+    const records = await this.prisma.news.findMany({
+      where: {
+        sentiments: {
+          none: {},
+        },
+      },
+      take: limit,
+      include: {
+        coins: { select: { symbol: { select: { baseAsset: true } } } },
+      },
+    });
+
+    return records.map((r) => ({
+      id: r.id,
+      title: r.title,
+      summary: r.summary,
+      content: r.content,
+      coinSymbols: r.coins?.map((c) => c.symbol.baseAsset) ?? [],
+    }));
+  }
 }

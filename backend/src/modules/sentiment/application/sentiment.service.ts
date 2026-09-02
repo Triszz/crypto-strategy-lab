@@ -1,3 +1,4 @@
+import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import { getEventBus, EventBus } from "../../../shared/event-bus/EventBus";
 import {
   SentimentAnalysisResult,
@@ -16,6 +17,8 @@ export interface NewsCollectedPayload {
 }
 
 export class SentimentService {
+  private prisma = getPrismaClient();
+
   constructor(
     private readonly repository: SentimentRepository,
     private readonly analyzer: SentimentAnalyzer,
@@ -54,11 +57,42 @@ export class SentimentService {
     return record;
   }
 
+  /**
+   * Auto-backfill: Scans existing news in the database that do not have
+   * a sentiment record yet and analyzes them automatically.
+   */
+  public async backfillUnanalyzedNews(): Promise<number> {
+    try {
+      const unanalyzed = await this.repository.findUnanalyzedNews(50);
+
+      for (const item of unanalyzed) {
+        await this.handleNewsCollected({
+          newsId: item.id,
+          title: item.title,
+          summary: item.summary ?? undefined,
+          content: item.content ?? undefined,
+          coinSymbols: item.coinSymbols,
+        });
+      }
+
+      return unanalyzed.length;
+    } catch {
+      return 0;
+    }
+  }
+
   public async analyzeText(text: string): Promise<SentimentAnalysisResult> {
     return this.analyzer.analyzeText(text);
   }
 
   public async getSentimentSummary(symbol?: string): Promise<SentimentSummary> {
-    return this.repository.getSentimentSummary(symbol);
+    // Automatically backfill any existing news items in DB that were missing sentiment records
+    await this.backfillUnanalyzedNews();
+
+    const summary = await this.repository.getSentimentSummary(symbol);
+    return {
+      ...summary,
+      analyzerCode: this.analyzer.providerCode,
+    };
   }
 }

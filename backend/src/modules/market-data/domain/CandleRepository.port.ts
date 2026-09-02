@@ -19,4 +19,15 @@ export interface CandleRepository {
   upsertBatch(candles: Candle[]): Promise<number>;
   query(q: CandleQuery): Promise<Candle[]>;
   getLatestOpen(symbol: string, timeframe: Timeframe): Promise<Candle | null>;
+  deleteAll(): Promise<void>;
+  /**
+   * Keep only the newest `keepCount` candles for `(symbol, timeframe)`
+   * and delete the rest. Returns the number of rows deleted. Used
+   * for boot-time retention — see `MAX_CANDLES_PER_CHART`.
+   */
+  trimToLatest(
+    symbol: string,
+    timeframe: Timeframe,
+    keepCount: number,
+  ): Promise<number>;
 }

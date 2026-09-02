@@ -1,7 +1,6 @@
 import { Server as IOServer, type Server as IOServerType } from "socket.io";
 import type { Server as HttpServer } from "node:http";
 import { loadEnv } from "../../config/env";
-import { logger } from "../../shared/logger/logger";
 
 let io: IOServerType | null = null;
 
@@ -30,13 +29,11 @@ export function initSocketServer(httpServer: HttpServer): IOServerType {
   });
 
   io.on("connection", (socket) => {
-    logger.info({ socketId: socket.id }, "Socket.IO client connected");
-    socket.on("disconnect", (reason) => {
-      logger.info({ socketId: socket.id, reason }, "Socket.IO client disconnected");
+    socket.on("disconnect", () => {
+      void socket;
     });
   });
 
-  logger.info("Socket.IO server initialised");
   return io;
 }
 
@@ -53,5 +50,4 @@ export async function closeSocketServer(): Promise<void> {
   if (!io) return;
   await new Promise<void>((resolve) => io!.close(() => resolve()));
   io = null;
-  logger.info("Socket.IO server closed");
 }

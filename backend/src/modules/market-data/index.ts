@@ -16,6 +16,7 @@ export {
 export { MarketDataService } from "./application/MarketDataService";
 export { BackfillService } from "./application/BackfillService";
 export { DefaultChartSeeder } from "./application/DefaultChartSeeder";
+export { ReconciliationService } from "./application/ReconciliationService";
 export { SymbolSyncService } from "./application/SymbolSyncService";
 
 export { BinanceRestAdapter } from "./infrastructure/BinanceRestAdapter";
@@ -57,3 +58,10 @@ export {
   type CandleClosedEventPayload,
   type WsConnectionStatus,
 } from "./domain/events";
+
+export type {
+  ReconciliationConfig,
+  ReconciliationResult,
+  ReconcileTrigger,
+  ReconcileSkipReason,
+} from "./application/ReconciliationService";

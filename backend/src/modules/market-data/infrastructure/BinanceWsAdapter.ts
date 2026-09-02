@@ -198,9 +198,6 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     if (prev === 0) {
       await this.ensureConnected();
       this.send({ method: "SUBSCRIBE", params: [stream], id: Date.now() });
-      this.logger.debug({ stream, ref: 1 }, "binance.ws.subscribe");
-    } else {
-      this.logger.debug({ stream, ref: prev + 1 }, "binance.ws.subscribe.deduplicated");
     }
   }
 
@@ -212,10 +209,8 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
       if (this.ready && this.ws?.readyState === WebSocket.OPEN) {
         this.send({ method: "UNSUBSCRIBE", params: [stream], id: Date.now() });
       }
-      this.logger.debug({ stream, ref: 0 }, "binance.ws.unsubscribe");
     } else {
       this.refCount.set(stream, prev - 1);
-      this.logger.debug({ stream, ref: prev - 1 }, "binance.ws.unsubscribe.decremented");
     }
   }
 

@@ -70,4 +70,37 @@ describe("Backtester Domain Engine", () => {
     expect(result.trades[0].exitPrice).toBe(95); // 100 * (1 - 0.05)
     expect(result.metrics.numLosingTrades).toBe(1);
   });
+
+  it("should trigger SIGNAL_REVERSAL exit when signal changes from BUY to SELL", () => {
+    const mockSignalFn: StrategySignalFunction = (_candles, index) => {
+      if (index === 0) return "BUY";
+      if (index === 3) return "SELL";
+      return "HOLD";
+    };
+
+    const result = backtester.run(sampleCandles, mockSignalFn, {
+      initialCapital: 10000,
+      feePercent: 0,
+      slippageBps: 0,
+    });
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].exitReason).toBe("SIGNAL_REVERSAL");
+  });
+
+  it("should close position with END_OF_DATA exit when candles run out", () => {
+    const mockSignalFn: StrategySignalFunction = (_candles, index) => {
+      if (index === 0) return "BUY";
+      return "HOLD";
+    };
+
+    const result = backtester.run(sampleCandles, mockSignalFn, {
+      initialCapital: 10000,
+      feePercent: 0,
+      slippageBps: 0,
+    });
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].exitReason).toBe("END_OF_DATA");
+  });
 });

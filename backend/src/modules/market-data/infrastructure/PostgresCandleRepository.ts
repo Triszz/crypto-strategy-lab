@@ -121,6 +121,39 @@ export class PostgresCandleRepository implements CandleRepository {
     return row ? this.fromRow(row, symbol, timeframe) : null;
   }
 
+  async deleteAll(): Promise<void> {
+    await this.prisma.candle.deleteMany({});
+  }
+
+  async trimToLatest(
+    symbol: string,
+    timeframe: Timeframe,
+    keepCount: number,
+  ): Promise<number> {
+    const ids = await this.resolveIds(symbol, timeframe);
+    if (keepCount <= 0) {
+      throw new Error(`trimToLatest: keepCount must be > 0, got ${keepCount}`);
+    }
+    // Keep the top `keepCount` rows by openTime DESC; delete the rest.
+    // Done in a single statement so it's safe to call concurrently.
+    // The `::uuid` casts are required because Prisma sends bound
+    // parameters as `text` and Postgres won't auto-cast text → uuid.
+    const deleted = await this.prisma.$executeRaw`
+        DELETE FROM "candles"
+        WHERE id IN (
+          SELECT id FROM (
+            SELECT id,
+                   ROW_NUMBER() OVER (ORDER BY "open_time" DESC) AS rn
+            FROM "candles"
+            WHERE "symbol_id" = ${ids.symbolId}::uuid
+              AND "timeframe_id" = ${ids.timeframeId}::uuid
+          ) ranked
+          WHERE rn > ${keepCount}
+        )
+      `;
+    return deleted;
+  }
+
   // ── helpers ───────────────────────────────────────────────────────────────
 
   private async resolveIds(

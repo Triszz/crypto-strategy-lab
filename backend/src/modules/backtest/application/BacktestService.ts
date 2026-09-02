@@ -8,8 +8,26 @@ import type {
   CandleData,
   StrategySignalFunction,
 } from "../domain/types";
+import { getStrategyRegistry } from "../../strategy/domain/StrategyRegistry";
+import {
+  type CombinationConfig,
+  type CombinationComponent,
+} from "../../strategy/combination/CombinationConfig";
+import { CombinationEngine } from "../../strategy/combination/CombinationEngine";
+import { CompositeStrategy } from "../../strategy/combination/CompositeStrategy";
+import type { StrategyTimeframe } from "../../strategy/domain/StrategyContext";
 
 export interface RunBacktestParams {
+  /**
+   * UUID of a persisted CandidateStrategy. When provided, the Backtest
+   * resolves the candidate's StrategyVersion via the StrategyRegistry
+   * and runs the REAL strategy implementation (not the legacy hardcoded
+   * signal functions) with the candidate's stored parameters.
+   *
+   * If `candidateId` is omitted the legacy `strategyName`-based path is
+   * used (preserved for the Backtest UI's manual selection).
+   */
+  candidateId?: string;
   symbol?: string;
   timeframe?: string;
   strategyName?: string;
@@ -31,29 +49,70 @@ export class BacktestService {
 
   /**
    * Executes backtest simulation, persists results (if DB available), and emits BacktestCompleted event.
+   *
+   * Two modes are supported:
+   *   1. **Candidate-driven** (preferred): pass `params.candidateId`. The
+   *      service looks up the CandidateStrategy + StrategyVersion in
+   *      Supabase, resolves the concrete Strategy from the
+   *      StrategyRegistry, and runs it with the candidate's stored
+   *      parameters. Works for both BASE and COMPOSITE candidates.
+   *   2. **Legacy strategyName-driven**: pass `params.strategyName`. The
+   *      service uses a hardcoded signal-function dispatch
+   *      (`MA Crossover` / `RSI` / `Bollinger`).
+   *
+   * `symbol` / `timeframe` are derived from the candidate's SearchRun
+   * when `candidateId` is supplied; explicit `params.symbol` /
+   * `params.timeframe` always win if provided.
    */
   public async runBacktest(params: RunBacktestParams): Promise<{
     experimentId: string;
     symbol: string;
     timeframe: string;
     strategyName: string;
+    candidateId?: string;
     result: BacktestResultDomain;
   }> {
-    const symbol = params.symbol || "BTCUSDT";
-    const timeframe = params.timeframe || "5m";
-    const strategyName = params.strategyName || "MA Crossover";
+    let symbol = params.symbol || "BTCUSDT";
+    let timeframe = params.timeframe || "5m";
+    let strategyName = params.strategyName || "MA Crossover";
     const initialCapital = params.initialCapital || 10000;
 
     logger.info(
-      { symbol, timeframe, strategyName, initialCapital },
-      "Starting backtest simulation"
+      {
+        candidateId: params.candidateId,
+        symbol,
+        timeframe,
+        strategyName,
+        initialCapital,
+      },
+      "Starting backtest simulation",
     );
+
+    // 0. If candidateId supplied, resolve symbol/timeframe/strategyName from DB.
+    let candidateSignal: StrategySignalFunction | null = null;
+    if (params.candidateId) {
+      try {
+        const resolved = await this.resolveCandidateContext(
+          params.candidateId,
+          params.symbol,
+          params.timeframe,
+        );
+        if (!params.symbol) symbol = resolved.symbol;
+        if (!params.timeframe) timeframe = resolved.timeframe;
+        strategyName = resolved.strategyName;
+        candidateSignal = resolved.signalFn;
+      } catch (err) {
+        logger.error({ err, candidateId: params.candidateId }, "BacktestService candidate resolution failed");
+        throw err;
+      }
+    }
 
     // 1. Fetch historical candles by symbol & timeframe or generate fixture candles
     const candles = await this.getHistoricalCandles(symbol, timeframe, params.fromTime, params.toTime);
 
-    // 2. Select strategy signal function
-    const signalFn = this.getStrategySignalFunction(strategyName);
+    // 2. Select strategy signal function: candidate-driven OR legacy string-based.
+    const signalFn: StrategySignalFunction =
+      candidateSignal ?? this.getStrategySignalFunction(strategyName);
 
     // 3. Execute core backtest simulation
     const options: BacktestOptions = {
@@ -66,13 +125,23 @@ export class BacktestService {
 
     const result = this.backtester.run(candles, signalFn, options);
 
-    // 4. Save to Database (safely handled with try/catch fallback)
-    const experimentId = await this.saveToDatabaseSafely(symbol, timeframe, strategyName, result, options);
+    // 4. Save to Database (safely handled with try/catch fallback).
+    //    When a real candidateId was supplied we link the Experiment to
+    //    THAT CandidateStrategy instead of synthesising a new one.
+    const experimentId = await this.saveToDatabaseSafely(
+      symbol,
+      timeframe,
+      strategyName,
+      result,
+      options,
+      params.candidateId,
+    );
 
     // 5. Emit BacktestCompleted event for downstream services (Leaderboard, Evaluator, FE WS)
     try {
       getEventBus().publish("BacktestCompleted", {
         experimentId,
+        candidateId: params.candidateId,
         symbol,
         timeframe,
         strategyName,
@@ -88,7 +157,146 @@ export class BacktestService {
       symbol,
       timeframe,
       strategyName,
+      candidateId: params.candidateId,
       result,
+    };
+  }
+
+  /**
+   * Resolves a CandidateStrategy UUID into the inputs needed to run a backtest:
+   *   - symbol / timeframe from the candidate's SearchRun
+   *   - strategyName from the StrategyVersion
+   *   - A StrategySignalFunction that delegates to the REAL concrete Strategy
+   *     (supports BASE and COMPOSITE candidates)
+   *
+   * @param candidateId      The CandidateStrategy UUID
+   * @param symbolOverride   Optional symbol override (takes precedence)
+   * @param timeframeOverride Optional timeframe override (takes precedence)
+   */
+  private async resolveCandidateContext(
+    candidateId: string,
+    symbolOverride?: string,
+    timeframeOverride?: string,
+  ): Promise<{
+    symbol: string;
+    timeframe: string;
+    strategyName: string;
+    signalFn: StrategySignalFunction;
+  }> {
+    const prisma = getPrismaClient();
+
+    // 1. Load the candidate + its version + search run
+    const candidate = await prisma.candidateStrategy.findUnique({
+      where: { id: candidateId },
+      include: {
+        searchRun: {
+          include: {
+            symbol: { select: { symbol: true } },
+          },
+        },
+        strategyVersion: {
+          include: {
+            definition: { select: { type: true } },
+            compositeChild: {
+              include: {
+                componentVersion: {
+                  include: {
+                    definition: { select: { type: true } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!candidate) {
+      throw new Error(`CandidateStrategy '${candidateId}' not found`);
+    }
+
+    const { searchRun, strategyVersion } = candidate;
+    const symbol = symbolOverride ?? searchRun.symbol.symbol;
+    const timeframe = timeframeOverride ?? searchRun.timeframe;
+
+    // 2. Bootstrap the strategy registry (if not already done)
+    const { bootstrapStrategies } = await import("../../strategy/strategies/bootstrap");
+    bootstrapStrategies();
+    const registry = getStrategyRegistry();
+
+    // 3. Build the signal function
+    let signalFn: StrategySignalFunction;
+    const params = candidate.parameters as Record<string, unknown> ?? {};
+
+    if (strategyVersion.definition.type === "COMPOSITE") {
+      // COMPOSITE: rebuild CombinationConfig from the candidate's stored JSON
+      const configRaw = params._config as {
+        id: string;
+        name: string;
+        components: Array<{ strategyId: string; weight: number; position: number }>;
+      } | undefined;
+
+      if (!configRaw) {
+        throw new Error(`COMPOSITE candidate '${candidateId}' is missing _config in parameters`);
+      }
+
+      const components: CombinationComponent[] = configRaw.components.map((c) => ({
+        strategyId: c.strategyId,
+        weight: c.weight,
+        position: c.position,
+      }));
+
+      const config: CombinationConfig = {
+        id: configRaw.id,
+        name: configRaw.name,
+        components,
+      };
+
+      const engine = new CombinationEngine(registry);
+      const composite = new CompositeStrategy(config, engine);
+
+      signalFn = (_candles: CandleData[], index: number): "BUY" | "SELL" | "HOLD" => {
+        if (index < composite.requiredHistory) return "HOLD";
+        const hist = _candles.slice(0, index + 1);
+        const tf = timeframe as StrategyTimeframe;
+        const ctx = {
+          symbol,
+          timeframe: tf,
+          candle: hist[hist.length - 1]!,
+          history: hist,
+          parameters: {},
+        };
+        return composite.analyze(ctx).side;
+      };
+    } else {
+      // BASE: resolve from the StrategyRegistry
+      const strategy = registry.resolve(strategyVersion.implementationRef);
+      if (!strategy) {
+        throw new Error(
+          `Strategy '${strategyVersion.implementationRef}' not found in registry`,
+        );
+      }
+
+      signalFn = (_candles: CandleData[], index: number): "BUY" | "SELL" | "HOLD" => {
+        if (index < strategy.requiredHistory) return "HOLD";
+        const hist = _candles.slice(0, index + 1);
+        const tf = timeframe as StrategyTimeframe;
+        const ctx = {
+          symbol,
+          timeframe: tf,
+          candle: hist[hist.length - 1]!,
+          history: hist,
+          parameters: params,
+        };
+        return strategy.analyze(ctx).side;
+      };
+    }
+
+    return {
+      symbol,
+      timeframe,
+      strategyName: strategyVersion.name,
+      signalFn,
     };
   }
 
@@ -247,13 +455,19 @@ export class BacktestService {
 
   /**
    * Safely attempts DB persistence.
+   *
+   * @param candidateId  When provided, links the new Experiment to this
+   *                     existing CandidateStrategy (preserving the Search →
+   *                     Candidate → Backtest chain). When absent, creates a
+   *                     synthetic SearchRun + CandidateStrategy (legacy path).
    */
   private async saveToDatabaseSafely(
     symbolStr: string,
     timeframe: string,
     strategyName: string,
     result: BacktestResultDomain,
-    options: BacktestOptions
+    options: BacktestOptions,
+    candidateId?: string,
   ): Promise<string> {
     const fallbackId = `exp-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
 
@@ -266,52 +480,81 @@ export class BacktestService {
         create: { symbol: symbolStr, baseAsset: symbolStr.replace("USDT", ""), quoteAsset: "USDT" },
       });
 
-      let version = await prisma.strategyVersion.findFirst({
-        where: { name: strategyName },
-      });
+      // ── Resolve experiment → candidate chain ──────────────────────────────
+      //
+      // When a real candidateId is supplied (Search → Candidate → Backtest
+      // path) we link directly to that existing CandidateStrategy so the
+      // Experiment record is reachable from both the SearchRun and the
+      // CandidateStrategy provenance chain.
+      //
+      // When no candidateId is supplied (legacy manual backtest path) we
+      // synthesise a SearchRun + CandidateStrategy as before.
+      let experimentCandidateId: string;
 
-      if (!version) {
-        let def = await prisma.strategyDefinition.findFirst();
-        if (!def) {
-          def = await prisma.strategyDefinition.create({
-            data: { type: "BASE", family: "TREND", description: "Default strategy definition" },
+      if (candidateId) {
+        // Verify the candidate exists and belongs to a real SearchRun
+        const existing = await prisma.candidateStrategy.findUnique({
+          where: { id: candidateId },
+          include: { searchRun: { select: { status: true } } },
+        });
+        if (!existing) {
+          throw new Error(`CandidateStrategy '${candidateId}' not found`);
+        }
+        experimentCandidateId = candidateId;
+        logger.info(
+          { candidateId, searchRunStatus: existing.searchRun.status },
+          "Linking experiment to existing candidate from Search",
+        );
+      } else {
+        // Legacy path: create synthetic SearchRun + CandidateStrategy
+        let existingVersion = await prisma.strategyVersion.findFirst({
+          where: { name: strategyName },
+        });
+
+        if (!existingVersion) {
+          let def = await prisma.strategyDefinition.findFirst();
+          if (!def) {
+            def = await prisma.strategyDefinition.create({
+              data: { type: "BASE", family: "TREND", description: "Default strategy definition" },
+            });
+          }
+          existingVersion = await prisma.strategyVersion.create({
+            data: {
+              definitionId: def.id,
+              version: "1.0.0",
+              name: strategyName,
+              implementationRef: `Strategy.${strategyName.replace(/\s+/g, "")}`,
+            },
           });
         }
 
-        version = await prisma.strategyVersion.create({
+        const searchRun = await prisma.searchRun.create({
           data: {
-            definitionId: def.id,
-            version: "1.0.0",
-            name: strategyName,
-            implementationRef: `Strategy.${strategyName.replace(/\s+/g, "")}`,
+            algorithmId: (await this.getOrCreateDefaultAlgorithm()).id,
+            symbolId: symbol.id,
+            timeframe,
+            maxCandidates: 1,
+            status: "DONE",
           },
         });
+
+        const candidate = await prisma.candidateStrategy.create({
+          data: {
+            searchRunId: searchRun.id,
+            strategyVersionId: existingVersion.id,
+            status: "DONE",
+          },
+        });
+
+        experimentCandidateId = candidate.id;
       }
-
-      const searchRun = await prisma.searchRun.create({
-        data: {
-          algorithmId: (await this.getOrCreateDefaultAlgorithm()).id,
-          symbolId: symbol.id,
-          timeframe,
-          maxCandidates: 1,
-          status: "DONE",
-        },
-      });
-
-      const candidate = await prisma.candidateStrategy.create({
-        data: {
-          searchRunId: searchRun.id,
-          strategyVersionId: version.id,
-          status: "DONE",
-        },
-      });
 
       const firstEquity = result.equityCurve[0];
       const lastEquity = result.equityCurve[result.equityCurve.length - 1];
 
       const experiment = await prisma.experiment.create({
         data: {
-          candidateId: candidate.id,
+          candidateId: experimentCandidateId,
           name: `Backtest ${strategyName} on ${symbolStr} ${timeframe}`,
           symbolId: symbol.id,
           timeframe,

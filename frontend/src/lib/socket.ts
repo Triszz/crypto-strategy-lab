@@ -2,10 +2,11 @@
  * Socket.IO client singleton for the Market Data module.
  *
  * Connects once, exposes typed subscribe/unsubscribe, and relays
- * CandleClosed and NewsCollected events to React consumers.
+ * `CandleClosed`, `CandleUpdating`, and `NewsCollected` events to React consumers.
  *
- * Phase B: added NewsCollected forwarding so the FE can subscribe to
- * news updates from `backend/src/infrastructure/event-bridge/socket-bridge.ts`.
+ * - `CandleClosed` / `CandleUpdating`: market data realtime updates.
+ * - `NewsCollected` (Phase B): forward news updates from
+ *   `backend/src/infrastructure/event-bridge/socket-bridge.ts`.
  */
 
 import { io, type Socket } from "socket.io-client";
@@ -34,6 +35,13 @@ export interface CandleClosedPayload {
 
 export interface CandleClosedEvent {
   event: "CandleClosed";
+  version: string;
+  timestamp: number;
+  payload: CandleClosedPayload;
+}
+
+export interface CandleUpdatingEvent {
+  event: "CandleUpdating";
   version: string;
   timestamp: number;
   payload: CandleClosedPayload;
@@ -101,6 +109,22 @@ function getSocket(): Socket {
       emit("CandleClosed", data);
     });
 
+    socket.on("CandleUpdating", (data: CandleUpdatingEvent) => {
+      debug("IN ← CandleUpdating", {
+        symbol: data.payload?.symbol,
+        tf: data.payload?.timeframe,
+        candle: data.payload?.candle ? {
+          o: data.payload.candle.open,
+          h: data.payload.candle.high,
+          l: data.payload.candle.low,
+          c: data.payload.candle.close,
+          v: data.payload.candle.volume,
+          openTime: new Date(data.payload.candle.openTime).toISOString(),
+        } : null,
+      });
+      emit("CandleUpdating", data);
+    });
+
     // Phase B — forward NewsCollected to consumers registered via
     // `onNewsCollected()`. Payload shape mirrors the backend
     // `NewsCollectedPayload` (see `infrastructure/event-bridge/socket-bridge.ts`).
@@ -131,7 +155,7 @@ function getSocket(): Socket {
 
     // Log ALL other incoming events
     socket.onAny((event: string, ...args: unknown[]) => {
-      if (!["connect", "disconnect", "connect_error", "CandleClosed", "NewsCollected", "subscribed", "unsubscribed", "error"].includes(event)) {
+      if (!["connect", "disconnect", "connect_error", "CandleClosed", "CandleUpdating", "NewsCollected", "subscribed", "unsubscribed", "error"].includes(event)) {
         debug(`IN ← ${event}`, args);
       }
     });
@@ -191,6 +215,12 @@ export function onCandleClosed(
   handler: (event: CandleClosedEvent) => void,
 ): () => void {
   return on("CandleClosed", handler as (...args: unknown[]) => void);
+}
+
+export function onCandleUpdating(
+  handler: (event: CandleUpdatingEvent) => void,
+): () => void {
+  return on("CandleUpdating", handler as (...args: unknown[]) => void);
 }
 
 /**

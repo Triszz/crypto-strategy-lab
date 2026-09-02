@@ -143,6 +143,17 @@ export class SearchService {
   }
 
   /**
+   * Fetch all CandidateStrategy rows produced by a given SearchRun.
+   * Returns the persisted candidates with their strategyVersionId and
+   * raw parameters JSON. Used by the Search → Backtest integration UI.
+   */
+  public async getCandidatesByRun(
+    searchRunId: string,
+  ): Promise<ReadonlyArray<import("./SearchRepository.port").CandidateRecord>> {
+    return this.repository.getCandidatesByRun(searchRunId);
+  }
+
+  /**
    * Start a search run: build parameter spaces, configure generator, run it,
    * persist candidates, update status, emit events.
    *

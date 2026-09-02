@@ -3,8 +3,10 @@
  *
  * REST surface for the Search module.
  *
- *   POST   /api/search/start   – Create and immediately start a SearchRun
- *   GET    /api/search/:id     – Get SearchRun details + candidate summary
+ *   GET    /api/search/algorithms  – List available SearchAlgorithms (id, code, name)
+ *   GET    /api/search/symbols     – List available Symbols (id, code, baseAsset, quoteAsset)
+ *   POST   /api/search/start       – Create and immediately start a SearchRun
+ *   GET    /api/search/:id         – Get SearchRun details + candidate summary
  *
  * Routes validate input with `zod` and translate errors into HTTP responses.
  *
@@ -12,12 +14,21 @@
  *   - CandidateStrategy rows (those are owned by the Backtest module)
  *   - Internal generator configuration
  *   - Strategy registry details
+ *
+ * NOTE: GET /algorithms and GET /symbols are intentionally colocated here
+ * rather than on the market-data module. They are required inputs to
+ * POST /api/search/start, so keeping them under the same router gives
+ * the frontend a single, cohesive API surface and avoids expanding
+ * the DI composition just for two read-only listings. These endpoints
+ * are pure read-only Prisma queries against the same Symbol and
+ * SearchAlgorithm models that already power the rest of the app.
  */
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import type { SearchService } from "../application/SearchService";
 import type { Logger } from "../../../shared/logger/logger";
 import { logger as rootLogger } from "../../../shared/logger/logger";
+import { getPrismaClient } from "../../../infrastructure/database/prisma";
 
 const StartSearchSchema = z.object({
   algorithmId: z.string().uuid(),
@@ -49,6 +60,76 @@ export interface SearchRouterDeps {
 export function buildSearchRouter(deps: SearchRouterDeps): Router {
   const router = Router();
   const log = deps.logger ?? rootLogger;
+
+  /**
+   * GET /api/search/algorithms
+   *
+   * Lists available SearchAlgorithm rows. Each entry exposes the `id`
+   * (UUID) the frontend needs to populate `algorithmId` in the
+   * POST /api/search/start request body.
+   *
+   * Response 200:
+   *   {
+   *     "success": true,
+   *     "data": [
+   *       { "id": "uuid", "code": "random", "name": "Random Search", "implementationRef": "strategy.generator.random" },
+   *       { "id": "uuid", "code": "domain_guided", "name": "Domain-guided Search", "implementationRef": "strategy.generator.domain_guided" }
+   *     ]
+   *   }
+   */
+  router.get("/algorithms", async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const prisma = getPrismaClient();
+      const rows = await prisma.searchAlgorithm.findMany({
+        orderBy: { code: "asc" },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          implementationRef: true,
+        },
+      });
+      res.json({ success: true as const, data: rows });
+    } catch (err) {
+      log.error({ err }, "search.api.algorithms.error");
+      next(err);
+    }
+  });
+
+  /**
+   * GET /api/search/symbols
+   *
+   * Lists active Symbol rows. Each entry exposes the `id` (UUID) the
+   * frontend needs to populate `symbolId` in the POST /api/search/start
+   * request body.
+   *
+   * Response 200:
+   *   {
+   *     "success": true,
+   *     "data": [
+   *       { "id": "uuid", "symbol": "BTCUSDT", "baseAsset": "BTC", "quoteAsset": "USDT" }
+   *     ]
+   *   }
+   */
+  router.get("/symbols", async (_req: Request, res: Response, next: NextFunction) => {
+    try {
+      const prisma = getPrismaClient();
+      const rows = await prisma.symbol.findMany({
+        where: { isActive: true },
+        orderBy: { symbol: "asc" },
+        select: {
+          id: true,
+          symbol: true,
+          baseAsset: true,
+          quoteAsset: true,
+        },
+      });
+      res.json({ success: true as const, data: rows });
+    } catch (err) {
+      log.error({ err }, "search.api.symbols.error");
+      next(err);
+    }
+  });
 
   /**
    * POST /api/search/start
@@ -202,6 +283,103 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
         },
       });
     } catch (err) {
+      next(err);
+    }
+  });
+
+  /**
+   * GET /api/search/:id/candidates
+   *
+   * Returns all CandidateStrategy rows persisted for the given SearchRun,
+   * enriched with the linked StrategyVersion + StrategyDefinition data
+   * so the frontend can show "what strategy this candidate represents".
+   *
+   * Response 200:
+   *   {
+   *     "success": true,
+   *     "data": [
+   *       {
+   *         "id": "uuid",
+   *         "searchRunId": "uuid",
+   *         "strategyVersionId": "uuid",
+   *         "parameters": { ... },
+   *         "status": "PENDING",
+   *         "errorMessage": null,
+   *         "createdAt": "...",
+   *         "strategyVersion": {
+   *           "id": "uuid",
+   *           "name": "Relative Strength Index (Wilder)",
+   *           "implementationRef": "strategy.rsi",
+   *           "definition": { "type": "BASE", "family": "TREND" }
+   *         }
+   *       }
+   *     ]
+   *   }
+   *
+   * Response 404: SearchRun not found
+   */
+  router.get("/:id/candidates", async (req: Request, res: Response, next: NextFunction) => {
+    const parsed = SearchIdSchema.safeParse(req.params);
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        error: "INVALID_PARAMS",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+
+    try {
+      const prisma = getPrismaClient();
+
+      // Verify the SearchRun exists (return 404 if not).
+      const searchRun = await prisma.searchRun.findUnique({
+        where: { id: parsed.data.id },
+        select: { id: true },
+      });
+      if (!searchRun) {
+        res.status(404).json({ success: false, error: "NOT_FOUND" });
+        return;
+      }
+
+      const rows = await prisma.candidateStrategy.findMany({
+        where: { searchRunId: parsed.data.id },
+        orderBy: { createdAt: "asc" },
+        include: {
+          strategyVersion: {
+            select: {
+              id: true,
+              name: true,
+              implementationRef: true,
+              definition: { select: { type: true, family: true } },
+            },
+          },
+        },
+      });
+
+      res.json({
+        success: true,
+        data: rows.map((r) => ({
+          id: r.id,
+          searchRunId: r.searchRunId,
+          strategyVersionId: r.strategyVersionId,
+          parameters: r.parameters as Record<string, unknown>,
+          status: r.status,
+          errorMessage: r.errorMessage,
+          createdAt: r.createdAt.toISOString(),
+          strategyVersion: r.strategyVersion
+            ? {
+                id: r.strategyVersion.id,
+                name: r.strategyVersion.name,
+                implementationRef: r.strategyVersion.implementationRef,
+                definitionType: r.strategyVersion.definition.type,
+                definitionFamily: r.strategyVersion.definition.family,
+              }
+            : null,
+        })),
+      });
+    } catch (err) {
+      log.error({ err, id: parsed.data.id }, "search.api.candidates.error");
       next(err);
     }
   });

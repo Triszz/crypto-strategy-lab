@@ -34,3 +34,6 @@ export {
   getEvaluationConfig,
   clearEvaluationConfigCache,
 } from "./infrastructure/evaluation-settings.repo";
+
+export { EvaluationController } from "./presentation/evaluation.controller";
+export { buildEvaluationRouter } from "./presentation/evaluation.routes";

@@ -12,7 +12,7 @@
  * This lets the server start even when Redis is temporarily down.
  */
 
-import { Queue, type JobsOptions } from "bullmq";
+import { Queue, type JobsOptions, type Job } from "bullmq";
 import { getRedisConnectionOptions } from "../../../shared/queue";
 import { logger } from "../../../shared/logger/logger";
 
@@ -88,6 +88,45 @@ export class BullMQEvaluationQueue {
   // ---------------------------------------------------------------------------
   // Public API
   // ---------------------------------------------------------------------------
+
+  /**
+   * Returns true when the BullMQ queue is connected and ready to accept jobs.
+   * Useful for health-check endpoints.
+   */
+  public isReady(): boolean {
+    return this.queue !== null;
+  }
+
+  /**
+   * Returns the name of this queue. Exposed for monitoring / health endpoints.
+   */
+  public getQueueName(): string {
+    return EVALUATION_QUEUE_NAME;
+  }
+
+  /**
+   * Returns aggregate job counts for the entire queue.
+   * Useful for the `/api/evaluation/queue/stats` endpoint.
+   */
+  public async getJobCounts(): Promise<{
+    waiting: number;
+    active: number;
+    completed: number;
+    failed: number;
+    delayed: number;
+  }> {
+    if (!this.queue) return { waiting: 0, active: 0, completed: 0, failed: 0, delayed: 0 };
+    return this.queue.getJobCounts() as Promise<{ waiting: number; active: number; completed: number; failed: number; delayed: number }>;
+  }
+
+  /**
+   * Retrieves a single job by its `jobId`.
+   * Returns `null` if the queue is unavailable or the job does not exist.
+   */
+  public async getJob(jobId: string): Promise<Job<EvaluationJobData, EvaluationJobResult> | null> {
+    if (!this.queue) return null;
+    return (await this.queue.getJob(jobId)) ?? null;
+  }
 
   /**
    * Enqueues an evaluation job for the given `experimentId`.

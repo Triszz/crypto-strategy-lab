@@ -1,22 +1,12 @@
-import { Queue, type RedisOptions } from "bullmq";
-import { loadEnv } from "../../../config/env";
+import { Queue } from "bullmq";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import { logger } from "../../../shared/logger/logger";
+import { getRedisConnectionOptions } from "../../../shared/queue";
 import type { RunBacktestParams } from "../application/BacktestService";
 import type { BacktestJobProgress } from "./BacktestQueue";
 
 export const BACKTEST_QUEUE_NAME = "backtest";
-
-export function getRedisConnectionOptions(): RedisOptions {
-  const env = loadEnv();
-  return {
-    host: env.REDIS_HOST || "localhost",
-    port: env.REDIS_PORT || 6379,
-    password: env.REDIS_PASSWORD || undefined,
-    db: env.REDIS_DB || 0,
-    maxRetriesPerRequest: null,
-  };
-}
+export { getRedisConnectionOptions };
 
 export class BullMQBacktestQueue {
   private static instance: BullMQBacktestQueue | null = null;

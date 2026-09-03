@@ -32,6 +32,14 @@ export class LeaderboardController {
   public getHistory = async (req: Request, res: Response): Promise<void> => {
     try {
       const { strategyVersionId } = req.params;
+      if (!strategyVersionId) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: "MISSING_PARAM", message: "strategyVersionId is required" },
+        };
+        res.status(400).json(response);
+        return;
+      }
       const history = await this.leaderboardService.getRankHistory(strategyVersionId);
 
       const response: ApiResponse<typeof history> = {

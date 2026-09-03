@@ -1,4 +1,3 @@
-import type { Logger } from "../../../shared/logger/logger";
 import { getEventBus, type EventBus } from "../../../shared/event-bus/EventBus";
 import {
   MARKET_DATA_EVENTS,
@@ -17,7 +16,6 @@ export class CandlePersister {
 
   constructor(
     private readonly repo: CandleRepository,
-    private readonly logger: Logger,
     private readonly bus: EventBus = getEventBus(),
   ) {}
 

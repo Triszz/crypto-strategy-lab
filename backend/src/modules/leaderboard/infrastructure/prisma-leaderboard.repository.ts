@@ -71,7 +71,7 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
     await this.prisma.$transaction(async (tx) => {
       for (let i = 0; i < entries.length; i++) {
         const newRank = i + 1;
-        const entry = entries[i];
+        const entry = entries[i]!;
 
         if (entry.rank !== newRank) {
           await tx.leaderboardEntry.update({

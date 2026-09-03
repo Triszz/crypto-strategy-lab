@@ -1,42 +1,42 @@
 /**
  * strategy · combination · WeightedCombiner
  *
- * Pure weighted-vote aggregation engine. Given a list of component signals
- * and their raw weights, produces a deterministic `CompositeSignal`.
+ * Aggregation engine for Strategy Combination. Given a list of component
+ * signals and their raw weights, produces a deterministic `CompositeSignal`.
  *
- * This class is intentionally a pure function (no I/O, no state). It is
+ * Two operators are supported:
+ *
+ *   - WEIGHTED:       score = Σ (normWeight_i × signal.strength_i)
+ *                     side   = sign(score)
+ *                     strength = clamp(score, -1, 1)
+ *                     confidence = weighted avg of confidences
+ *
+ *   - MAJORITY_VOTE:  Each vote contributes its side as a weighted mass.
+ *                     buyMass  = Σ (normWeight_i × 1[side=BUY])
+ *                     sellMass = Σ (normWeight_i × 1[side=SELL])
+ *                     side = argmax(buyMass, sellMass); tie → HOLD
+ *                     strength = |buyMass - sellMass|
+ *                     confidence = share of winning mass
+ *
+ * Per project specification, BUY=+1, HOLD=0, SELL=-1 at the signal level.
+ *
+ * This module is intentionally a pure function (no I/O, no state). It is
  * the core of the CombinationEngine and can also be unit-tested in
  * isolation with static signal fixtures.
  *
  * MUST stay infrastructure-free: no Prisma, no Express, no BullMQ, no
  * Socket.IO, no Binance SDK.
- *
- * ---
- * Aggregation rule (MVP):
- *
- *   rawTotalWeight = Σ rawWeight_i
- *   normWeight_i   = rawWeight_i / rawTotalWeight
- *
- *   weightedScore  = Σ (normWeight_i × signal.strength_i)
- *   side          = BUY if weightedScore > 0
- *                  = SELL if weightedScore < 0
- *                  = HOLD if weightedScore = 0
- *   strength      = clamp(weightedScore, -1, 1)  [always true when weights sum to 1 and strengths ∈ [-1,1]]
- *   confidence    = Σ (normWeight_i × confidence_i) / Σ normWeight_i
- *                  (only over components with confidence defined; undefined if none)
- *
- * The Backtester consumes `CompositeSignal` through the normal `Signal`
- * interface fields (`side`, `strength`, `confidence`, `reason`,
- * `metadata`). The additional `componentVotes` field lets it audit
- * individual votes without breaking the abstraction.
  */
 import type { Signal } from "../domain/Signal";
-import type { ComponentVote } from "./CompositeSignal";
+import type { ComponentVote, CompositeSignal } from "./CompositeSignal";
+import { combineComponentVotes } from "./CompositeSignal";
 
-export { combineComponentVotes } from "./CompositeSignal";
-export type { ComponentVote } from "./CompositeSignal";
-// Re-export CompositeSignal for convenience so callers can import from WeightedCombiner too.
-export type { CompositeSignal } from "./CompositeSignal";
+export {
+  combineComponentVotes,
+  combineWeighted,
+  combineMajorityVote,
+} from "./CompositeSignal";
+export type { ComponentVote, CompositeSignal } from "./CompositeSignal";
 
 /**
  * Build a `ComponentVote` from a component description and its signal.
@@ -57,4 +57,17 @@ export function buildComponentVote(
     weight,
     rawWeight: weight,
   });
+}
+
+/**
+ * Convenience wrapper: given votes + raw total weight + operator, returns
+ * the combined CompositeSignal. The bulk of the logic lives in
+ * `combineComponentVotes` (in `CompositeSignal.ts`).
+ */
+export function combine(
+  votes: ReadonlyArray<ComponentVote>,
+  rawTotalWeight: number,
+  operator: "WEIGHTED" | "MAJORITY_VOTE",
+): CompositeSignal {
+  return combineComponentVotes(votes, rawTotalWeight, operator);
 }

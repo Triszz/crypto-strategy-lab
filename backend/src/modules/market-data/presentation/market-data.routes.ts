@@ -149,7 +149,7 @@ export function buildMarketDataRouter(deps: MarketDataRouterDeps): Router {
         toMs: parsed.data.to,
         limit,
       });
-
+      console.log("candles 11231", candles);
       // Auto-backfill if DB returns too few candles
       if (candles.length < AUTO_BACKFILL_THRESHOLD) {
         logger.info(

@@ -214,15 +214,20 @@ export async function loadMoreCandles(params: {
   beforeMs: number;
   limit?: number;
 }): Promise<{ symbol: string; timeframe: string; inserted: number; candles: RawCandle[] }> {
+  console.log(`[loadMoreCandles] Requesting: ${params.symbol} ${params.timeframe}, before ${new Date(params.beforeMs).toISOString()}, limit ${params.limit ?? 500}`);
+  
   try {
-    return await post<{ symbol: string; timeframe: string; inserted: number; candles: RawCandle[] }>("/api/candles/load-more", {
+    const result = await post<{ symbol: string; timeframe: string; inserted: number; candles: RawCandle[] }>("/api/candles/load-more", {
       symbol: params.symbol,
       timeframe: params.timeframe,
       beforeMs: params.beforeMs,
-      limit: params.limit ?? 1000,
+      limit: params.limit ?? 500,
     });
+    
+    console.log(`[loadMoreCandles] ✅ Loaded ${result.candles.length} candles (${result.inserted} inserted to DB)`);
+    return result;
   } catch (err) {
-    console.warn(`[loadMoreCandles] Backend unreachable (${(err as Error).message})`);
+    console.warn(`[loadMoreCandles] ❌ Backend unreachable (${(err as Error).message})`);
     return {
       symbol: params.symbol,
       timeframe: params.timeframe,

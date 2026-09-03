@@ -212,6 +212,9 @@ export class BackfillService {
    * (symbol, timeframe) pair and persist them. Returns the rows in
    * ascending order so callers can splice them into the existing
    * dataset without re-sorting.
+   * 
+   * Important: `beforeMs` is the openTime of the oldest candle we already have.
+   * We fetch candles BEFORE (older than) this timestamp by setting endMs = beforeMs - 1.
    */
   async loadMore(
     symbol: string,
@@ -220,40 +223,24 @@ export class BackfillService {
     limit = DEFAULT_INITIAL_CANDLES,
   ): Promise<Candle[]> {
     const safeLimit = Math.min(Math.max(limit, 1), MAX_PER_REQUEST);
+    
+    // Fetch candles BEFORE beforeMs (exclude the candle at beforeMs itself)
     const rows = await this.rest.fetchKlines({
       symbol,
       timeframe,
-      endMs: beforeMs,
+      endMs: beforeMs - 1,
       limit: safeLimit,
     });
+    
+    this.logger.debug(
+      { symbol, timeframe, beforeMs, limit: safeLimit, fetched: rows.length },
+      "backfill.load-more",
+    );
+    
     if (rows.length === 0) {
-      this.logger.info(
-        { symbol, timeframe, beforeMs, limit: safeLimit },
-        "market-data.load-more.empty",
-      );
       return rows;
     }
     await this.repo.upsertBatch(rows);
-    this.logger.info(
-      {
-        symbol,
-        timeframe,
-        beforeMs,
-        limit: safeLimit,
-        fetched: rows.length,
-        oldest: rows[0]?.openTime,
-        newest: rows[rows.length - 1]?.openTime,
-        candles: rows.map((c) => ({
-          openTime: c.openTime,
-          open: c.open,
-          high: c.high,
-          low: c.low,
-          close: c.close,
-          volume: c.volume,
-        })),
-      },
-      "market-data.load-more.success",
-    );
     return rows.sort((a, b) => a.openTime - b.openTime);
   }
 }

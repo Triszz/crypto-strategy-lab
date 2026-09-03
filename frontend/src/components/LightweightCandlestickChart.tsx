@@ -68,14 +68,17 @@ export default function LightweightCandlestickChart({
   const maSeriesRef = useRef<MaSeries | null>(null);
   const previousLastTimeRef = useRef<number | null>(null);
   const previousFirstTimeRef = useRef<number | null>(null);
-  const loadingOlderRef = useRef(false);
-  const hasMoreDataRef = useRef(true); // Track if backend has more historical data
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
 
-  // Sync external hasMoreData prop to ref
-  useEffect(() => {
-    hasMoreDataRef.current = hasMoreData;
-  }, [hasMoreData]);
+  // Track loading state when user clicks "Load 100" button
+  const handleLoadOlder = () => {
+    if (isLoadingOlder) return;
+    setIsLoadingOlder(true);
+    onLoadOlder();
+    window.setTimeout(() => {
+      setIsLoadingOlder(false);
+    }, 1200);
+  };
 
   const sortedCandles = useMemo(() => {
     // Sort by time first
@@ -185,38 +188,17 @@ export default function LightweightCandlestickChart({
     volumeSeriesRef.current = volumeSeries;
     maSeriesRef.current = maSeries;
 
-    const onVisibleRangeChange = (range: { from: number; to: number } | null) => {
-      if (!range) return;
-
-      // Auto-load older candles when user scrolls to the left edge
-      // Stop if we've hit the end of available historical data
-      if (
-        range.from <= 2 &&
-        sortedCandles.length > 0 &&
-        !loadingOlderRef.current &&
-        hasMoreDataRef.current
-      ) {
-        loadingOlderRef.current = true;
-        setIsLoadingOlder(true);
-        onLoadOlder();
-        window.setTimeout(() => {
-          loadingOlderRef.current = false;
-          setIsLoadingOlder(false);
-        }, 1200);
-      }
-    };
-
-    chart.timeScale().subscribeVisibleLogicalRangeChange(onVisibleRangeChange);
+    // NOTE: Auto-load when scrolling to edge is intentionally removed.
+    // User must click "Load 100" button to manually trigger load-more.
 
     return () => {
-      chart.timeScale().unsubscribeVisibleLogicalRangeChange(onVisibleRangeChange);
       chart.remove();
       chartRef.current = null;
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       maSeriesRef.current = null;
     };
-  }, [onLoadOlder]);
+  }, []);
 
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;
@@ -302,14 +284,15 @@ export default function LightweightCandlestickChart({
       {/* Load 100 historical candles button */}
       <button
         type="button"
-        onClick={onLoadOlder}
-        className="absolute left-2 top-2 z-10 flex items-center gap-1.5 rounded-lg bg-slate-800/80 px-3 py-1.5 text-xs font-bold text-white shadow-lg transition-all hover:bg-slate-900 hover:shadow-xl"
+        onClick={handleLoadOlder}
+        disabled={isLoadingOlder || !hasMoreData}
+        className="absolute left-2 top-2 z-10 flex items-center gap-1.5 rounded-lg bg-slate-800/80 px-3 py-1.5 text-xs font-bold text-white shadow-lg transition-all hover:bg-slate-900 hover:shadow-xl disabled:cursor-not-allowed disabled:opacity-50"
         title="Load thêm 100 nến lịch sử"
       >
         <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16l-4-4m0 0l4-4m-4 4h18" />
         </svg>
-        <span>Load 100</span>
+        <span>{isLoadingOlder ? "Đang tải..." : "Load 100"}</span>
       </button>
     </div>
   );

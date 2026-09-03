@@ -81,8 +81,8 @@ export class BullMQEvaluationWorker {
         );
       });
 
-      this.worker.on("error", (err) => {
-        logger.error({ err: err.message }, "BullMQ EvaluationWorker error");
+      this.worker.on("error", (err: Error) => {
+        logger.error({ err }, "BullMQ EvaluationWorker error");
       });
 
       logger.info({ queue: EVALUATION_QUEUE_NAME, concurrency }, "BullMQ EvaluationWorker initialised");

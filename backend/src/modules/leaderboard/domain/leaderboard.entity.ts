@@ -3,12 +3,16 @@ export interface LeaderboardItem {
   strategyVersionId: string;
   strategyName?: string;
   strategyVersion?: string;
+  strategyType?: string; // "BASE" | "COMPOSITE"
   symbolId: string;
   symbolCode?: string;
   timeframe: string;
   totalReturn: number;
   winRate: number;
   maxDrawdown: number;
+  sharpeRatio?: number;
+  sortinoRatio?: number;
+  calmarRatio?: number;
   numTrades: number;
   overallScore: number;
   rank: number;
@@ -29,6 +33,8 @@ export interface LeaderboardFilterOptions {
   symbol?: string;
   timeframe?: string;
   limit?: number;
+  strategyType?: string; // "BASE" | "COMPOSITE" | "ALL"
+  sortBy?: "overallScore" | "totalReturn" | "winRate" | "maxDrawdown" | "sharpeRatio";
 }
 
 export interface LeaderboardRepository {

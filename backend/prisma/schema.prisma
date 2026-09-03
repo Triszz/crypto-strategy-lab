@@ -285,9 +285,13 @@ model LeaderboardEntry {
   strategyVersionId String          @map("strategy_version_id") @db.Uuid
   symbolId          String          @map("symbol_id") @db.Uuid
   timeframe         String          @db.VarChar(8)
+  strategyType      String          @default("BASE") @map("strategy_type") @db.VarChar(16)
   totalReturn       Decimal         @map("total_return") @db.Decimal(10, 4)
   winRate           Decimal         @map("win_rate") @db.Decimal(6, 4)
   maxDrawdown       Decimal         @map("max_drawdown") @db.Decimal(10, 4)
+  sharpeRatio       Decimal?        @map("sharpe_ratio") @db.Decimal(10, 4)
+  sortinoRatio      Decimal?        @map("sortino_ratio") @db.Decimal(10, 4)
+  calmarRatio       Decimal?        @map("calmar_ratio") @db.Decimal(10, 4)
   numTrades         Int             @map("num_trades")
   overallScore      Decimal         @map("overall_score") @db.Decimal(10, 4)
   rank              Int
@@ -299,6 +303,22 @@ model LeaderboardEntry {
   @@index([overallScore(sort: Desc)])
   @@index([symbolId, timeframe, overallScore(sort: Desc)])
   @@map("leaderboard_entries")
+}
+
+model LoopRunState {
+  id                 String   @id @default(uuid()) @db.Uuid
+  loopId             String   @unique @map("loop_id") @db.VarChar(64)
+  status             String   @default("RUNNING") @db.VarChar(32)
+  maxCandidates      Int      @default(100) @map("max_candidates")
+  timeLimitSeconds   Int      @default(3600) @map("time_limit_seconds")
+  noImprovementCap   Int      @default(50) @map("no_improvement_cap")
+  totalEvaluated     Int      @default(0) @map("total_evaluated")
+  noImprovementCount Int      @default(0) @map("no_improvement_count")
+  bestScoreSoFar     Decimal  @default(0) @map("best_score_so_far") @db.Decimal(10, 4)
+  startedAt          DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("loop_run_states")
 }
 
 model RankingHistory {

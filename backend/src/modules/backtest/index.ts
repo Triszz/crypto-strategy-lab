@@ -22,6 +22,9 @@ export {
 
 export { BacktestQueue, getBacktestQueue, type BacktestJobData, type BacktestJobProgress } from "./infrastructure/BacktestQueue";
 export { BacktestWorker, getBacktestWorker } from "./infrastructure/BacktestWorker";
+export { BullMQBacktestQueue, getBullMQBacktestQueue, BACKTEST_QUEUE_NAME } from "./infrastructure/BullMQBacktestQueue";
+export { BullMQBacktestWorker, getBullMQBacktestWorker } from "./infrastructure/BullMQBacktestWorker";
+export { BacktestCompletionTracker } from "./application/BacktestCompletionTracker";
 
 export { BacktestController } from "./presentation/backtest.controller";
 export { backtestRouter } from "./presentation/backtest.routes";

@@ -3,9 +3,10 @@ import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import { getEventBus } from "../../../shared/event-bus/EventBus";
 import { logger } from "../../../shared/logger/logger";
 
+import { getRedisConnectionOptions } from "../../../shared/queue";
 import { BacktestCompletionTracker } from "../application/BacktestCompletionTracker";
 import { BacktestService, type RunBacktestParams } from "../application/BacktestService";
-import { BACKTEST_QUEUE_NAME, getBullMQBacktestQueue, getRedisConnectionOptions } from "./BullMQBacktestQueue";
+import { BACKTEST_QUEUE_NAME, getBullMQBacktestQueue } from "./BullMQBacktestQueue";
 import type { BacktestJobProgress } from "./BacktestQueue";
 
 export interface BullMQBacktestWorkerConfig {

@@ -36,7 +36,10 @@ import {
   type ChartConfig,
   type RawCandle,
 } from "../lib/api";
-import LightweightCandlestickChart from "../components/LightweightCandlestickChart";
+import LightweightCandlestickChart, {
+  type ChartSignal,
+} from "../components/LightweightCandlestickChart";
+import { computeMASignals } from "../lib/indicators";
 
 // ── local candle shape for the chart ──────────────────────────────────────────
 
@@ -119,7 +122,7 @@ function updateCandleList(
   return next.length > 500 ? next.slice(-500) : next;
 }
 
-function computeMA(candles: LocalCandle[], period: number = 20): (number | null)[] {
+function computeMA(candles: LocalCandle[], period: number = 21): (number | null)[] {
   return candles.map((_, i) => {
     if (i < period - 1) return null;
     let sum = 0;
@@ -166,7 +169,6 @@ function LightweightChartPane({
   chartIndex,
   tf,
   candles,
-  priceChangePct,
   onTimeframeChange,
   isLoadingTf,
   onLoadOlder,
@@ -176,7 +178,6 @@ function LightweightChartPane({
   chartIndex: number;
   tf: Timeframe;
   candles: LocalCandle[];
-  priceChangePct: number;
   onTimeframeChange: (chartIndex: number, newTf: Timeframe) => void;
   isLoadingTf: boolean;
   onLoadOlder: () => void;
@@ -184,7 +185,30 @@ function LightweightChartPane({
   symbol: string;
 }) {
   const lastCandle = candles[candles.length - 1];
-  const isUp = priceChangePct >= 0;
+
+  // Per-chart MA-crossover signals. Each chart computes its own series
+  // from its own candle list, so multiple charts and timeframe changes
+  // remain isolated. `computeMASignals` is pure + deterministic; the
+  // memo key is the candle list reference so realtime updates trigger
+  // a recompute without doing it on every parent re-render.
+  const signals: ChartSignal[] = useMemo(() => {
+    const raw = computeMASignals(candles, 9, 21);
+    const out: ChartSignal[] = [];
+    for (const s of raw) {
+      if (s.side === "BUY" || s.side === "SELL") {
+        out.push({ openTime: s.openTime, side: s.side });
+      }
+    }
+    return out;
+    // candles is the single source of truth; its identity changes on
+    // every realtime update and every timeframe switch.
+  }, [candles]);
+
+  // Latest signal — drives the BUY/SELL pill in the chart header.
+  const latestSignal: "BUY" | "SELL" | "HOLD" = useMemo(() => {
+    if (signals.length === 0) return "HOLD";
+    return signals[signals.length - 1].side;
+  }, [signals]);
 
   return (
     <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 relative overflow-hidden group hover:shadow-md hover:border-slate-200/70 transition-all">
@@ -210,7 +234,7 @@ function LightweightChartPane({
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
           </div>
           <div className="flex items-center gap-2 mt-1">
-            <span className="text-[11px] font-bold text-blue-500 uppercase">MA(15)</span>
+            <span className="text-[11px] font-bold text-blue-500 uppercase">MA(21)</span>
             {lastCandle && (
               <span className="text-[11px] font-semibold text-slate-500">
                 {lastCandle.close.toLocaleString("en-US", { minimumFractionDigits: 2 })}
@@ -221,13 +245,16 @@ function LightweightChartPane({
 
         <div className="ml-3">
           <span
+            data-testid={`chart-signal-pill-${chartIndex}`}
             className={`px-3 py-1 rounded-lg text-xs font-black tracking-wider ${
-              isUp
+              latestSignal === "BUY"
                 ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                : "bg-red-50 text-red-700 border border-red-200"
+                : latestSignal === "SELL"
+                  ? "bg-red-50 text-red-700 border border-red-200"
+                  : "bg-slate-50 text-slate-500 border border-slate-200"
             }`}
           >
-            {isUp ? "BUY" : "SELL"}
+            {latestSignal}
           </span>
         </div>
       </div>
@@ -236,6 +263,7 @@ function LightweightChartPane({
         candles={candles}
         onLoadOlder={onLoadOlder}
         hasMoreData={hasMoreData}
+        signals={signals}
       />
 
       <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
@@ -280,7 +308,6 @@ export function LegacyChartPane({
   tf,
   candles,
   currentPrice,
-  priceChangePct,
   onTimeframeChange,
   isLoadingTf,
   onLoadOlder,
@@ -289,16 +316,19 @@ export function LegacyChartPane({
   tf: Timeframe;
   candles: LocalCandle[];
   currentPrice: number;
-  priceChangePct: number;
   onTimeframeChange: (chartIndex: number, newTf: Timeframe) => void;
   isLoadingTf: boolean;
   onLoadOlder: () => void;
 }) {
   const lastCandle = candles[candles.length - 1];
-  const isUp = priceChangePct >= 0;
 
-  // MA(15)
-  const maVals = computeMA(candles, 15);
+  // Legacy pane used priceChangePct to colour the header BUY/SELL pill;
+  // the strategy signal is now the source of truth, so this pane is
+  // intentionally neutral here.
+  const isUp = true;
+
+  // MA(21) – matches the project's MovingAverageStrategy slow SMA
+  const maVals = computeMA(candles, 21);
 
   // SVG dimensions
   const W = 500;
@@ -308,7 +338,6 @@ export function LegacyChartPane({
   const volGap = 8;
 
   const VISIBLE_CANDLES = 60;
-  const LOAD_MARGIN = 8; // candles from edge before triggering load
 
   // Viewport: startIdx = leftmost candle index (0 = oldest, len-1 = newest)
   const [viewport, setViewport] = useState<ViewportState>({
@@ -492,7 +521,7 @@ export function LegacyChartPane({
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
           </div>
           <div className="flex items-center gap-2 mt-1">
-            <span className="text-[11px] font-bold text-blue-500 uppercase">MA(15)</span>
+            <span className="text-[11px] font-bold text-blue-500 uppercase">MA(21)</span>
             {lastCandle && (
               <span className="text-[11px] font-semibold text-slate-500">
                 {lastCandle.close.toLocaleString("en-US", { minimumFractionDigits: 2 })}
@@ -762,12 +791,7 @@ export default function RealtimeDashboard() {
   // Computed from candle data (all candle data across all timeframes)
   const allCandles = Object.values(candlesData).flat();
   const lastCandle = allCandles[allCandles.length - 1];
-  const firstCandle = allCandles[0];
   const currentPrice = lastCandle?.close ?? 0;
-  const priceChangePct =
-    lastCandle && firstCandle && lastCandle.close && firstCandle.close
-      ? ((lastCandle.close - firstCandle.close) / firstCandle.close) * 100
-      : 0;
 
   const DEFAULT_FALLBACK_CONFIGS: ChartConfig[] = [
     { chartIndex: 0, symbol: "BTCUSDT", timeframe: "1m" },
@@ -1228,7 +1252,6 @@ export default function RealtimeDashboard() {
                   chartIndex={chartIndex}
                   tf={tf}
                   candles={candles}
-                  priceChangePct={priceChangePct}
                   onTimeframeChange={handleTimeframeChange}
                   isLoadingTf={loadingTfCharts.has(chartIndex)}
                   onLoadOlder={() => handleLoadOlder(chartIndex)}
@@ -1351,12 +1374,35 @@ export default function RealtimeDashboard() {
                   {(() => {
                     const firstTf = timeframes[0];
                     const firstCandles = firstTf ? (candlesData[firstTf] ?? []) : [];
+                    if (firstCandles.length === 0) {
+                      return (
+                        <tr>
+                          <td colSpan={4} className="py-4 text-center text-[10px] text-slate-400 font-medium">
+                            Đang tải dữ liệu…
+                          </td>
+                        </tr>
+                      );
+                    }
+                    // Compute the strategy signals for the first chart's
+                    // candles so the tick-table reflects the same BUY/SELL
+                    // values that the chart markers use.
+                    const sigs = computeMASignals(firstCandles, 9, 21);
+                    const signalByTime = new Map<number, "BUY" | "SELL">();
+                    for (const s of sigs) {
+                      if (s.side !== "HOLD") signalByTime.set(s.openTime, s.side);
+                    }
                     return firstCandles
                       .slice(-10)
                       .reverse()
                       .map((c, i) => {
-                        const prev = firstCandles[firstCandles.length - 10 + i];
-                        const isUp = prev ? c.close >= prev.close : true;
+                        const sig = signalByTime.get(c.openTime);
+                        // Fallback to direction-of-candle only when the
+                        // strategy hasn't emitted a signal yet (warm-up).
+                        const pill = sig ?? (c.close >= c.open ? "BUY" : "SELL");
+                        const pillClass =
+                          pill === "BUY"
+                            ? "bg-emerald-50 text-emerald-600"
+                            : "bg-red-50 text-red-600";
                         return (
                           <tr
                             key={`${c.openTime}-${i}`}
@@ -1373,13 +1419,9 @@ export default function RealtimeDashboard() {
                             </td>
                       <td className="py-2 px-3 text-right">
                               <span
-                                className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${
-                                  isUp
-                                    ? "bg-emerald-50 text-emerald-600"
-                                    : "bg-red-50 text-red-600"
-                                }`}
+                                className={`px-2 py-0.5 rounded text-[10px] font-black tracking-wide ${pillClass}`}
                               >
-                                {isUp ? "BUY" : "SELL"}
+                                {pill}
                         </span>
                       </td>
                     </tr>
@@ -1420,7 +1462,17 @@ export default function RealtimeDashboard() {
 
               <div className="flex items-center gap-2 pt-1 border-t border-slate-50">
                 <span className="w-4 h-0.5 bg-blue-500 inline-block" />
-                <span>MA(15) – Đường trung bình biến động 15</span>
+                <span>MA(21) – Slow SMA của Moving Average Crossover</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 bg-emerald-500 inline-block" style={{ clipPath: "polygon(50% 0%, 100% 100%, 0% 100%)" }} />
+                <span>BUY – Golden cross (fast SMA lên trên slow SMA)</span>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="w-3 h-3 bg-red-500 inline-block" style={{ clipPath: "polygon(0% 0%, 100% 0%, 50% 100%)" }} />
+                <span>SELL – Death cross (fast SMA xuống dưới slow SMA)</span>
               </div>
 
               <div className="flex items-center gap-2">

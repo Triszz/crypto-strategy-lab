@@ -29,10 +29,12 @@ export interface SentimentSummary {
   positiveCount: number;
   neutralCount: number;
   negativeCount: number;
+  analyzerCode?: string;
 }
 
 export interface SentimentRepository {
   findOrCreateProvider(code: string, name: string): Promise<{ id: string; code: string }>;
   saveSentiment(newsId: string, providerId: string, result: SentimentAnalysisResult): Promise<SentimentRecord>;
   getSentimentSummary(symbol?: string): Promise<SentimentSummary>;
+  findUnanalyzedNews(limit?: number): Promise<Array<{ id: string; title: string; summary?: string | null; content?: string | null; coinSymbols: string[] }>>;
 }

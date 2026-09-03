@@ -8,8 +8,12 @@ import { closeSocketServer, getSocketServer } from "./infrastructure/websocket/s
 import { getEventBus } from "./shared/event-bus";
 import { buildMarketDataContainer } from "./modules/market-data";
 import { buildSearchContainer } from "./modules/search";
+import { buildNewsContainer } from "./modules/news/news.container";
 import { mountMarketData, mountSearch, mountStrategy } from "./api/routes";
 import { bootstrapStrategies } from "./modules/strategy";
+import { EvaluationService } from "./modules/evaluation/application/evaluation.service";
+import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
+import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
 
 /**
  * Process entrypoint. Responsibilities:
@@ -33,6 +37,10 @@ async function main(): Promise<void> {
   getEventBus();
   getRedisConnection();
 
+  // Instantiate Event Listeners for Evaluation and Leaderboard modules
+  new EvaluationService();
+  new LeaderboardService(new PrismaLeaderboardRepository());
+
   const app = createApp();
   const httpServer = http.createServer(app);
   initSocketServer(httpServer);
@@ -53,6 +61,14 @@ async function main(): Promise<void> {
   // Build and mount the Search container.
   const search = buildSearchContainer();
   mountSearch(search);
+
+  // Build and start the News module.
+  const news = buildNewsContainer(
+    undefined,
+    undefined,
+    getSocketServer(),
+  );
+  news.crawler.start(env.NEWS_CRAWL_INTERVAL_MS > 0 ? env.NEWS_CRAWL_INTERVAL_MS : 0);
 
   // Mount Strategy catalogue routes (stateless, no container needed).
   bootstrapStrategies();
@@ -85,13 +101,14 @@ async function main(): Promise<void> {
   // health checks immediately while backfill + WS connect happen.
   void marketStartPromise;
 
-  installShutdown(httpServer, marketData, search);
+  installShutdown(httpServer, marketData, search, news);
 }
 
 function installShutdown(
   httpServer: http.Server,
   marketData: ReturnType<typeof buildMarketDataContainer>,
   _search: ReturnType<typeof buildSearchContainer>,
+  news: ReturnType<typeof buildNewsContainer>,
 ): void {
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -129,6 +146,12 @@ function installShutdown(
       await closeRedisConnection();
     } catch (err) {
       logger.warn({ err }, "Redis close error");
+    }
+
+    try {
+      news.crawler.stop();
+    } catch (err) {
+      logger.warn({ err }, "News crawler stop error");
     }
 
     // Touch Socket.IO singleton to make sure it was initialised.

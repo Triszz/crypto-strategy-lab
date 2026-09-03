@@ -68,42 +68,44 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
 
     const updatedItems: LeaderboardItem[] = [];
 
-    for (let i = 0; i < entries.length; i++) {
-      const newRank = i + 1;
-      const entry = entries[i];
+    await this.prisma.$transaction(async (tx) => {
+      for (let i = 0; i < entries.length; i++) {
+        const newRank = i + 1;
+        const entry = entries[i];
 
-      if (entry.rank !== newRank) {
-        await this.prisma.leaderboardEntry.update({
-          where: { id: entry.id },
-          data: { rank: newRank },
+        if (entry.rank !== newRank) {
+          await tx.leaderboardEntry.update({
+            where: { id: entry.id },
+            data: { rank: newRank },
+          });
+        }
+
+        await tx.rankingHistory.create({
+          data: {
+            strategyVersionId: entry.strategyVersionId,
+            rank: newRank,
+            overallScore: entry.overallScore,
+          },
+        });
+
+        updatedItems.push({
+          id: entry.id,
+          strategyVersionId: entry.strategyVersionId,
+          strategyName: entry.strategyVersion?.name || "Strategy",
+          strategyVersion: entry.strategyVersion?.version || "1.0.0",
+          symbolId: entry.symbolId,
+          symbolCode: entry.symbol?.symbol || "BTCUSDT",
+          timeframe: entry.timeframe,
+          totalReturn: Number(entry.totalReturn),
+          winRate: Number(entry.winRate),
+          maxDrawdown: Number(entry.maxDrawdown),
+          numTrades: entry.numTrades,
+          overallScore: Number(entry.overallScore),
+          rank: newRank,
+          lastEvaluatedAt: entry.lastEvaluatedAt,
         });
       }
-
-      await this.prisma.rankingHistory.create({
-        data: {
-          strategyVersionId: entry.strategyVersionId,
-          rank: newRank,
-          overallScore: entry.overallScore,
-        },
-      });
-
-      updatedItems.push({
-        id: entry.id,
-        strategyVersionId: entry.strategyVersionId,
-        strategyName: entry.strategyVersion?.name || "Unknown Strategy",
-        strategyVersion: entry.strategyVersion?.version || "1.0.0",
-        symbolId: entry.symbolId,
-        symbolCode: entry.symbol?.symbol || "BTCUSDT",
-        timeframe: entry.timeframe,
-        totalReturn: Number(entry.totalReturn),
-        winRate: Number(entry.winRate),
-        maxDrawdown: Number(entry.maxDrawdown),
-        numTrades: entry.numTrades,
-        overallScore: Number(entry.overallScore),
-        rank: newRank,
-        lastEvaluatedAt: entry.lastEvaluatedAt,
-      });
-    }
+    });
 
     return updatedItems;
   }
@@ -125,9 +127,10 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
       whereClause.timeframe = options.timeframe;
     }
 
+    // Fix Bug #2 (spec 04-leaderboard-module.md §7.2): Order by overallScore DESC instead of rank ASC
     const entries = await this.prisma.leaderboardEntry.findMany({
       where: whereClause,
-      orderBy: { rank: "asc" },
+      orderBy: { overallScore: "desc" },
       take: limit,
       include: {
         strategyVersion: true,
@@ -135,7 +138,7 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
       },
     });
 
-    return entries.map((entry) => ({
+    return entries.map((entry, index) => ({
       id: entry.id,
       strategyVersionId: entry.strategyVersionId,
       strategyName: entry.strategyVersion?.name || "Strategy",
@@ -148,7 +151,7 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
       maxDrawdown: Number(entry.maxDrawdown),
       numTrades: entry.numTrades,
       overallScore: Number(entry.overallScore),
-      rank: entry.rank,
+      rank: index + 1,
       lastEvaluatedAt: entry.lastEvaluatedAt,
     }));
   }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   ChevronDown, 
   HelpCircle, 
@@ -10,6 +10,7 @@ import {
   AlertCircle
 } from 'lucide-react';
 import { backtestApi, type BacktestMetricsApi, type EquityPointApi, type TradeItemApi } from '../services/backtestApi';
+import LightweightCandlestickChart, { type LightweightCandle } from '../components/LightweightCandlestickChart';
 
 export default function Backtest() {
   const [selectedPair, setSelectedPair] = useState('BTCUSDT');
@@ -63,13 +64,6 @@ export default function Backtest() {
           detail: { tradeId: null },
         })
       );
-    }
-  };
-
-  const handleOpenTradeModal = (trade: TradeItemApi) => {
-    setActiveModalTrade(trade);
-    if (highlightedTrade?.id !== trade.id) {
-      handleSelectTrade(trade);
     }
   };
 
@@ -135,9 +129,16 @@ export default function Backtest() {
 
   const pairsList = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT'];
   const tfList = ['1m', '5m', '15m', '1h', '4h', '1d'];
-  const strategyList = ['MA Crossover', 'RSI Momentum', 'Bollinger Bands'];
+  const strategyList = ['MA Crossover', 'RSI Oversold', 'MACD Reversal', 'Bollinger Breakout'];
+
+  // Active executed backtest configuration for chart and results
+  const [activeChartConfig, setActiveChartConfig] = useState({
+    pair: 'BTCUSDT',
+    timeframe: '5m',
+  });
 
   const handleStartBacktest = async () => {
+    setActiveChartConfig({ pair: selectedPair, timeframe: timeframe });
     setIsRunning(true);
     setProgress(15);
     setErrorMsg(null);
@@ -173,7 +174,6 @@ export default function Backtest() {
     } catch (err: any) {
       clearInterval(interval);
       console.warn('API error or server offline. Using simulated run:', err);
-      // Fallback local interactive calculation if API server is not running
       const simReturn = Number((Math.random() * 12 + 2).toFixed(2));
       const simWinrate = Number((Math.random() * 25 + 50).toFixed(1));
       const simMdd = Number((Math.random() * 4 + 1.5).toFixed(2));
@@ -201,28 +201,36 @@ export default function Backtest() {
     }
   };
 
-  // SVG Chart points calculation for Equity Curve
-  const chartCandles = [
-    68900, 68850, 68950, 69100, 69020, 69150, 69200, 69180, 
-    69300, 69420, 69310, 69250, 69120, 69050, 68980, 68820,
-    68900, 69120, 69240, 69180, 69260, 69380, 69450, 69390, 69420
-  ].map((close, i) => {
-    const change = (Math.random() - 0.45) * 60;
-    const open = close - change;
-    const high = Math.max(open, close) + Math.random() * 30;
-    const low = Math.min(open, close) - Math.random() * 30;
-    const volume = Math.round(50 + Math.random() * 600);
-    return { open, high, low, close, volume, time: `0${i}:00` };
-  });
+  // Lightweight Candlestick data synchronized with active executed backtest run
+  const lightweightCandles: LightweightCandle[] = useMemo(() => {
+    const candles: LightweightCandle[] = [];
+    const symbol = activeChartConfig.pair;
+    const tf = activeChartConfig.timeframe;
+    const basePrice = symbol.startsWith('BTC') ? 68000 : symbol.startsWith('ETH') ? 2600 : symbol.startsWith('SOL') ? 180 : 600;
+    const tfSeconds = tf === '1m' ? 60 : tf === '5m' ? 300 : tf === '15m' ? 900 : tf === '1h' ? 3600 : tf === '4h' ? 14400 : 86400;
+    const intervalMs = tfSeconds * 1000;
+    const count = 100;
+    const now = Date.now();
+    const startTime = now - count * intervalMs;
 
-  // Highlight positioning calculation based on highlightedTrade index or prices
-  const highlightedTradeIdx = highlightedTrade ? trades.findIndex(t => t.id === highlightedTrade.id) : -1;
-  const xHighlightEntry = highlightedTradeIdx >= 0 ? Math.min(460, Math.max(30, (highlightedTradeIdx * 90) + 50)) : 110;
-  const xHighlightExit = highlightedTradeIdx >= 0 ? Math.min(530, xHighlightEntry + 100) : 220;
-  
-  const scaleChartY = (val: number) => 300 - ((val - 67500) * 220) / 2400;
-  const yHighlightEntry = highlightedTrade ? Math.min(290, Math.max(40, scaleChartY(highlightedTrade.entryPrice))) : 210;
-  const yHighlightExit = highlightedTrade ? Math.min(290, Math.max(40, scaleChartY(highlightedTrade.exitPrice))) : 110;
+    let currentPrice = basePrice;
+    for (let i = 0; i < count; i++) {
+      const openTime = startTime + i * intervalMs;
+      const trend = Math.sin(i / 8) * (basePrice * 0.003);
+      const noise = (i % 2 === 0 ? 1 : -1) * (Math.random() * (basePrice * 0.002));
+      const open = Number(currentPrice.toFixed(2));
+      const close = Number(Math.max(10, open + trend + noise).toFixed(2));
+      const high = Number((Math.max(open, close) + Math.random() * (basePrice * 0.0015)).toFixed(2));
+      const low = Number((Math.min(open, close) - Math.random() * (basePrice * 0.0015)).toFixed(2));
+      const volume = Math.round(150 + Math.random() * 500);
+      currentPrice = close;
+
+      candles.push({ openTime, open, high, low, close, volume });
+    }
+    return candles;
+  }, [activeChartConfig.pair, activeChartConfig.timeframe]);
+
+  const handleLoadOlder = useCallback(() => {}, []);
 
   return (
     <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto relative">
@@ -273,177 +281,159 @@ export default function Backtest() {
         </div>
       )}
 
-      {/* Backtest Parameters Control Bar */}
-      <section className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-wrap gap-5 items-end justify-between">
-        <div className="flex flex-wrap gap-5">
-          {/* Pair Select */}
-          <div className="flex flex-col gap-1.5 relative">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Pair / Coin</label>
-            <button 
-              onClick={() => setShowPairDropdown(!showPairDropdown)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 min-w-[120px] justify-between cursor-pointer hover:bg-slate-100 transition-colors"
-            >
-              <span className="flex items-center gap-1.5">
-                <span className="w-4 h-4 bg-amber-500 rounded-full flex items-center justify-center text-white text-[9px]">₿</span>
-                {selectedPair}
-              </span>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
-            </button>
-            {showPairDropdown && (
-              <div className="absolute top-full mt-1 left-0 w-full bg-white border border-slate-200 rounded-xl shadow-lg z-50 overflow-hidden">
-                {pairsList.map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => { setSelectedPair(p); setShowPairDropdown(false); }}
-                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                  >
-                    {p}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+      {/* Control Panel */}
+      <section className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4 items-end">
+        {/* Coin Pair Dropdown */}
+        <div className="relative">
+          <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Cặp Giao Dịch</label>
+          <button 
+            onClick={() => setShowPairDropdown(!showPairDropdown)}
+            className="w-full flex justify-between items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-100 transition-colors"
+          >
+            <span>{selectedPair}</span>
+            <ChevronDown className="w-4 h-4 text-slate-400" />
+          </button>
+          {showPairDropdown && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-100 rounded-xl shadow-xl z-20 overflow-hidden py-1">
+              {pairsList.map((p) => (
+                <div 
+                  key={p}
+                  onClick={() => { setSelectedPair(p); setShowPairDropdown(false); }}
+                  className="px-3 py-2 text-xs font-semibold hover:bg-blue-50 hover:text-blue-600 cursor-pointer text-slate-700"
+                >
+                  {p}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
-          {/* Timeframe Select */}
-          <div className="flex flex-col gap-1.5 relative">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Timeframe</label>
-            <button 
-              onClick={() => setShowTfDropdown(!showTfDropdown)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 min-w-[80px] justify-between cursor-pointer hover:bg-slate-100 transition-colors"
-            >
-              <span>{timeframe}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
-            </button>
-            {showTfDropdown && (
-              <div className="absolute top-full mt-1 left-0 w-full bg-white border border-slate-200 rounded-xl shadow-lg z-50 overflow-hidden">
-                {tfList.map((tf) => (
-                  <button
-                    key={tf}
-                    onClick={() => { setTimeframe(tf); setShowTfDropdown(false); }}
-                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-600 transition-colors"
-                  >
-                    {tf}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+        {/* Timeframe Dropdown */}
+        <div className="relative">
+          <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Khung Thời Gian</label>
+          <button 
+            onClick={() => setShowTfDropdown(!showTfDropdown)}
+            className="w-full flex justify-between items-center bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-bold text-slate-800 hover:bg-slate-100 transition-colors"
+          >
+            <span>{timeframe}</span>
+            <ChevronDown className="w-4 h-4 text-slate-400" />
+          </button>
+          {showTfDropdown && (
+            <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-100 rounded-xl shadow-xl z-20 overflow-hidden py-1">
+              {tfList.map((tf) => (
+                <div 
+                  key={tf}
+                  onClick={() => { setTimeframe(tf); setShowTfDropdown(false); }}
+                  className="px-3 py-2 text-xs font-semibold hover:bg-blue-50 hover:text-blue-600 cursor-pointer text-slate-700"
+                >
+                  {tf}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
 
-          {/* From Date */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">From date</label>
+        {/* Date Range Inputs */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Từ Ngày</label>
             <input 
               type="date" 
               value={fromDate}
               onChange={(e) => setFromDate(e.target.value)}
-              className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700 focus:outline-none" 
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500"
             />
           </div>
-
-          {/* To Date */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">To date</label>
+          <div>
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Đến Ngày</label>
             <input 
               type="date" 
               value={toDate}
               onChange={(e) => setToDate(e.target.value)}
-              className="px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-semibold text-slate-700 focus:outline-none" 
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500"
             />
           </div>
+        </div>
 
-          {/* Capital */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Vốn (USD)</label>
-            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 max-w-[120px]">
-              <input 
-                type="number" 
-                value={capital}
-                onChange={(e) => setCapital(Number(e.target.value))}
-                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
-              />
-              <span className="text-[10px] text-slate-400 font-bold uppercase">USD</span>
-            </div>
+        {/* Capital & Strategy Selection */}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Vốn ($)</label>
+            <input 
+              type="number" 
+              value={capital}
+              onChange={(e) => setCapital(Number(e.target.value))}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500"
+            />
           </div>
-
-          {/* Strategy Select */}
-          <div className="flex flex-col gap-1.5 relative">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Strategy</label>
+          <div className="relative">
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Strategy</label>
             <button 
               onClick={() => setShowStratDropdown(!showStratDropdown)}
-              className="flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 min-w-[160px] justify-between cursor-pointer hover:bg-slate-100 transition-colors"
+              className="w-full flex justify-between items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 py-2 text-xs font-bold text-slate-800 hover:bg-slate-100 transition-colors"
             >
-              <span>{selectedStrategy}</span>
-              <ChevronDown className="w-3.5 h-3.5 text-slate-500" />
+              <span className="truncate">{selectedStrategy}</span>
+              <ChevronDown className="w-4 h-4 text-slate-400 shrink-0" />
             </button>
             {showStratDropdown && (
-              <div className="absolute top-full mt-1 left-0 w-full bg-white border border-slate-200 rounded-xl shadow-lg z-50 overflow-hidden">
+              <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-100 rounded-xl shadow-xl z-20 overflow-hidden py-1">
                 {strategyList.map((st) => (
-                  <button
+                  <div 
                     key={st}
                     onClick={() => { setSelectedStrategy(st); setShowStratDropdown(false); }}
-                    className="w-full text-left px-3 py-2 text-xs font-bold text-slate-700 hover:bg-blue-50 hover:text-blue-600 transition-colors"
+                    className="px-3 py-2 text-xs font-semibold hover:bg-blue-50 hover:text-blue-600 cursor-pointer text-slate-700"
                   >
                     {st}
-                  </button>
+                  </div>
                 ))}
               </div>
             )}
           </div>
+        </div>
 
-          {/* Fee % */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Transaction Cost</label>
-            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 max-w-[90px]">
-              <input 
-                type="number" 
-                step="0.01"
-                value={feePercent}
-                onChange={(e) => setFeePercent(Number(e.target.value))}
-                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
-              />
-              <span className="text-[10px] text-slate-400 font-bold">%</span>
-            </div>
+        {/* SL / TP Controls */}
+        <div className="grid grid-cols-4 gap-2">
+          <div>
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Fee %</label>
+            <input 
+              type="number" 
+              step="0.01"
+              value={feePercent}
+              onChange={(e) => setFeePercent(Number(e.target.value))}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500 text-center"
+            />
           </div>
-
-          {/* Slippage */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Slippage</label>
-            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 max-w-[90px]">
-              <input 
-                type="number" 
-                value={slippageBps}
-                onChange={(e) => setSlippageBps(Number(e.target.value))}
-                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
-              />
-              <span className="text-[10px] text-slate-400 font-bold uppercase">bps</span>
-            </div>
+          <div>
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Slip (bps)</label>
+            <input 
+              type="number" 
+              value={slippageBps}
+              onChange={(e) => setSlippageBps(Number(e.target.value))}
+              className="w-full bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-800 focus:outline-none focus:border-blue-500 text-center"
+            />
           </div>
-
-          {/* Stop Loss % */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Stop Loss</label>
-            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 max-w-[90px]">
+          <div>
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Stop Loss</label>
+            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2">
               <input 
                 type="number" 
                 step="0.1"
                 value={stopLossPct}
                 onChange={(e) => setStopLossPct(Number(e.target.value))}
-                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
+                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none text-right pr-1"
               />
               <span className="text-[10px] text-slate-400 font-bold">%</span>
             </div>
           </div>
-
-          {/* Take Profit % */}
-          <div className="flex flex-col gap-1.5">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Take Profit</label>
-            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2.5 max-w-[90px]">
+          <div>
+            <label className="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider block mb-1.5">Take Profit</label>
+            <div className="flex items-center bg-slate-50 border border-slate-200 rounded-xl px-2">
               <input 
                 type="number" 
                 step="0.1"
                 value={takeProfitPct}
                 onChange={(e) => setTakeProfitPct(Number(e.target.value))}
-                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none border-none text-right pr-1"
+                className="w-full py-2 bg-transparent text-xs font-bold text-slate-700 focus:outline-none text-right pr-1"
               />
               <span className="text-[10px] text-slate-400 font-bold">%</span>
             </div>
@@ -454,7 +444,7 @@ export default function Backtest() {
         <button 
           onClick={handleStartBacktest}
           disabled={isRunning}
-          className="flex items-center gap-2 py-2.5 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-md shadow-blue-200 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60 cursor-pointer"
+          className="flex items-center justify-center gap-2 py-3 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-md shadow-blue-200 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60 cursor-pointer"
         >
           <Play className="w-4 h-4 fill-white" />
           <span>{isRunning ? `Running ${progress}%` : 'Bắt đầu backtest'}</span>
@@ -464,134 +454,33 @@ export default function Backtest() {
       {/* Main Backtest Contents */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         
-        {/* Left Column: Biểu đồ Backtest */}
+        {/* Left Column: Biểu đồ Backtest (TradingView Lightweight Charts) */}
         <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
           <div className="flex justify-between items-center">
-            <h3 className="text-sm font-extrabold text-slate-800">Biểu đồ Backtest ({selectedPair} - {timeframe})</h3>
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-extrabold text-slate-800">Biểu đồ Backtest ({activeChartConfig.pair} - {activeChartConfig.timeframe})</h3>
+              <span className="px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200/60 text-[9px] font-black tracking-wide">
+                TradingView Lightweight Chart
+              </span>
+            </div>
             <div className="flex items-center gap-4 text-[10px] font-bold text-slate-400">
-              <span className="flex items-center gap-1.5"><span className="w-2 h-0.5 bg-blue-500 inline-block" /> Equity Curve</span>
-              <span className="flex items-center gap-1.5"><span className="w-2 h-0.5 bg-amber-500 inline-block" /> Price Action</span>
+              <span className="flex items-center gap-1.5"><span className="w-2 h-0.5 bg-blue-500 inline-block" /> MA 15</span>
+              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-xs bg-emerald-500 inline-block" /> LONG Marker</span>
+              <span className="flex items-center gap-1.5"><span className="w-2 h-2 rounded-xs bg-red-500 inline-block" /> SHORT Marker</span>
             </div>
           </div>
 
-          {/* SVG Backtest Chart Container */}
-          <div className="h-[380px] w-full relative select-none bg-slate-50/20 rounded-xl border border-slate-100 p-2 overflow-hidden">
-            <svg className="w-full h-full" viewBox="0 0 600 360" preserveAspectRatio="none">
-              {/* Horizontal gridlines */}
-              <line x1={0} y1={50} x2={540} y2={50} stroke="#f1f5f9" strokeDasharray="3,3" />
-              <line x1={0} y1={120} x2={540} y2={120} stroke="#f1f5f9" strokeDasharray="3,3" />
-              <line x1={0} y1={190} x2={540} y2={190} stroke="#f1f5f9" strokeDasharray="3,3" />
-              <line x1={0} y1={260} x2={540} y2={260} stroke="#f1f5f9" strokeDasharray="3,3" />
-
-              {/* Candles */}
-              {chartCandles.map((c, i) => {
-                const x = (i * 540) / 24;
-                const scaleY = (val: number) => 300 - ((val - 68500) * 220) / 1100;
-                const yOpen = scaleY(c.open);
-                const yClose = scaleY(c.close);
-                const yHigh = scaleY(c.high);
-                const yLow = scaleY(c.low);
-                const isGreen = c.close >= c.open;
-                const color = isGreen ? '#10b981' : '#ef4444';
-
-                return (
-                  <g key={`c-${i}`}>
-                    <line x1={x} y1={yHigh} x2={x} y2={yLow} stroke={color} strokeWidth={1.2} />
-                    <rect
-                      x={x - 5}
-                      y={Math.min(yOpen, yClose)}
-                      width={10}
-                      height={Math.max(2, Math.abs(yOpen - yClose))}
-                      fill={color}
-                      stroke={color}
-                      strokeWidth={0.5}
-                      rx={0.5}
-                    />
-                  </g>
-                );
-              })}
-
-              {/* Dynamic Equity Curve Line */}
-              {equityCurve.length > 1 && (
-                <path
-                  d={equityCurve.reduce((path, pt, i) => {
-                    const x = (i * 540) / Math.max(1, equityCurve.length - 1);
-                    const minCap = Math.min(...equityCurve.map(e => e.capital));
-                    const maxCap = Math.max(...equityCurve.map(e => e.capital));
-                    const range = Math.max(10, maxCap - minCap);
-                    const y = 280 - ((pt.capital - minCap) * 200) / range;
-                    const cmd = i === 0 ? 'M' : 'L';
-                    return `${path} ${cmd} ${x} ${y}`;
-                  }, '')}
-                  fill="none"
-                  stroke="#2563eb"
-                  strokeWidth={2.5}
-                />
-              )}
-
-              {/* BUY/SELL markers overlays */}
-              <g transform="translate(112, 230)">
-                <line x1={0} y1={0} x2={0} y2={15} stroke="#10b981" strokeWidth={1.5} />
-                <polygon points="0,15 -3,10 3,10" fill="#10b981" />
-                <rect x={-32} y={-17} width={64} height={14} fill="#e6f4ea" stroke="#34a853" strokeWidth={0.5} rx={3} />
-                <text x={0} y={-8} fill="#137333" fontSize="7.5" fontWeight="bold" textAnchor="middle">BUY Signal</text>
-              </g>
-
-              <g transform="translate(340, 110)">
-                <line x1={0} y1={0} x2={40} y2={0} stroke="#10b981" strokeWidth={1} strokeDasharray="2,2" />
-                <text x={45} y={3} fill="#10b981" fontSize="7.5" fontWeight="extrabold">TP Target</text>
-              </g>
-
-              {/* Highlight Trade Overlay on SVG Chart */}
-              {highlightedTrade && (
-                <g id="highlight-trade-overlay">
-                  {/* Highlighted zone background rectangle */}
-                  <rect
-                    x={xHighlightEntry - 8}
-                    y={30}
-                    width={Math.max(45, xHighlightExit - xHighlightEntry + 16)}
-                    height={270}
-                    fill={highlightedTrade.direction === 'LONG' ? 'rgba(16, 185, 129, 0.12)' : 'rgba(239, 68, 68, 0.12)'}
-                    stroke={highlightedTrade.direction === 'LONG' ? '#10b981' : '#ef4444'}
-                    strokeWidth={1.5}
-                    strokeDasharray="4,4"
-                    rx={6}
-                  />
-
-                  {/* Vertical Entry Line */}
-                  <line x1={xHighlightEntry} y1={30} x2={xHighlightEntry} y2={300} stroke="#2563eb" strokeWidth={1.5} strokeDasharray="3,3" />
-                  {/* Vertical Exit Line */}
-                  <line x1={xHighlightExit} y1={30} x2={xHighlightExit} y2={300} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="3,3" />
-
-                  {/* Horizontal Entry Price Line & Badge */}
-                  <line x1={Math.max(10, xHighlightEntry - 30)} y1={yHighlightEntry} x2={540} y2={yHighlightEntry} stroke="#10b981" strokeWidth={1.5} strokeDasharray="3,3" />
-                  <rect x={Math.min(435, xHighlightEntry)} y={Math.max(35, yHighlightEntry - 10)} width={100} height={18} fill="#10b981" rx={4} />
-                  <text x={Math.min(435, xHighlightEntry) + 5} y={Math.max(35, yHighlightEntry - 10) + 12} fill="#ffffff" fontSize="9" fontWeight="extrabold">Entry: ${highlightedTrade.entryPrice.toLocaleString('en-US')}</text>
-
-                  {/* Horizontal Exit Price Line & Badge */}
-                  <line x1={Math.max(10, xHighlightEntry - 30)} y1={yHighlightExit} x2={540} y2={yHighlightExit} stroke="#ef4444" strokeWidth={1.5} strokeDasharray="3,3" />
-                  <rect x={Math.min(435, Math.max(10, xHighlightExit - 50))} y={Math.max(35, yHighlightExit - 10)} width={100} height={18} fill="#ef4444" rx={4} />
-                  <text x={Math.min(435, Math.max(10, xHighlightExit - 50)) + 5} y={Math.max(35, yHighlightExit - 10) + 12} fill="#ffffff" fontSize="9" fontWeight="extrabold">Exit: ${highlightedTrade.exitPrice.toLocaleString('en-US')}</text>
-
-                  {/* Highlight Label Badge top */}
-                  <rect x={xHighlightEntry - 5} y={35} width={105} height={16} fill="#0f172a" rx={3} />
-                  <text x={xHighlightEntry} y={46} fill="#38bdf8" fontSize="8" fontWeight="black">HIGHLIGHT: {highlightedTrade.id}</text>
-                </g>
-              )}
-
-              {/* Price Axis on Right */}
-              <g fill="#94a3b8" fontSize="8" fontWeight="bold" textAnchor="start">
-                <text x={546} y={54}>70,400</text>
-                <text x={546} y={114}>69,600</text>
-                <text x={546} y={174}>68,800</text>
-                <text x={546} y={234}>68,000</text>
-                <text x={546} y={294}>67,200</text>
-              </g>
-            </svg>
+          {/* Lightweight Candlestick Chart Container */}
+          <div className="h-[360px] w-full relative rounded-xl border border-slate-100 p-1 overflow-hidden bg-white">
+            <LightweightCandlestickChart
+              candles={lightweightCandles}
+              onLoadOlder={handleLoadOlder}
+              hasMoreData={false}
+            />
 
             {/* Load indicator */}
             {isRunning && (
-              <div className="absolute inset-0 bg-white/85 flex flex-col items-center justify-center gap-3">
+              <div className="absolute inset-0 bg-white/85 flex flex-col items-center justify-center gap-3 z-20">
                 <div className="w-12 h-12 rounded-full border-4 border-blue-100 border-t-blue-600 animate-spin" />
                 <span className="text-xs font-bold text-slate-700">Đang chạy backtest engine: {progress}%</span>
               </div>
@@ -645,7 +534,7 @@ export default function Backtest() {
                     trades.map((item, idx) => (
                       <tr 
                         key={item.id || idx} 
-                        onClick={() => handleOpenTradeModal(item)}
+                        onClick={() => setActiveModalTrade(item)}
                         className={`border-b border-slate-50 last:border-b-0 cursor-pointer transition-colors ${
                           highlightedTrade?.id === item.id ? 'bg-blue-50/80 font-bold' : 'hover:bg-slate-50'
                         }`}
@@ -761,12 +650,32 @@ export default function Backtest() {
 
         {/* Metric 5: Final Capital */}
         <div className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-between">
-          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center gap-1">
-            Vốn Cuối Kỳ (Final) <Info className="w-3.5 h-3.5 text-slate-300" />
+          <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider flex items-center justify-between">
+            <span>Vốn Cuối Kỳ (Final)</span>
+            <Info className="w-3.5 h-3.5 text-slate-300" />
           </span>
           <div className="mt-2 text-xl font-black text-blue-600">
             ${metrics.finalCapital.toLocaleString('en-US')}
           </div>
+          {equityCurve.length > 1 && (
+            <div className="h-4 w-full mt-1">
+              <svg className="w-full h-full overflow-visible">
+                <path
+                  d={equityCurve.reduce((path, pt, i) => {
+                    const x = (i * 120) / Math.max(1, equityCurve.length - 1);
+                    const minCap = Math.min(...equityCurve.map(e => e.capital));
+                    const maxCap = Math.max(...equityCurve.map(e => e.capital));
+                    const range = Math.max(10, maxCap - minCap);
+                    const y = 14 - ((pt.capital - minCap) * 12) / range;
+                    return `${path} ${i === 0 ? 'M' : 'L'} ${x} ${y}`;
+                  }, '')}
+                  fill="none"
+                  stroke="#2563eb"
+                  strokeWidth="1.5"
+                />
+              </svg>
+            </div>
+          )}
           <span className="text-[9px] text-slate-400 font-semibold mt-1">Vốn ban đầu: ${metrics.initialCapital.toLocaleString('en-US')}</span>
         </div>
 

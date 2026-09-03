@@ -12,7 +12,7 @@ import type { Logger } from "../../../shared/logger/logger";
 import { logger as rootLogger } from "../../../shared/logger/logger";
 import type { EventBus } from "../../../shared/event-bus/EventBus";
 import { getEventBus } from "../../../shared/event-bus/EventBus";
-import type { SearchRepository } from "./SearchRepository.port";
+import type { SearchRepository, ListSearchRunsFilter } from "./SearchRepository.port";
 import type { StrategyVersionMapper } from "./StrategyVersionMapper";
 import type {
   StrategyGenerator,
@@ -151,6 +151,49 @@ export class SearchService {
     searchRunId: string,
   ): Promise<ReadonlyArray<import("./SearchRepository.port").CandidateRecord>> {
     return this.repository.getCandidatesByRun(searchRunId);
+  }
+
+  /**
+   * List recent SearchRuns. Returns rows ordered by `createdAt DESC`.
+   * Used by the Discovery history UI.
+   */
+  public async listSearchRuns(
+    filter?: ListSearchRunsFilter,
+  ): Promise<ReadonlyArray<SearchRunRecord>> {
+    return this.repository.listSearchRuns(filter);
+  }
+
+  /**
+   * Count CandidateStrategy rows produced by a SearchRun. Cheap aggregate
+   * used to summarise runs in list responses.
+   */
+  public async countCandidatesByRun(searchRunId: string): Promise<number> {
+    return this.repository.countCandidatesByRun(searchRunId);
+  }
+
+  /**
+   * Resolve the SearchAlgorithm row for a SearchRun. Returns a minimal
+   * summary suitable for the Discovery history UI.
+   */
+  public async getAlgorithmSummary(algorithmId: string): Promise<{
+    id: string;
+    code: string;
+    name: string;
+  }> {
+    return this.repository.getAlgorithmSummary(algorithmId);
+  }
+
+  /**
+   * Resolve the Symbol row for a SearchRun. Returns a minimal summary
+   * suitable for the Discovery history UI.
+   */
+  public async getSymbolSummary(symbolId: string): Promise<{
+    id: string;
+    symbol: string;
+    baseAsset: string;
+    quoteAsset: string;
+  }> {
+    return this.repository.getSymbolSummary(symbolId);
   }
 
   /**

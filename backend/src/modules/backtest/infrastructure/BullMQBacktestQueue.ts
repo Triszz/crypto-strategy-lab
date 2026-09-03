@@ -98,7 +98,19 @@ export class BullMQBacktestQueue {
           },
         );
         enqueued = true;
-        logger.info({ jobId, candidateId: params.candidateId }, "Backtest job enqueued into BullMQ");
+        logger.info(
+          {
+            tag: "[BULLMQ_QUEUE]",
+            jobId,
+            queueName: BACKTEST_QUEUE_NAME,
+            jobType: "backtest.run",
+            candidateId: params.candidateId,
+            symbol: params.symbol,
+            timeframe: params.timeframe,
+            strategyName: params.strategyName,
+          },
+          "BullMQ: Backtest job successfully enqueued",
+        );
       } catch (queueErr: any) {
         logger.warn({ err: queueErr.message, jobId }, "Redis BullMQ queue unavailable; using in-memory worker fallback");
       }

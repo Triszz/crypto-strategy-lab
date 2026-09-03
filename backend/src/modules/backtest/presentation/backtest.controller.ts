@@ -45,6 +45,9 @@ export class BacktestController {
       const takeProfitPct = body.takeProfitPct;
       const sync = body.sync ?? false;
 
+      const fromTime = body.fromTime ? Number(body.fromTime) : undefined;
+      const toTime = body.toTime ? Number(body.toTime) : undefined;
+
       const params = {
         candidateId,
         symbol,
@@ -53,6 +56,8 @@ export class BacktestController {
         initialCapital: Number(initialCapital),
         feePercent: Number(feePercent),
         slippageBps: Number(slippageBps),
+        fromTime,
+        toTime,
         stopLossPct: stopLossPct !== undefined ? Number(stopLossPct) : undefined,
         takeProfitPct: takeProfitPct !== undefined ? Number(takeProfitPct) : undefined,
       };

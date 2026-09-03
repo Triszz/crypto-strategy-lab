@@ -1,6 +1,8 @@
 import { getPrismaClient } from "../../../infrastructure/database";
 import { getEventBus } from "../../../shared/event-bus/EventBus";
 import { logger } from "../../../shared/logger/logger";
+import { BinanceRestAdapter } from "../../market-data/infrastructure/BinanceRestAdapter";
+import { isSupportedTimeframe, type Timeframe } from "../../market-data/domain/Timeframe";
 import { Backtester } from "../domain/Backtester";
 import type {
   BacktestOptions,
@@ -71,6 +73,7 @@ export class BacktestService {
     strategyName: string;
     candidateId?: string;
     result: BacktestResultDomain;
+    candles: Array<{ openTime: number; open: number; high: number; low: number; close: number; volume: number }>;
   }> {
     let symbol = params.symbol || "BTCUSDT";
     let timeframe = params.timeframe || "5m";
@@ -160,6 +163,14 @@ export class BacktestService {
       strategyName,
       candidateId: params.candidateId,
       result,
+      candles: candles.map((c) => ({
+        openTime: c.openTime,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+      })),
     };
   }
 
@@ -302,7 +313,7 @@ export class BacktestService {
   }
 
   /**
-   * Helper to retrieve candles from DB by timeframe or fallback to fixture generation.
+   * Helper to retrieve candles from DB by timeframe or auto-fetch from Binance if missing.
    */
   private async getHistoricalCandles(
     symbol: string,
@@ -312,11 +323,16 @@ export class BacktestService {
   ): Promise<CandleData[]> {
     try {
       const prisma = getPrismaClient();
-      const dbSymbol = await prisma.symbol.findUnique({ where: { symbol } });
+      let dbSymbol = await prisma.symbol.findUnique({ where: { symbol } });
+      if (!dbSymbol) {
+        dbSymbol = await prisma.symbol.create({
+          data: { symbol, baseAsset: symbol.replace("USDT", ""), quoteAsset: "USDT" },
+        });
+      }
       const dbTf = await prisma.timeframe.findUnique({ where: { code: timeframeStr } });
 
       if (dbSymbol && dbTf) {
-        const dbCandles = await prisma.candle.findMany({
+        let dbCandles = await prisma.candle.findMany({
           where: {
             symbolId: dbSymbol.id,
             timeframeId: dbTf.id,
@@ -326,10 +342,83 @@ export class BacktestService {
             },
           },
           orderBy: { openTime: "asc" },
-          take: 500,
+          take: 2000,
         });
 
-        if (dbCandles.length >= 10) {
+        // Auto backfill from Binance if DB has fewer than 10 candles for requested range
+        if (dbCandles.length < 10 && isSupportedTimeframe(timeframeStr)) {
+          try {
+            logger.info(
+              { symbol, timeframeStr, fromTime, toTime },
+              "Auto-backfilling historical candles from Binance REST API for backtest",
+            );
+            const restAdapter = new BinanceRestAdapter({ logger });
+            const fetched = await restAdapter.fetchKlines({
+              symbol: symbol.toUpperCase(),
+              timeframe: timeframeStr as Timeframe,
+              startMs: fromTime,
+              endMs: toTime,
+              limit: 1000,
+            });
+
+            if (fetched.length > 0) {
+              for (const c of fetched) {
+                await prisma.candle.upsert({
+                  where: {
+                    symbolId_timeframeId_openTime: {
+                      symbolId: dbSymbol.id,
+                      timeframeId: dbTf.id,
+                      openTime: BigInt(c.openTime),
+                    },
+                  },
+                  update: {
+                    closeTime: BigInt(c.closeTime),
+                    open: c.open,
+                    high: c.high,
+                    low: c.low,
+                    close: c.close,
+                    volume: c.volume,
+                    quoteVolume: c.quoteVolume,
+                    trades: c.trades,
+                  },
+                  create: {
+                    symbolId: dbSymbol.id,
+                    timeframeId: dbTf.id,
+                    openTime: BigInt(c.openTime),
+                    closeTime: BigInt(c.closeTime),
+                    open: c.open,
+                    high: c.high,
+                    low: c.low,
+                    close: c.close,
+                    volume: c.volume,
+                    quoteVolume: c.quoteVolume,
+                    trades: c.trades,
+                  },
+                });
+              }
+
+              dbCandles = await prisma.candle.findMany({
+                where: {
+                  symbolId: dbSymbol.id,
+                  timeframeId: dbTf.id,
+                  openTime: {
+                    gte: fromTime ? BigInt(fromTime) : undefined,
+                    lte: toTime ? BigInt(toTime) : undefined,
+                  },
+                },
+                orderBy: { openTime: "asc" },
+                take: 2000,
+              });
+            }
+          } catch (binanceErr: any) {
+            logger.warn(
+              { err: binanceErr.message, symbol, timeframeStr },
+              "Failed to fetch candles from Binance REST API",
+            );
+          }
+        }
+
+        if (dbCandles.length >= 1) {
           return dbCandles.map((c) => ({
             openTime: Number(c.openTime),
             closeTime: Number(c.closeTime),

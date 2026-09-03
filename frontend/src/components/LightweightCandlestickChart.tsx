@@ -5,8 +5,10 @@ import {
   CrosshairMode,
   HistogramSeries,
   LineSeries,
+  LineStyle,
   createChart,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type UTCTimestamp,
 } from "lightweight-charts";
@@ -20,10 +22,22 @@ export interface LightweightCandle {
   volume: number;
 }
 
+export interface TradeMarker {
+  id: string;
+  entryTime: number | string;
+  exitTime?: number | string;
+  entryPrice: number;
+  exitPrice?: number;
+  direction: 'LONG' | 'SHORT';
+  profitLoss?: number;
+}
+
 interface LightweightChartProps {
   candles: LightweightCandle[];
   onLoadOlder: () => void;
   hasMoreData?: boolean;
+  trades?: TradeMarker[];
+  highlightedTrade?: TradeMarker | null;
 }
 
 type CandleSeries = ISeriesApi<"Candlestick">;
@@ -60,6 +74,8 @@ export default function LightweightCandlestickChart({
   candles,
   onLoadOlder,
   hasMoreData = true,
+  _trades,
+  highlightedTrade,
 }: LightweightChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -130,7 +146,6 @@ export default function LightweightCandlestickChart({
         secondsVisible: false,
         rightOffset: 4,
         barSpacing: 7,
-        timezone: "Asia/Ho_Chi_Minh", // 🇻🇳 Vietnam UTC+7
       },
       crosshair: {
         mode: CrosshairMode.Normal,
@@ -270,6 +285,96 @@ export default function LightweightCandlestickChart({
     previousFirstTimeRef.current = firstTime;
     previousLastTimeRef.current = lastTime;
   }, [sortedCandles]);
+
+  const activePriceLinesRef = useRef<IPriceLine[]>([]);
+  const [eventTrade, setEventTrade] = useState<TradeMarker | null>(null);
+
+  useEffect(() => {
+    const handleCustomEvent = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || !detail.tradeId) {
+        setEventTrade(null);
+      } else {
+        setEventTrade({
+          id: detail.tradeId,
+          entryTime: detail.entryTime,
+          exitTime: detail.exitTime,
+          entryPrice: detail.entryPrice,
+          exitPrice: detail.exitPrice,
+          direction: detail.direction,
+        });
+      }
+    };
+    window.addEventListener("HIGHLIGHT_TRADE_ON_CHART", handleCustomEvent);
+    return () => window.removeEventListener("HIGHLIGHT_TRADE_ON_CHART", handleCustomEvent);
+  }, []);
+
+  const activeHighlight = highlightedTrade ?? eventTrade;
+
+  useEffect(() => {
+    const candleSeries = candleSeriesRef.current;
+    const chart = chartRef.current;
+
+    // Clear previous price lines
+    if (candleSeries && activePriceLinesRef.current.length > 0) {
+      for (const line of activePriceLinesRef.current) {
+        try {
+          candleSeries.removePriceLine(line);
+        } catch (_) {}
+      }
+      activePriceLinesRef.current = [];
+    }
+
+    if (!candleSeries || !chart || !activeHighlight) return;
+
+    try {
+      const entryTimeMs =
+        typeof activeHighlight.entryTime === "string"
+          ? new Date(activeHighlight.entryTime).getTime()
+          : activeHighlight.entryTime;
+      const exitTimeMs = activeHighlight.exitTime
+        ? typeof activeHighlight.exitTime === "string"
+          ? new Date(activeHighlight.exitTime).getTime()
+          : activeHighlight.exitTime
+        : entryTimeMs;
+
+      const entryPriceLine = candleSeries.createPriceLine({
+        price: activeHighlight.entryPrice,
+        color: activeHighlight.direction === "LONG" ? "#10b981" : "#ef4444",
+        lineWidth: 2,
+        lineStyle: LineStyle.Solid,
+        axisLabelVisible: true,
+        title: `[${activeHighlight.direction}] Entry: $${activeHighlight.entryPrice.toLocaleString()}`,
+      });
+      activePriceLinesRef.current.push(entryPriceLine);
+
+      if (activeHighlight.exitPrice) {
+        const exitPriceLine = candleSeries.createPriceLine({
+          price: activeHighlight.exitPrice,
+          color: "#3b82f6",
+          lineWidth: 2,
+          lineStyle: LineStyle.Dashed,
+          axisLabelVisible: true,
+          title: `Exit: $${activeHighlight.exitPrice.toLocaleString()}`,
+        });
+        activePriceLinesRef.current.push(exitPriceLine);
+      }
+
+      // Zoom/Focus chart to trade timestamp window
+      const entrySec = Math.floor(entryTimeMs / 1000) as UTCTimestamp;
+      const exitSec = Math.floor(exitTimeMs / 1000) as UTCTimestamp;
+      const durationSec = Math.max(3600, exitSec - entrySec);
+
+      const fromSec = Math.max(0, entrySec - durationSec * 2) as UTCTimestamp;
+      const toSec = (exitSec + durationSec * 2) as UTCTimestamp;
+
+      try {
+        chart.timeScale().setVisibleRange({ from: fromSec, to: toSec });
+      } catch (_) {}
+    } catch (err) {
+      console.warn("Could not set trade highlight on chart:", err);
+    }
+  }, [activeHighlight]);
 
   return (
     <div className="relative w-full">

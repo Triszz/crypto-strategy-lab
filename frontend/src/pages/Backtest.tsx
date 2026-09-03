@@ -137,6 +137,8 @@ export default function Backtest() {
     timeframe: '5m',
   });
 
+  const [realCandles, setRealCandles] = useState<LightweightCandle[]>([]);
+
   const handleStartBacktest = async () => {
     setActiveChartConfig({ pair: selectedPair, timeframe: timeframe });
     setIsRunning(true);
@@ -147,6 +149,9 @@ export default function Backtest() {
       setProgress((prev) => (prev < 85 ? prev + 15 : prev));
     }, 150);
 
+    const fromTime = fromDate ? new Date(fromDate).getTime() : undefined;
+    const toTime = toDate ? new Date(`${toDate}T23:59:59`).getTime() : undefined;
+
     try {
       const response = await backtestApi.runBacktest({
         symbol: selectedPair,
@@ -155,6 +160,8 @@ export default function Backtest() {
         initialCapital: capital,
         feePercent,
         slippageBps,
+        fromTime,
+        toTime,
         stopLossPct,
         takeProfitPct,
         sync: true,
@@ -169,6 +176,9 @@ export default function Backtest() {
         setTrades(resData.trades);
         if (resData.equityCurve && resData.equityCurve.length > 0) {
           setEquityCurve(resData.equityCurve);
+        }
+        if (response.result.candles && response.result.candles.length > 0) {
+          setRealCandles(response.result.candles);
         }
       }
     } catch (err: any) {
@@ -203,6 +213,10 @@ export default function Backtest() {
 
   // Lightweight Candlestick data synchronized with active executed backtest run
   const lightweightCandles: LightweightCandle[] = useMemo(() => {
+    if (realCandles.length > 0) {
+      return realCandles;
+    }
+
     const candles: LightweightCandle[] = [];
     const symbol = activeChartConfig.pair;
     const tf = activeChartConfig.timeframe;
@@ -228,7 +242,7 @@ export default function Backtest() {
       candles.push({ openTime, open, high, low, close, volume });
     }
     return candles;
-  }, [activeChartConfig.pair, activeChartConfig.timeframe]);
+  }, [realCandles, activeChartConfig.pair, activeChartConfig.timeframe]);
 
   const handleLoadOlder = useCallback(() => {}, []);
 
@@ -476,6 +490,8 @@ export default function Backtest() {
               candles={lightweightCandles}
               onLoadOlder={handleLoadOlder}
               hasMoreData={false}
+              trades={trades}
+              highlightedTrade={highlightedTrade}
             />
 
             {/* Load indicator */}

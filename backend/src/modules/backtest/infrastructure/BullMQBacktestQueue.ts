@@ -148,6 +148,37 @@ export class BullMQBacktestQueue {
       this.queue = null;
     }
   }
+
+  /**
+   * Cleans up stale jobs left over from previous server runs / crashes.
+   *
+   * Called once on boot to remove:
+   *  - `failed` jobs older than 24 h (already exhausted retries)
+   *  - `completed` jobs older than 1 h (already consumed)
+   *  - `delayed` jobs older than 24 h (no longer relevant)
+   *
+   * No-op when Redis is unavailable.
+   */
+  public async cleanStaleJobsOnBoot(): Promise<void> {
+    if (!this.queue) {
+      logger.warn("[BacktestQueue] Redis unavailable; skipping stale-job cleanup");
+      return;
+    }
+
+    try {
+      const failed = await this.queue.clean(24 * 60 * 60 * 1000, 1000, "failed");
+      const completed = await this.queue.clean(60 * 60 * 1000, 1000, "completed");
+      const delayed = await this.queue.clean(24 * 60 * 60 * 1000, 1000, "delayed");
+
+      logger.info(
+        { failed, completed, delayed },
+        "[BacktestQueue] Stale jobs cleaned on boot",
+      );
+    } catch (err: any) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: message }, "[BacktestQueue] Stale-job cleanup failed (non-fatal)");
+    }
+  }
 }
 
 export function getBullMQBacktestQueue(): BullMQBacktestQueue {

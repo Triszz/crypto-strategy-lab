@@ -1,9 +1,9 @@
 import { Worker, type Job } from "bullmq";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import { getEventBus } from "../../../shared/event-bus/EventBus";
+import { getRedisConnectionOptions } from "../../../shared/queue";
 import { logger } from "../../../shared/logger/logger";
 
-import { getRedisConnectionOptions } from "../../../shared/queue";
 import { BacktestCompletionTracker } from "../application/BacktestCompletionTracker";
 import { BacktestService, type RunBacktestParams } from "../application/BacktestService";
 import { BACKTEST_QUEUE_NAME, getBullMQBacktestQueue } from "./BullMQBacktestQueue";
@@ -44,6 +44,9 @@ export class BullMQBacktestWorker {
       });
 
       logger.info({ queue: BACKTEST_QUEUE_NAME, concurrency }, "BullMQ BacktestWorker initialized");
+
+      // Clean stale jobs left over from previous server runs (non-blocking).
+      void getBullMQBacktestQueue().cleanStaleJobsOnBoot();
     } catch (err: any) {
       logger.warn({ err: err.message }, "BullMQ Redis worker initialization failed; running in standalone mode");
     }
@@ -143,6 +146,14 @@ export class BullMQBacktestWorker {
         params,
         startedAt: new Date().toISOString(),
       });
+
+      console.log("\n\x1b[1m\x1b[36m╔══════════════════════════════════════════════════════════════════════════╗\x1b[0m");
+      console.log("\x1b[1m\x1b[36m║  🚀  [BACKTEST-WORKER] BacktestStarted event emitted                    ║\x1b[0m");
+      console.log("\x1b[1m\x1b[36m╠══════════════════════════════════════════════════════════════════════════╣\x1b[0m");
+      console.log(`\x1b[1m\x1b[36m║  Job ID    : \x1b[0m${jobId}${" ".repeat(Math.max(0, 60 - String(jobId).length))}║`);
+      console.log(`\x1b[1m\x1b[36m║  Symbol    : \x1b[1m\x1b[33m${String(params.symbol ?? "?")}\x1b[0m\x1b[1m\x1b[36m  Timeframe: \x1b[1m\x1b[33m${String(params.timeframe ?? "?")}\x1b[0m\x1b[1m\x1b[36m  Strategy: \x1b[1m\x1b[33m${String(params.strategyName ?? "?")}\x1b[0m\x1b[1m\x1b[36m${" ".repeat(Math.max(0, 17 - String(params.symbol ?? "?").length - String(params.timeframe ?? "?").length - String(params.strategyName ?? "?").length))}║\x1b[0m`);
+      console.log("\x1b[1m\x1b[36m║  ▶ Running simulation…                                                   ║\x1b[0m");
+      console.log("\x1b[1m\x1b[36m╚══════════════════════════════════════════════════════════════════════════╝\x1b[0m\n");
     } catch (e: any) {
       logger.warn({ err: e.message, jobId }, "Failed to publish BacktestStarted event");
     }
@@ -180,20 +191,9 @@ export class BullMQBacktestWorker {
 
       queueProgress.updateJobProgress(completedProgress);
 
-      // 5. Emit BacktestCompleted event for Evaluator / Leaderboard / WS
+      // 5. BacktestCompleted event was ALREADY emitted by BacktestService.runBacktest
+      //    (single source of truth) — no need to re-emit here.
       try {
-        eventBus.publish("BacktestCompleted", {
-          jobId,
-          experimentId: output.experimentId,
-          candidateId: params.candidateId,
-          symbol: output.symbol,
-          timeframe: output.timeframe,
-          strategyName: output.strategyName,
-          metrics: output.result.metrics,
-          trades: output.result.trades,
-          completedAt: new Date().toISOString(),
-        });
-
         logger.info(
           {
             tag: "[BULLMQ_WORKER]",
@@ -208,6 +208,11 @@ export class BullMQBacktestWorker {
           "BullMQ Worker: Backtest job completed successfully",
         );
 
+        console.log("\n\x1b[1m\x1b[33m──────────────────────────────────────────────────────────────────────────────\x1b[0m");
+        console.log(`\x1b[1m\x1b[33m✅  [BACKTEST-WORKER] Backtest completed — emitted BacktestCompleted (1×)  \x1b[0m`);
+        console.log(`\x1b[1m\x1b[33m    Experiment ID: \x1b[1m\x1b[33m${output.experimentId}\x1b[0m`);
+        console.log("\x1b[1m\x1b[33m──────────────────────────────────────────────────────────────────────────────\x1b[0m\n");
+
         console.log("\n================================================================================");
         console.log("==================== HUYyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy [DONE] ====================");
         console.log(`Job ID        : ${jobId} -> STATUS: COMPLETED`);
@@ -218,7 +223,7 @@ export class BullMQBacktestWorker {
         console.log(`Total Trades  : ${output.result.trades.length}`);
         console.log("================================================================================\n");
       } catch (e: any) {
-        logger.warn({ err: e.message, jobId }, "Failed to publish BacktestCompleted event");
+        logger.warn({ err: e.message, jobId }, "Backtest completion logging failed (non-fatal)");
       }
 
       // 6. Check 100% candidate completion for SearchRun

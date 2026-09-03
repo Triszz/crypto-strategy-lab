@@ -17,6 +17,7 @@ import { EvaluationService } from "./modules/evaluation/application/evaluation.s
 import { getEvaluationWorker } from "./modules/evaluation/infrastructure/evaluation.worker";
 import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
 import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
+import { getBullMQBacktestQueue, getBullMQBacktestWorker } from "./modules/backtest";
 
 /**
  * Process entrypoint. Responsibilities:
@@ -39,6 +40,10 @@ async function main(): Promise<void> {
   // pull them synchronously when needed.
   getEventBus();
   getRedisConnection();
+
+  // Bootstrap BullMQ Backtest Queue & Worker early so it listens to StrategyGenerated events
+  getBullMQBacktestQueue();
+  getBullMQBacktestWorker();
 
   // Instantiate Event Listeners for Evaluation and Leaderboard modules
   new EvaluationService();

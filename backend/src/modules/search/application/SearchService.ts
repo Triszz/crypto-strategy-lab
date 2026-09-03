@@ -395,7 +395,7 @@ export class SearchService {
       //   - Reserve `false` for true back-pressure (currently never raised
       //     in MVP; future async queue plumbing can return `false` here).
       const versionInfo = await this.resolveCandidate(candidate);
-      await this.repository.createCandidate({
+      const candidateRecord = await this.repository.createCandidate({
         searchRunId,
         strategyVersionId: versionInfo.strategyVersionId,
         parameters: this.candidateParameters(candidate),
@@ -403,7 +403,7 @@ export class SearchService {
 
       this.eventBus.publish<CandidateGeneratedEvent>("StrategyGenerated", {
         searchRunId,
-        candidateId: candidate.candidateId,
+        candidateId: candidateRecord.id,
         candidateType: candidate.candidateType,
         strategyId:
           candidate.candidateType === "BASE"

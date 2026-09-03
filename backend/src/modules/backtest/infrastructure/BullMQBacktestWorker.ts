@@ -95,7 +95,25 @@ export class BullMQBacktestWorker {
     const prisma = getPrismaClient();
     const queueProgress = getBullMQBacktestQueue();
 
-    logger.info({ jobId, symbol: params.symbol, candidateId: params.candidateId, attemptsMade }, "BacktestWorker processing job");
+    logger.info(
+      {
+        tag: "[BULLMQ_WORKER]",
+        jobId,
+        candidateId: params.candidateId,
+        symbol: params.symbol,
+        timeframe: params.timeframe,
+        strategyName: params.strategyName,
+        attemptsMade,
+      },
+      "BullMQ Worker: Processing backtest job",
+    );
+
+    console.log("\n================================================================================");
+    console.log("==================== HUYyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy [START] ====================");
+    console.log(`Job ID       : ${jobId}`);
+    console.log(`Candidate ID : ${params.candidateId || "N/A"}`);
+    console.log(`Strategy     : ${params.strategyName} (${params.symbol || "BTCUSDT"} ${params.timeframe || "1h"})`);
+    console.log("================================================================================\n");
 
     // 1. Update CandidateStrategy & queue_jobs status to RUNNING in DB
     try {
@@ -175,6 +193,30 @@ export class BullMQBacktestWorker {
           trades: output.result.trades,
           completedAt: new Date().toISOString(),
         });
+
+        logger.info(
+          {
+            tag: "[BULLMQ_WORKER]",
+            jobId,
+            experimentId: output.experimentId,
+            candidateId: params.candidateId,
+            status: "COMPLETED",
+            totalReturn: output.result.metrics.totalReturn,
+            winRate: output.result.metrics.winRate,
+            tradesCount: output.result.trades.length,
+          },
+          "BullMQ Worker: Backtest job completed successfully",
+        );
+
+        console.log("\n================================================================================");
+        console.log("==================== HUYyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy [DONE] ====================");
+        console.log(`Job ID        : ${jobId} -> STATUS: COMPLETED`);
+        console.log(`Candidate ID  : ${params.candidateId || "N/A"}`);
+        console.log(`Experiment ID : ${output.experimentId}`);
+        console.log(`Total Return  : ${output.result.metrics.totalReturn}%`);
+        console.log(`Win Rate      : ${output.result.metrics.winRate}%`);
+        console.log(`Total Trades  : ${output.result.trades.length}`);
+        console.log("================================================================================\n");
       } catch (e: any) {
         logger.warn({ err: e.message, jobId }, "Failed to publish BacktestCompleted event");
       }

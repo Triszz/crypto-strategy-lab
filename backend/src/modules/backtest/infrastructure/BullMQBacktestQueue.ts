@@ -1,9 +1,11 @@
 import { Queue } from "bullmq";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
+import { getEventBus } from "../../../shared/event-bus/EventBus";
 import { logger } from "../../../shared/logger/logger";
 import { getRedisConnectionOptions } from "../../../shared/queue";
 import type { RunBacktestParams } from "../application/BacktestService";
 import type { BacktestJobProgress } from "./BacktestQueue";
+import { getBullMQBacktestWorker } from "./BullMQBacktestWorker";
 
 export const BACKTEST_QUEUE_NAME = "backtest";
 export { getRedisConnectionOptions };
@@ -21,6 +23,17 @@ export class BullMQBacktestQueue {
       logger.info({ queue: BACKTEST_QUEUE_NAME, host: connection.host, port: connection.port }, "BullMQ BacktestQueue initialized");
     } catch (err: any) {
       logger.warn({ err: err.message }, "BullMQ Redis queue initialization failed; using in-memory fallback");
+    }
+
+    try {
+      getEventBus().subscribe<{ candidateId?: string }>("StrategyGenerated", (payload) => {
+        if (payload && payload.candidateId) {
+          logger.info({ candidateId: payload.candidateId }, "BullMQBacktestQueue auto-enqueuing generated Strategy Candidate");
+          void this.addJob({ candidateId: payload.candidateId, strategyName: "CandidateStrategy" });
+        }
+      });
+    } catch (eventErr: any) {
+      logger.warn({ err: eventErr.message }, "Failed to subscribe StrategyGenerated event in BullMQBacktestQueue");
     }
   }
 
@@ -66,7 +79,8 @@ export class BullMQBacktestQueue {
       logger.warn({ err: dbErr.message, jobId }, "Could not record queueJob in DB; proceeding with Queue dispatch");
     }
 
-    // 2. Dispatch to BullMQ Queue (or in-memory fallback)
+    // 2. Dispatch to BullMQ Queue (or fallback to in-memory worker if Redis is offline)
+    let enqueued = false;
     if (this.queue) {
       try {
         await this.queue.add(
@@ -83,10 +97,20 @@ export class BullMQBacktestQueue {
             removeOnFail: 500,
           },
         );
+        enqueued = true;
         logger.info({ jobId, candidateId: params.candidateId }, "Backtest job enqueued into BullMQ");
       } catch (queueErr: any) {
-        logger.error({ err: queueErr.message, jobId }, "Failed to push job to BullMQ queue");
+        logger.warn({ err: queueErr.message, jobId }, "Redis BullMQ queue unavailable; using in-memory worker fallback");
       }
+    }
+
+    if (!enqueued) {
+      setImmediate(() => {
+        const worker = getBullMQBacktestWorker();
+        worker.processJob(jobId, params).catch((err) => {
+          logger.error({ err, jobId }, "In-memory fallback backtest worker error");
+        });
+      });
     }
 
     return jobProgress;

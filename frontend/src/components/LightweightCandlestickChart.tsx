@@ -7,9 +7,13 @@ import {
   LineSeries,
   LineStyle,
   createChart,
+  createSeriesMarkers,
   type IChartApi,
   type IPriceLine,
   type ISeriesApi,
+  type ISeriesMarkersPluginApi,
+  type SeriesMarkerBar,
+  type Time,
   type UTCTimestamp,
 } from "lightweight-charts";
 
@@ -32,24 +36,64 @@ export interface TradeMarker {
   profitLoss?: number;
 }
 
+/**
+ * BUY / SELL signal markers computed from the MA-crossover strategy.
+ * `openTime` is epoch ms (matches `LightweightCandle.openTime`).
+ * The chart converts these into a lightweight-charts `SeriesMarkerBar[]`
+ * and applies them via `candleSeries.setMarkers(...)` (via plugin API).
+ */
+export interface ChartSignal {
+  openTime: number;
+  side: "BUY" | "SELL";
+}
+
 interface LightweightChartProps {
   candles: LightweightCandle[];
   onLoadOlder: () => void;
   hasMoreData?: boolean;
   trades?: TradeMarker[];
   highlightedTrade?: TradeMarker | null;
+  /**
+   * BUY/SELL signal markers for the current candle series. One marker
+   * per signal candle. The chart dedupes by `openTime` so repeated
+   * realtime updates to the same candle never produce duplicate arrows.
+   *
+   * Default: `[]` (no markers).
+   */
+  signals?: ReadonlyArray<ChartSignal>;
 }
 
 type CandleSeries = ISeriesApi<"Candlestick">;
 type VolumeSeries = ISeriesApi<"Histogram">;
 type MaSeries = ISeriesApi<"Line">;
+// `createSeriesMarkers` returns an `ISeriesMarkersPluginApi<Time>` whose
+// `markers()` getter is generic over the chart's default Time type. We
+// pin both the plugin and the marker shape to `Time` to match what
+// `createSeriesMarkers` returns, then feed it only UTCTimestamp values
+// (which are a subset of `Time`).
+type MarkersPlugin = ISeriesMarkersPluginApi<Time>;
+type BarMarker = SeriesMarkerBar<Time>;
 
 function toTime(openTime: number): UTCTimestamp {
   return Math.floor(openTime / 1000) as UTCTimestamp;
 }
 
-function makeMovingAverage(candles: LightweightCandle[], period: number) {
+/**
+ * Default MA period drawn on the chart. Matches the slow period of the
+ * project's `MovingAverageStrategy` (default 21), so the line is
+ * visually comparable with the strategy's slow SMA reference.
+ *
+ * IMPORTANT: keep in sync with
+ * `backend/src/.../strategies/MovingAverageStrategy.ts` → PARAM_SPEC.
+ */
+export const DEFAULT_MA_PERIOD = 21;
+
+function makeMovingAverage(
+  candles: LightweightCandle[],
+  period: number,
+): Array<{ time: UTCTimestamp; value: number }> {
   const result: Array<{ time: UTCTimestamp; value: number }> = [];
+  if (!Number.isInteger(period) || period <= 0) return result;
   let sum = 0;
 
   for (let index = 0; index < candles.length; index += 1) {
@@ -58,11 +102,63 @@ function makeMovingAverage(candles: LightweightCandle[], period: number) {
       sum -= candles[index - period].close;
     }
     if (index >= period - 1) {
-      result.push({ time: toTime(candles[index].openTime), value: sum / period });
+      result.push({
+        time: toTime(candles[index].openTime),
+        value: sum / period,
+      });
     }
   }
 
   return result;
+}
+
+/**
+ * Convert the public `ChartSignal[]` into lightweight-charts
+ * `SeriesMarkerBar[]`.
+ *  - One marker per signal candle.
+ *  - Deduplicated by `openTime` (realtime updates reuse the same
+ *    candle, so the marker set stays stable).
+ *  - Markers MUST be sorted ascending by time (lightweight-charts
+ *    throws otherwise).
+ */
+function buildSignalMarkers(
+  candles: LightweightCandle[],
+  signals: ReadonlyArray<ChartSignal>,
+): BarMarker[] {
+  if (signals.length === 0 || candles.length === 0) return [];
+
+  // Index candles by openTime for O(1) lookup.
+  const candleByTime = new Map<number, LightweightCandle>();
+  for (const c of candles) candleByTime.set(c.openTime, c);
+
+  const seen = new Set<number>();
+  const out: BarMarker[] = [];
+  for (const s of signals) {
+    if (seen.has(s.openTime)) continue;
+    seen.add(s.openTime);
+    const candle = candleByTime.get(s.openTime);
+    if (!candle) continue;
+
+    if (s.side === "BUY") {
+      out.push({
+        time: toTime(s.openTime),
+        position: "belowBar",
+        color: "#10b981",
+        shape: "arrowUp",
+        text: "BUY",
+      });
+    } else {
+      out.push({
+        time: toTime(s.openTime),
+        position: "aboveBar",
+        color: "#ef4444",
+        shape: "arrowDown",
+        text: "SELL",
+      });
+    }
+  }
+  out.sort((a, b) => (a.time as number) - (b.time as number));
+  return out;
 }
 
 /**
@@ -74,14 +170,17 @@ export default function LightweightCandlestickChart({
   candles,
   onLoadOlder,
   hasMoreData = true,
-  _trades,
   highlightedTrade,
+  signals,
 }: LightweightChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const candleSeriesRef = useRef<CandleSeries | null>(null);
   const volumeSeriesRef = useRef<VolumeSeries | null>(null);
   const maSeriesRef = useRef<MaSeries | null>(null);
+  // Plugin instance is created via createSeriesMarkers; held in a ref
+  // so subsequent prop updates can call setMarkers without recreating.
+  const markersPluginRef = useRef<MarkersPlugin | null>(null);
   const previousLastTimeRef = useRef<number | null>(null);
   const previousFirstTimeRef = useRef<number | null>(null);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
@@ -99,11 +198,11 @@ export default function LightweightCandlestickChart({
   const sortedCandles = useMemo(() => {
     // Sort by time first
     const sorted = [...candles].sort((a, b) => a.openTime - b.openTime);
-    
+
     // Deduplicate by openTime - keep the LAST occurrence of each timestamp
     const deduplicated: LightweightCandle[] = [];
     const seen = new Map<number, number>(); // openTime -> index in deduplicated array
-    
+
     for (const candle of sorted) {
       const existingIndex = seen.get(candle.openTime);
       if (existingIndex !== undefined) {
@@ -115,9 +214,19 @@ export default function LightweightCandlestickChart({
         deduplicated.push(candle);
       }
     }
-    
+
     return deduplicated;
   }, [candles]);
+
+  // Pre-compute the signal markers for the current candle set.
+  // Depends on sortedCandles + signals so it recomputes on either
+  // change. The dedup-by-openTime inside buildSignalMarkers guarantees
+  // realtime updates never produce duplicate markers for the same
+  // candle.
+  const signalMarkers = useMemo(
+    () => buildSignalMarkers(sortedCandles, signals ?? []),
+    [sortedCandles, signals],
+  );
 
   useEffect(() => {
     const container = containerRef.current;
@@ -192,16 +301,22 @@ export default function LightweightCandlestickChart({
     const maSeries = chart.addSeries(LineSeries, {
       color: "#3b82f6",
       lineWidth: 2,
-      title: "MA 15",
+      title: `MA ${DEFAULT_MA_PERIOD}`,
       priceLineVisible: false,
       lastValueVisible: false,
       crosshairMarkerVisible: false,
     });
 
+    // Series-markers plugin (lightweight-charts v5): create once, hold
+    // a ref, then call setMarkers whenever the signal set changes.
+    const markersPlugin = createSeriesMarkers(candleSeries);
+    markersPlugin.setMarkers([]);
+
     chartRef.current = chart;
     candleSeriesRef.current = candleSeries;
     volumeSeriesRef.current = volumeSeries;
     maSeriesRef.current = maSeries;
+    markersPluginRef.current = markersPlugin;
 
     // NOTE: Auto-load when scrolling to edge is intentionally removed.
     // User must click "Load 100" button to manually trigger load-more.
@@ -212,9 +327,11 @@ export default function LightweightCandlestickChart({
       candleSeriesRef.current = null;
       volumeSeriesRef.current = null;
       maSeriesRef.current = null;
+      markersPluginRef.current = null;
     };
   }, []);
 
+  // ── Sync candle / volume / MA series ────────────────────────────────
   useEffect(() => {
     const candleSeries = candleSeriesRef.current;
     const volumeSeries = volumeSeriesRef.current;
@@ -249,11 +366,12 @@ export default function LightweightCandlestickChart({
       volumeSeries.update({
         time: toTime(lastCandle.openTime),
         value: lastCandle.volume,
-        color: lastCandle.close >= lastCandle.open
-          ? "rgba(16, 185, 129, 0.7)"
-          : "rgba(239, 68, 68, 0.7)",
+        color:
+          lastCandle.close >= lastCandle.open
+            ? "rgba(16, 185, 129, 0.7)"
+            : "rgba(239, 68, 68, 0.7)",
       });
-      const movingAverage = makeMovingAverage(sortedCandles, 15);
+      const movingAverage = makeMovingAverage(sortedCandles, DEFAULT_MA_PERIOD);
       const latestAverage = movingAverage[movingAverage.length - 1];
       if (latestAverage) maSeries.update(latestAverage);
     } else {
@@ -271,12 +389,13 @@ export default function LightweightCandlestickChart({
         sortedCandles.map((candle) => ({
           time: toTime(candle.openTime),
           value: candle.volume,
-          color: candle.close >= candle.open
-            ? "rgba(16, 185, 129, 0.7)"
-            : "rgba(239, 68, 68, 0.7)",
+          color:
+            candle.close >= candle.open
+              ? "rgba(16, 185, 129, 0.7)"
+              : "rgba(239, 68, 68, 0.7)",
         })),
       );
-      maSeries.setData(makeMovingAverage(sortedCandles, 15));
+      maSeries.setData(makeMovingAverage(sortedCandles, DEFAULT_MA_PERIOD));
 
       // Always scroll to latest when new data arrives
       chartRef.current?.timeScale().scrollToRealTime();
@@ -285,6 +404,17 @@ export default function LightweightCandlestickChart({
     previousFirstTimeRef.current = firstTime;
     previousLastTimeRef.current = lastTime;
   }, [sortedCandles]);
+
+  // ── Sync signal markers ────────────────────────────────────────────
+  // Separate effect so realtime candle updates and signal prop updates
+  // are independent. `signalMarkers` is memoised and dedup-by-openTime,
+  // so repeated realtime updates to the same candle just regenerate the
+  // same marker set.
+  useEffect(() => {
+    const plugin = markersPluginRef.current;
+    if (!plugin) return;
+    plugin.setMarkers(signalMarkers);
+  }, [signalMarkers]);
 
   const activePriceLinesRef = useRef<IPriceLine[]>([]);
   const [eventTrade, setEventTrade] = useState<TradeMarker | null>(null);

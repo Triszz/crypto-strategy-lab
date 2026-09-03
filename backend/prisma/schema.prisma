@@ -3,8 +3,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
   directUrl = env("DIRECT_URL")
 }
 
@@ -233,6 +233,8 @@ model BacktestResult {
   numLosingTrades  Int        @map("num_losing_trades")
   sharpeRatio      Decimal?   @map("sharpe_ratio") @db.Decimal(10, 4)
   sortinoRatio     Decimal?   @map("sortino_ratio") @db.Decimal(10, 4)
+  calmarRatio      Decimal?   @map("calmar_ratio") @db.Decimal(10, 4)
+  profitFactor     Decimal?   @map("profit_factor") @db.Decimal(10, 4)
   overallScore     Decimal    @map("overall_score") @db.Decimal(10, 4)
   equityCurve      Json       @default("[]") @map("equity_curve")
   createdAt        DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
@@ -448,19 +450,19 @@ model Setting {
 }
 
 model SavedStrategy {
-  id          String       @id @default(uuid()) @db.Uuid
-  name        String       @db.VarChar(255)
-  version     String       @default("1.0.0") @db.VarChar(32)
-  description String?      @db.VarChar(1000)
+  id          String         @id @default(uuid()) @db.Uuid
+  name        String         @db.VarChar(255)
+  version     String         @default("1.0.0") @db.VarChar(32)
+  description String?        @db.VarChar(1000)
   // Self-contained strategy JSON following the BASE strategy domain schema.
   jsonDef     Json
   // How this strategy was created: USER_PROMPT | WEB_IMPORT
   source      StrategySource
-  tags        String[]     @default([])
+  tags        String[]       @default([])
   // Optional owner identifier (uses createdBy from auth context when available).
-  ownerId     String?     @map("owner_id") @db.VarChar(64)
-  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime    @default(now()) @map("updated_at") @db.Timestamptz(3)
+  ownerId     String?        @map("owner_id") @db.VarChar(64)
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime       @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([createdAt(sort: Desc)])

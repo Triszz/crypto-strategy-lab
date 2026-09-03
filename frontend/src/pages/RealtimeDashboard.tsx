@@ -805,13 +805,16 @@ export default function RealtimeDashboard() {
           const next: Record<string, LocalCandle[]> = {};
           try {
             for (const cfg of normalizedConfigs) {
+              console.log(`[Init] Fetching ${cfg.timeframe} candles...`);
               const candles = await fetchCandles({
                 symbol: selectedSymbol,
                 timeframe: cfg.timeframe,
                 limit: 100,
               });
+              console.log(`[Init] Received ${candles.length} candles for ${cfg.timeframe}`);
               next[cfg.timeframe] = candles.map((c) => rawToLocal(c, cfg.timeframe));
             }
+            console.log(`[Init] Setting candlesData:`, Object.keys(next).map(tf => `${tf}: ${next[tf].length}`));
             setCandlesData(next);
             setLoadingConfigs(false);
           } catch (err) {
@@ -858,9 +861,20 @@ export default function RealtimeDashboard() {
 
       setCandlesData((prev) => {
         const list = prev[tf] ?? [];
+        console.log(`[WS] Applying candle to ${tf}: prev list has ${list.length} candles, incoming openTime=${new Date(candle.openTime).toISOString()}`);
+        
+        // Safety: if prev list is empty and we're getting realtime updates,
+        // it means initial data hasn't loaded yet - skip this update
+        if (list.length === 0) {
+          console.warn(`[WS] Skipping ${tf} update - initial data not loaded yet`);
+          return prev;
+        }
+        
+        const updated = updateCandleList(list, candle as RawCandle, tf);
+        console.log(`[WS] After update: ${tf} now has ${updated.length} candles`);
         return {
           ...prev,
-          [tf]: updateCandleList(list, candle as RawCandle, tf),
+          [tf]: updated,
         };
       });
     };
@@ -883,6 +897,7 @@ export default function RealtimeDashboard() {
   useEffect(() => {
     if (Object.keys(timeframes).length === 0) return;
     if (!isConnected()) return;
+    if (loadingConfigs) return; // ← Wait for initial data to load
 
     const tfMap = new Map<string, Timeframe[]>();
     
@@ -890,10 +905,12 @@ export default function RealtimeDashboard() {
     const uniqueTfs = Array.from(new Set(Object.values(timeframes)));
     tfMap.set(selectedSymbol, uniqueTfs);
 
+    console.log(`[Subscribe] Subscribing to ${selectedSymbol} × [${uniqueTfs.join(', ')}]`);
+
     for (const [sym, tfs] of tfMap) {
       subscribe(sym, tfs);
     }
-  }, [timeframes, selectedSymbol]); // Depend on both timeframes and selectedSymbol
+  }, [timeframes, selectedSymbol, loadingConfigs]); // Depend on both timeframes and selectedSymbol
 
   // ── 4. Handle symbol change ───────────────────────────────────────────────
   const handleSymbolChange = useCallback(

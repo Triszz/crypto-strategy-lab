@@ -1,4 +1,5 @@
 import { getEventBus, EventBus } from "../../../shared/event-bus/EventBus";
+import { getSocketServer } from "../../../infrastructure/websocket/socket";
 import {
   LeaderboardFilterOptions,
   LeaderboardItem,
@@ -51,12 +52,21 @@ export class LeaderboardService {
       payload.timeframe
     );
 
-    this.eventBus.publish("LeaderboardUpdated", {
+    const updatePayload = {
       symbolId: payload.symbolId,
       timeframe: payload.timeframe,
       topK: updatedLeaderboard.slice(0, 10),
       timestamp: new Date().toISOString(),
-    });
+    };
+
+    this.eventBus.publish("LeaderboardUpdated", updatePayload);
+
+    try {
+      const io = getSocketServer();
+      io.emit("LeaderboardUpdated", updatePayload);
+    } catch {
+      // Socket server optional
+    }
 
     return updatedLeaderboard;
   }

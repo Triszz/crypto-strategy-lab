@@ -141,9 +141,8 @@ export class NewsController {
   /**
    * POST /news/crawl — explicitly trigger a crawl.
    *
-   * Phase 1.3 introduces this handler. Today (Phase 1.1) it is wired up
-   * but its only job is to validate the body and delegate. The endpoint
-   * is harmless even before we remove auto-fetch from `GET /news`.
+   * Decoupled from `GET /news` in Phase 1.3. The read endpoint is now
+   * pure; clients must call this endpoint to refresh the news corpus.
    */
   public triggerCrawl = async (req: Request, res: Response): Promise<void> => {
     const parsed = CrawlNewsBodySchema.safeParse(req.body ?? {});

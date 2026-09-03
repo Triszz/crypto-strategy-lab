@@ -239,3 +239,50 @@ export async function fetchSearchRunCandidates(
     `/api/search/${encodeURIComponent(searchRunId)}/candidates`,
   );
 }
+
+/**
+ * One row of the SearchRun history. Returned by GET /api/search.
+ */
+export interface SearchRunListItem {
+  readonly id: string;
+  readonly status: SearchStatus;
+  readonly timeframe: string;
+  readonly maxCandidates: number;
+  readonly algorithm: {
+    readonly id: string;
+    readonly code: string;
+    readonly name: string;
+  };
+  readonly symbol: {
+    readonly id: string;
+    readonly symbol: string;
+    readonly baseAsset: string;
+    readonly quoteAsset: string;
+  };
+  readonly candidateCount: number;
+  readonly startedAt: string | null;
+  readonly finishedAt: string | null;
+  readonly createdAt: string;
+}
+
+/**
+ * GET /api/search
+ * List recent SearchRuns, most recent first. Drives the Discovery
+ * history dashboard.
+ *
+ * @param options.limit  Optional page size (1..200, default 50).
+ * @param options.status Optional SearchStatus filter.
+ * @param options.cursor Optional SearchRun id to paginate from.
+ */
+export async function fetchSearchRuns(options?: {
+  limit?: number;
+  status?: SearchStatus;
+  cursor?: string;
+}): Promise<SearchRunListItem[]> {
+  const query: Record<string, string> = {};
+  if (options?.limit !== undefined) query["limit"] = String(options.limit);
+  if (options?.status) query["status"] = options.status;
+  if (options?.cursor) query["cursor"] = options.cursor;
+  const qs = Object.keys(query).length > 0 ? `?${new URLSearchParams(query).toString()}` : "";
+  return get<SearchRunListItem[]>(`/api/search${qs}`);
+}

@@ -20,6 +20,9 @@ import type {
   CreateCandidateInput,
   SearchRunStatus,
   CandidateStatus,
+  ListSearchRunsFilter,
+  AlgorithmSummary,
+  SymbolSummary,
 } from "./SearchRepository.port";
 import type { StrategyParameters } from "../../strategy/domain/StrategyContext";
 
@@ -148,5 +151,47 @@ export class PrismaSearchRepository implements SearchRepository {
       orderBy: { createdAt: "asc" },
     });
     return rows.map(prismaToCandidateRecord);
+  }
+
+  public async countCandidatesByRun(searchRunId: string): Promise<number> {
+    return this.prisma.candidateStrategy.count({ where: { searchRunId } });
+  }
+
+  public async listSearchRuns(
+    filter?: ListSearchRunsFilter,
+  ): Promise<ReadonlyArray<SearchRunRecord>> {
+    const limit = Math.min(Math.max(filter?.limit ?? 50, 1), 200);
+    const where: Prisma.SearchRunWhereInput = {};
+    if (filter?.status) {
+      where.status = filter.status;
+    }
+
+    const cursor = filter?.cursor
+      ? { id: filter.cursor }
+      : undefined;
+
+    const rows = await this.prisma.searchRun.findMany({
+      where,
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      ...(cursor ? { cursor, skip: 1 } : {}),
+    });
+    return rows.map(prismaToSearchRunRecord);
+  }
+
+  public async getAlgorithmSummary(algorithmId: string): Promise<AlgorithmSummary> {
+    const row = await this.prisma.searchAlgorithm.findUnique({
+      where: { id: algorithmId },
+      select: { id: true, code: true, name: true },
+    });
+    return row ?? { id: algorithmId, code: "unknown", name: "Unknown Algorithm" };
+  }
+
+  public async getSymbolSummary(symbolId: string): Promise<SymbolSummary> {
+    const row = await this.prisma.symbol.findUnique({
+      where: { id: symbolId },
+      select: { id: true, symbol: true, baseAsset: true, quoteAsset: true },
+    });
+    return row ?? { id: symbolId, symbol: "???USDT", baseAsset: "???", quoteAsset: "USDT" };
   }
 }

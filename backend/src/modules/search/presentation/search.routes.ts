@@ -229,6 +229,74 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
   });
 
   /**
+   * GET /api/search
+   *
+   * Lists recent SearchRuns, most recent first. Used by the Discovery
+   * dashboard to show prior runs and let users navigate back to them.
+   *
+   * Query parameters:
+   *   - status:   optional SearchStatus filter ("PENDING"|"RUNNING"|...)
+   *   - limit:    integer 1..200, default 50
+   *   - cursor:   SearchRun id — when supplied, results start after this row.
+   *
+   * Response 200:
+   *   { "success": true, "data": [{...}, ...] }
+   */
+  router.get("/", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const limitRaw = req.query["limit"];
+      const cursor = req.query["cursor"];
+      const status = req.query["status"];
+
+      const limit = (() => {
+        if (typeof limitRaw !== "string") return undefined;
+        const n = Number.parseInt(limitRaw, 10);
+        if (!Number.isFinite(n)) return undefined;
+        return Math.min(Math.max(n, 1), 200);
+      })();
+
+      const allowedStatuses = new Set(["PENDING", "RUNNING", "DONE", "STOPPED", "FAILED"]);
+      const statusFilter =
+        typeof status === "string" && allowedStatuses.has(status)
+          ? (status as "PENDING" | "RUNNING" | "DONE" | "STOPPED" | "FAILED")
+          : undefined;
+
+      const runs = await deps.service.listSearchRuns({
+        ...(limit !== undefined ? { limit } : {}),
+        ...(typeof cursor === "string" && cursor.length > 0 ? { cursor } : {}),
+        ...(statusFilter ? { status: statusFilter } : {}),
+      });
+
+      const summaries = await Promise.all(
+        runs.map(async (r) => {
+          const [algorithm, symbol, candidateCount] = await Promise.all([
+            deps.service.getAlgorithmSummary(r.algorithmId),
+            deps.service.getSymbolSummary(r.symbolId),
+            deps.service.countCandidatesByRun(r.id),
+          ]);
+          return {
+            id: r.id,
+            status: r.status,
+            timeframe: r.timeframe,
+            maxCandidates: r.maxCandidates,
+            algorithm,
+            symbol,
+            candidateCount,
+            startedAt: r.startedAt?.toISOString() ?? null,
+            finishedAt: r.finishedAt?.toISOString() ?? null,
+            createdAt: r.createdAt.toISOString(),
+          };
+        }),
+      );
+
+      res.json({ success: true as const, data: summaries });
+    } catch (err) {
+      log.error({ err }, "search.api.list.error");
+      next(err);
+    }
+  });
+
+  /**
    * GET /api/search/:id
    *
    * Returns a summary of a SearchRun including candidate counts.

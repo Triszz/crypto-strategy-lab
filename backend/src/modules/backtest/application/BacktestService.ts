@@ -146,6 +146,7 @@ export class BacktestService {
         timeframe,
         strategyName,
         metrics: result.metrics,
+        trades: result.trades,
         completedAt: new Date().toISOString(),
       });
     } catch (err) {
@@ -512,12 +513,13 @@ export class BacktestService {
         });
 
         if (!existingVersion) {
-          let def = await prisma.strategyDefinition.findFirst();
-          if (!def) {
-            def = await prisma.strategyDefinition.create({
-              data: { type: "BASE", family: "TREND", description: "Default strategy definition" },
-            });
-          }
+          const def = await prisma.strategyDefinition.create({
+            data: {
+              type: "BASE",
+              family: strategyName.toUpperCase().includes("RSI") ? "MOMENTUM" : "TREND",
+              description: `${strategyName} definition`,
+            },
+          });
           existingVersion = await prisma.strategyVersion.create({
             data: {
               definitionId: def.id,

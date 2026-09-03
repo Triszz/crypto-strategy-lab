@@ -4,6 +4,7 @@ import RealtimeDashboard from './pages/RealtimeDashboard';
 import StrategyEngine from './pages/StrategyEngine';
 import Strategy from './pages/Strategy';
 import Discovery from './pages/Discovery';
+import Leaderboard from './pages/Leaderboard';
 import Backtest from './pages/Backtest';
 import NewsCrawler from './pages/NewsCrawler';
 import Settings from './pages/Settings';
@@ -22,6 +23,7 @@ export default function App() {
           <Route path="/search" element={<Navigate to="/strategy" replace />} />
           <Route path="/search/:searchRunId" element={<Search />} />
           <Route path="/discovery" element={<Discovery />} />
+          <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/backtest" element={<Backtest />} />
           <Route path="/news-crawler" element={<NewsCrawler />} />
           <Route path="/settings" element={<Settings />} />

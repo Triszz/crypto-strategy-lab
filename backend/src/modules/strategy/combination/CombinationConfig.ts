@@ -15,6 +15,17 @@
 import type { StrategyParameters } from "../domain/StrategyContext";
 
 /**
+ * Combination operator — determines how child strategy signals are aggregated.
+ *
+ *  - MAJORITY_VOTE: Most votes win. Deterministic tie-break → HOLD.
+ *  - WEIGHTED:     Signal-weighted sum. Weights are normalised at combine time.
+ */
+export enum CombinationOperator {
+  MAJORITY_VOTE = "MAJORITY_VOTE",
+  WEIGHTED = "WEIGHTED",
+}
+
+/**
  * A single strategy participant inside a combination. Corresponds to one
  * `CompositeComponent` row in the database.
  *
@@ -79,6 +90,12 @@ export interface CombinationConfig {
    * validation error.
    */
   readonly components: ReadonlyArray<CombinationComponent>;
+  /**
+   * Signal aggregation operator. Defaults to WEIGHTED. AND and OR use
+   * deterministic Boolean semantics; MAJORITY_VOTE and WEIGHTED use the
+   * WeightedCombiner logic.
+   */
+  readonly operator: CombinationOperator;
 }
 
 /**

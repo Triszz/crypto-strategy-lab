@@ -74,8 +74,9 @@ export class EvaluatorEngine {
     let numLosingTrades = 0;
 
     const returnsList: number[] = [];
+    const seedTrade = trades[0];
     const equityCurve: Array<{ time: number; equity: number }> = [
-      { time: Number(trades[0].entryTime), equity: initialCapital },
+      { time: seedTrade ? Number(seedTrade.entryTime) : Date.now(), equity: initialCapital },
     ];
 
     for (const trade of trades) {

@@ -184,7 +184,8 @@ export class NewsDataNewsAdapter implements NewsProviderAdapter {
         ETH: ["ETH", "ETHEREUM", "ETHER"],
         SOL: ["SOL", "SOLANA"],
       };
-      if (aliases[sym].some((kw) => haystack.includes(kw))) {
+      const symAliases = aliases[sym] ?? [];
+      if (symAliases.some((kw) => haystack.includes(kw))) {
         if (!coinSymbols.includes(sym)) coinSymbols.push(sym);
       }
     }

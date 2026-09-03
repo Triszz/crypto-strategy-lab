@@ -120,3 +120,69 @@ export async function fetchStrategyById(id: string): Promise<StrategyDetail> {
   );
   return wrapped.strategy;
 }
+
+// ─── Saved Combinations API ────────────────────────────────────────────────────
+
+/**
+ * Mirrors the backend's SavedCombinationDto.
+ */
+export interface CombinationComponent {
+  readonly strategyId: string;
+  readonly weight: number;
+  readonly position: number;
+}
+
+export type CombinationOperator = "MAJORITY_VOTE" | "WEIGHTED";
+
+export interface SavedCombination {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly operator: CombinationOperator;
+  readonly components: ReadonlyArray<CombinationComponent>;
+  readonly tags: ReadonlyArray<string>;
+  readonly ownerId: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+/** Request body for POST /api/strategies/combinations */
+export interface SaveCombinationRequest {
+  readonly name: string;
+  readonly description?: string;
+  readonly operator?: CombinationOperator;
+  readonly components: ReadonlyArray<CombinationComponent>;
+  readonly tags?: ReadonlyArray<string>;
+  readonly ownerId?: string;
+}
+
+async function post<T, B>(path: string, body: B): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(body),
+  });
+  const json: ApiResponse<T> = await res.json();
+  if (!json.success) {
+    throw new Error((json as ApiError).error ?? `HTTP ${res.status}`);
+  }
+  return (json as ApiSuccess<T>).data;
+}
+
+/**
+ * Save a strategy combination to the database.
+ * POST /api/strategies/combinations
+ */
+export async function saveCombination(req: SaveCombinationRequest): Promise<SavedCombination> {
+  return post<SavedCombination, SaveCombinationRequest>("/api/strategies/combinations", req);
+}
+
+/**
+ * Fetch all saved strategy combinations.
+ * GET /api/strategies/combinations
+ */
+export async function fetchCombinations(): Promise<SavedCombination[]> {
+  return get<SavedCombination[]>("/api/strategies/combinations");
+}
+

@@ -127,7 +127,6 @@ export default function LightweightCandlestickChart({
         secondsVisible: false,
         rightOffset: 4,
         barSpacing: 7,
-        timezone: "Asia/Ho_Chi_Minh", // 🇻🇳 Vietnam UTC+7
       },
       crosshair: {
         mode: CrosshairMode.Normal,

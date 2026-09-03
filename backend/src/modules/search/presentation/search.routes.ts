@@ -29,6 +29,7 @@ import type { SearchService } from "../application/SearchService";
 import type { Logger } from "../../../shared/logger/logger";
 import { logger as rootLogger } from "../../../shared/logger/logger";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
+import { getStrategyRegistry } from "../../strategy/domain/StrategyRegistry";
 
 const StartSearchSchema = z.object({
   algorithmId: z.string().uuid(),
@@ -269,10 +270,11 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
 
       const summaries = await Promise.all(
         runs.map(async (r) => {
-          const [algorithm, symbol, candidateCount] = await Promise.all([
+          const [algorithm, symbol, candidateCount, strategies] = await Promise.all([
             deps.service.getAlgorithmSummary(r.algorithmId),
             deps.service.getSymbolSummary(r.symbolId),
             deps.service.countCandidatesByRun(r.id),
+            getStrategiesForRun(r.config),
           ]);
           return {
             id: r.id,
@@ -282,6 +284,7 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
             algorithm,
             symbol,
             candidateCount,
+            strategies,
             startedAt: r.startedAt?.toISOString() ?? null,
             finishedAt: r.finishedAt?.toISOString() ?? null,
             createdAt: r.createdAt.toISOString(),
@@ -453,4 +456,130 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
   });
 
   return router;
+}
+
+/**
+ * One component of a saved combination — name, family, and position
+ * within the combination (0 = first, 1 = second, …).
+ */
+export interface CombinationStrategySummary {
+  readonly name: string;
+  readonly family: string;
+  readonly position: number;
+}
+
+/**
+ * Resolve the strategies referenced by a SearchRun's saved combination.
+ *
+ * 1. Reads `config.combinationId` from the SearchRun JSON `config` field.
+ * 2. Loads the matching `saved_combinations` row.
+ * 3. For each component, looks up the latest active `StrategyVersion` whose
+ *    `implementationRef` matches the component's `strategyId`, and joins
+ *    `StrategyDefinition` to retrieve the family.
+ *
+ * Returns an empty array if the run has no combination, the combination
+ * has no components, or any lookup fails — Discovery UI must never
+ * break because of a missing combination reference.
+ */
+async function getStrategiesForRun(
+  config: unknown,
+): Promise<CombinationStrategySummary[]> {
+  if (!config || typeof config !== "object") return [];
+  const combinationId = (config as { combinationId?: unknown }).combinationId;
+  if (typeof combinationId !== "string" || combinationId.length === 0) {
+    return [];
+  }
+
+  try {
+    const prisma = getPrismaClient();
+    const combo = await prisma.savedCombination.findUnique({
+      where: { id: combinationId },
+    });
+    if (!combo) return [];
+
+    const rawComponents = Array.isArray(combo.components)
+      ? (combo.components as Array<{
+          strategyId?: unknown;
+          position?: unknown;
+        }>)
+      : [];
+    if (rawComponents.length === 0) return [];
+
+    // Deduplicate strategyIds — fetch versions in one query
+    const strategyIds = [
+      ...new Set(
+        rawComponents
+          .map((c) =>
+            typeof c.strategyId === "string" && c.strategyId.length > 0
+              ? c.strategyId
+              : null,
+          )
+          .filter((s): s is string => s !== null),
+      ),
+    ];
+
+    if (strategyIds.length === 0) return [];
+
+    // ── Canonical family lookup: prefer the in-process StrategyRegistry
+    //    because it is the source of truth for taxonomy. Fall back to the
+    //    DB only if the strategy isn't registered (e.g. legacy / external
+    //    strategies whose taxonomy may also be stale).
+    const registry = getStrategyRegistry();
+    const registryFamilyByRef = new Map<string, string>();
+    for (const id of strategyIds) {
+      const strat = registry.resolve(id);
+      if (strat?.family) {
+        registryFamilyByRef.set(id, String(strat.family));
+      }
+    }
+
+    const versions = await prisma.strategyVersion.findMany({
+      where: {
+        implementationRef: { in: strategyIds },
+        isActive: true,
+      },
+      orderBy: { createdAt: "desc" },
+      include: { definition: { select: { family: true } } },
+    });
+
+    // Pick the most recent active version per implementationRef
+    const latestByRef = new Map<
+      string,
+      { name: string; family: string }
+    >();
+    for (const v of versions) {
+      if (!latestByRef.has(v.implementationRef)) {
+        // Prefer the registry's family; fall back to DB family, then
+        // "unknown" only if neither source has it.
+        const family =
+          registryFamilyByRef.get(v.implementationRef) ??
+          (v.definition?.family ? String(v.definition.family) : "unknown");
+        latestByRef.set(v.implementationRef, {
+          name: v.name,
+          family,
+        });
+      }
+    }
+
+    // Preserve the position order from the components array
+    const result: CombinationStrategySummary[] = [];
+    for (const c of rawComponents) {
+      if (typeof c.strategyId !== "string") continue;
+      const meta = latestByRef.get(c.strategyId);
+      if (!meta) continue;
+      const position =
+        typeof c.position === "number" && Number.isFinite(c.position)
+          ? c.position
+          : result.length;
+      result.push({
+        name: meta.name,
+        family: meta.family,
+        position,
+      });
+    }
+    return result;
+  } catch {
+    // Non-fatal: return empty list so Discovery UI never breaks
+    return [];
+  }
 }

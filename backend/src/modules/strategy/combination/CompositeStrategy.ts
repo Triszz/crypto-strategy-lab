@@ -225,7 +225,12 @@ export class CompositeStrategy implements Strategy {
               position: (override["position"] as number | undefined) ?? c.position,
             };
           });
-          config = { id: this.config.id, name: this.config.name, components: merged };
+          config = {
+            id: this.config.id,
+            name: this.config.name,
+            components: merged,
+            operator: this.config.operator,
+          };
         }
       } catch {
         // Malformed JSON → fall through to this.config (defaults)

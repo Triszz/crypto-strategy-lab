@@ -11,6 +11,8 @@ import { buildSearchContainer } from "./modules/search";
 import { buildNewsContainer } from "./modules/news/news.container";
 import { mountMarketData, mountSearch, mountStrategy } from "./api/routes";
 import { bootstrapStrategies } from "./modules/strategy";
+import { syncBuiltInStrategies } from "./modules/strategy/persistence/builtInStrategies";
+import { getPrismaClient } from "./infrastructure/database/prisma";
 import { EvaluationService } from "./modules/evaluation/application/evaluation.service";
 import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
 import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
@@ -72,6 +74,7 @@ async function main(): Promise<void> {
 
   // Mount Strategy catalogue routes (stateless, no container needed).
   bootstrapStrategies();
+  await syncBuiltInStrategies(getPrismaClient());
   mountStrategy();
 
   await new Promise<void>((resolve, reject) => {

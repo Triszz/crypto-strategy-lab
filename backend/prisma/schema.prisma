@@ -448,23 +448,48 @@ model Setting {
 }
 
 model SavedStrategy {
-  id          String       @id @default(uuid()) @db.Uuid
-  name        String       @db.VarChar(255)
-  version     String       @default("1.0.0") @db.VarChar(32)
-  description String?      @db.VarChar(1000)
+  id               String           @id @default(uuid()) @db.Uuid
+  name             String           @db.VarChar(255)
+  version          String          @default("1.0.0") @db.VarChar(32)
+  description      String?         @db.VarChar(1000)
   // Self-contained strategy JSON following the BASE strategy domain schema.
-  jsonDef     Json
+  jsonDef          Json
   // How this strategy was created: USER_PROMPT | WEB_IMPORT
-  source      StrategySource
-  tags        String[]     @default([])
+  source           StrategySource
+  tags             String[]         @default([])
   // Optional owner identifier (uses createdBy from auth context when available).
-  ownerId     String?     @map("owner_id") @db.VarChar(64)
-  createdAt   DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt   DateTime    @default(now()) @map("updated_at") @db.Timestamptz(3)
+  ownerId          String?         @map("owner_id") @db.VarChar(64)
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime        @default(now()) @map("updated_at") @db.Timestamptz(3)
 
   @@index([ownerId, createdAt(sort: Desc)])
   @@index([createdAt(sort: Desc)])
   @@map("saved_strategies")
+}
+
+enum CombinationOperator {
+  AND
+  OR
+  MAJORITY_VOTE
+  WEIGHTED
+}
+
+model SavedCombination {
+  id          String               @id @default(uuid()) @db.Uuid
+  name        String               @db.VarChar(255)
+  description String?              @db.VarChar(1000)
+  operator    CombinationOperator   @default(WEIGHTED)
+  // JSON array of CombinationComponent objects:
+  //   { strategyId: string, weight: number, position: number, parameters?: Record<string,unknown> }
+  components  Json                @default("[]")
+  tags        String[]             @default([])
+  ownerId     String?              @map("owner_id") @db.VarChar(64)
+  createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime            @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  @@index([ownerId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("saved_combinations")
 }
 
 enum StrategySource {

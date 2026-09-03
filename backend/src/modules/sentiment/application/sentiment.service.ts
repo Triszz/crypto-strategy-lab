@@ -1,4 +1,3 @@
-import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import { getEventBus, EventBus } from "../../../shared/event-bus/EventBus";
 import {
   SentimentAnalysisResult,
@@ -22,8 +21,6 @@ interface CacheEntry {
 }
 
 export class SentimentService {
-  private prisma = getPrismaClient();
-
   // In-memory LRU Cache with 30s TTL for getSentimentSummary
   private summaryCache = new Map<string, CacheEntry>();
   private readonly CACHE_TTL_MS = 30_000; // 30 seconds

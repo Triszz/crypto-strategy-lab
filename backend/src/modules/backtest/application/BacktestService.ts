@@ -12,6 +12,7 @@ import { getStrategyRegistry } from "../../strategy/domain/StrategyRegistry";
 import {
   type CombinationConfig,
   type CombinationComponent,
+  CombinationOperator,
 } from "../../strategy/combination/CombinationConfig";
 import { CombinationEngine } from "../../strategy/combination/CombinationEngine";
 import { CompositeStrategy } from "../../strategy/combination/CompositeStrategy";
@@ -234,7 +235,13 @@ export class BacktestService {
       const configRaw = params._config as {
         id: string;
         name: string;
-        components: Array<{ strategyId: string; weight: number; position: number }>;
+        operator?: CombinationOperator;
+        components: Array<{
+          strategyId: string;
+          weight: number;
+          position: number;
+          parameters?: Record<string, unknown>;
+        }>;
       } | undefined;
 
       if (!configRaw) {
@@ -245,12 +252,14 @@ export class BacktestService {
         strategyId: c.strategyId,
         weight: c.weight,
         position: c.position,
+        ...(c.parameters !== undefined ? { parameters: c.parameters } : {}),
       }));
 
       const config: CombinationConfig = {
         id: configRaw.id,
         name: configRaw.name,
         components,
+        operator: configRaw.operator ?? CombinationOperator.WEIGHTED,
       };
 
       const engine = new CombinationEngine(registry);

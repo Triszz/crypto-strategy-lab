@@ -109,18 +109,22 @@ export class EvaluationService {
             exitTime: Number(t.exitTime),
             entryPrice: Number(t.entryPrice),
             exitPrice: Number(t.exitPrice),
-            direction: (t.position as "LONG" | "SHORT") || "LONG",
+            quantity: Number(t.quantity ?? 1),
+            side: (t.side as "BUY" | "SELL") ?? "BUY",
+            position: (t.position as "LONG" | "SHORT") || "LONG",
             profitLoss: Number(t.profitLoss),
             profitLossPct: Number(t.profitLossPct),
           }))
-        : (payload.trades || []).map((t: any) => ({
-            entryTime: Number(t.entryTime || Date.now()),
-            exitTime: Number(t.exitTime || Date.now()),
-            entryPrice: Number(t.entryPrice || 0),
-            exitPrice: Number(t.exitPrice || 0),
-            direction: (t.direction as "LONG" | "SHORT") || "LONG",
-            profitLoss: Number(t.profitLoss || 0),
-            profitLossPct: Number(t.profitLossPct || 0),
+        : (((payload as { trades?: unknown }).trades as Array<Record<string, unknown>> | undefined) ?? []).map((t) => ({
+            entryTime: Number(t["entryTime"] ?? Date.now()),
+            exitTime: Number(t["exitTime"] ?? Date.now()),
+            entryPrice: Number(t["entryPrice"] ?? 0),
+            exitPrice: Number(t["exitPrice"] ?? 0),
+            quantity: Number(t["quantity"] ?? 1),
+            side: ((t["side"] as "BUY" | "SELL" | undefined) ?? "BUY"),
+            position: ((t["position"] as "LONG" | "SHORT" | undefined) ?? "LONG"),
+            profitLoss: Number(t["profitLoss"] ?? 0),
+            profitLossPct: Number(t["profitLossPct"] ?? 0),
           }));
 
       await this.evaluateExperiment(
@@ -149,8 +153,12 @@ export class EvaluationService {
 
     // Save BacktestResult if DB is connected
     try {
-      const fromTime = trades.length > 0 ? BigInt(trades[0].entryTime) : BigInt(Date.now());
-      const toTime = trades.length > 0 ? BigInt(trades[trades.length - 1].exitTime || trades[trades.length - 1].entryTime) : BigInt(Date.now());
+      const firstTrade = trades[0];
+      const lastTrade = trades[trades.length - 1];
+      const fromTime = firstTrade ? BigInt(firstTrade.entryTime) : BigInt(Date.now());
+      const toTime = lastTrade
+        ? BigInt(lastTrade.exitTime || lastTrade.entryTime)
+        : BigInt(Date.now());
 
       await this.prisma.backtestResult.upsert({
         where: { experimentId },

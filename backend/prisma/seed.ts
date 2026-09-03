@@ -72,6 +72,26 @@ async function main(): Promise<void> {
     },
   });
 
+  // 4. Evaluation module — BullMQ v2 configuration.
+  //    These rows drive getEvaluationConfig() at runtime.
+  await prisma.evaluationSetting.upsert({
+    where: { key: "evaluation.default_weights" },
+    update: {},
+    create: {
+      key: "evaluation.default_weights",
+      value: { return: 40, winRate: 40, drawdown: 20 },
+    },
+  });
+
+  await prisma.evaluationSetting.upsert({
+    where: { key: "evaluation.trade_count_threshold" },
+    update: {},
+    create: {
+      key: "evaluation.trade_count_threshold",
+      value: { threshold: 30 },
+    },
+  });
+
   // 3. Search algorithms consumed by /api/search/start and the SearchService
   //    `buildGenerator` dispatcher. implementationRef values match the
   //    path the route documentation expects so any client (and the API

@@ -544,6 +544,15 @@ enum SearchStatus {
   @@map("search_status")
 }
 
+model EvaluationSetting {
+  id        String   @id @default(uuid()) @db.Uuid
+  key       String   @unique @map("setting_key") @db.VarChar(64)
+  value     Json
+  updatedAt DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("evaluation_settings")
+}
+
 enum LogLevel {
   DEBUG
   INFO

@@ -29,6 +29,7 @@ export interface EvaluationResultMetrics {
   sharpeRatio: number;
   sortinoRatio: number;
   calmarRatio: number; // TotalReturn / MaxDrawdown
+  profitFactor: number; // grossWin / |grossLoss| (capped at 999)
   overallScore: number; // Normalized score used for ranking
   equityCurve: Array<{ time: number; equity: number }>;
 }
@@ -61,6 +62,7 @@ export class EvaluatorEngine {
         sharpeRatio: 0,
         sortinoRatio: 0,
         calmarRatio: 0,
+        profitFactor: 0,
         overallScore: 0,
         equityCurve: [{ time: Date.now(), equity: initialCapital }],
       };
@@ -72,11 +74,13 @@ export class EvaluatorEngine {
 
     let numWinningTrades = 0;
     let numLosingTrades = 0;
+    let grossWin = 0;
+    let grossLoss = 0;
 
     const returnsList: number[] = [];
     const seedTrade = trades[0];
     const equityCurve: Array<{ time: number; equity: number }> = [
-      { time: seedTrade ? Number(seedTrade.entryTime) : Date.now(), equity: initialCapital },
+      { time: Number(trades[0]!.entryTime), equity: initialCapital },
     ];
 
     for (const trade of trades) {
@@ -98,8 +102,10 @@ export class EvaluatorEngine {
 
       if (pnl > 0) {
         numWinningTrades++;
+        grossWin += pnl;
       } else if (pnl < 0) {
         numLosingTrades++;
+        grossLoss += Math.abs(pnl);
       }
 
       if (currentCapital > peakCapital) {
@@ -142,6 +148,9 @@ export class EvaluatorEngine {
     // Calmar Ratio = TotalReturn / MaxDrawdown
     const calmarRatio = maxDrawdown > 0 ? totalReturn / maxDrawdown : 0;
 
+    // Profit Factor = grossWin / |grossLoss| (cap at 999 if all trades win)
+    const profitFactor = grossLoss > 0 ? grossWin / grossLoss : grossWin > 0 ? 999 : 0;
+
     // Weighted Overall Score formula: Return (weight.return) + WinRate (weight.winRate) - MaxDrawdown (weight.drawdown)
     const rawScore = totalReturn * weights.return + winRate * weights.winRate - maxDrawdown * weights.drawdown;
     const overallScore = this.applyTradeCountPenalty(rawScore, numTrades);
@@ -158,6 +167,7 @@ export class EvaluatorEngine {
       sharpeRatio: Math.round(sharpeRatio * 100) / 100,
       sortinoRatio: Math.round(sortinoRatio * 100) / 100,
       calmarRatio: Math.round(calmarRatio * 100) / 100,
+      profitFactor: Math.round(profitFactor * 100) / 100,
       overallScore: Math.round(overallScore * 100) / 100,
       equityCurve,
     };

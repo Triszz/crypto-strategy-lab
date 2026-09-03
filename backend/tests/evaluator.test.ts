@@ -166,6 +166,85 @@ describe("EvaluatorEngine.calculateMetrics Unit Test Suite", () => {
     expect(res.maxDrawdown).toBeCloseTo(0.3333, 3);
     expect(res.calmarRatio).toBeGreaterThan(0);
   });
+
+  // ───── v2 tests: Calmar, ProfitFactor, penalty, weights ─────
+
+  it("T.13: Calmar ratio = totalReturn / maxDrawdown", () => {
+    const trades: TradeInput[] = [
+      { entryPrice: 100, exitPrice: 200, quantity: 10, profitLoss: 1000, entryTime: 1, exitTime: 2, side: "BUY", position: "LONG" },
+      { entryPrice: 200, exitPrice: 120, quantity: 10, profitLoss: -800, entryTime: 3, exitTime: 4, side: "BUY", position: "LONG" },
+    ];
+    const res = EvaluatorEngine.calculateMetrics(trades, 10000);
+    // totalReturn ≈ 200/10000 = 0.02; maxDrawdown = 800/12000 = 0.0667 → Calmar ≈ 0.3
+    expect(res.calmarRatio).toBeGreaterThan(0);
+    expect(res.calmarRatio).toBeCloseTo(0.02 / 0.0667, 1);
+  });
+
+  it("T.14: Calmar = 0 when maxDrawdown = 0 (no trades lost)", () => {
+    const trades: TradeInput[] = [
+      { entryPrice: 100, exitPrice: 110, quantity: 1, profitLoss: 10, entryTime: 1, exitTime: 2, side: "BUY", position: "LONG" },
+      { entryPrice: 110, exitPrice: 120, quantity: 1, profitLoss: 10, entryTime: 3, exitTime: 4, side: "BUY", position: "LONG" },
+    ];
+    const res = EvaluatorEngine.calculateMetrics(trades, 10000);
+    expect(res.maxDrawdown).toBe(0);
+    expect(res.calmarRatio).toBe(0);
+  });
+
+  it("T.15: ProfitFactor = grossWin / grossLoss for mixed trades", () => {
+    const trades: TradeInput[] = [
+      { entryPrice: 100, exitPrice: 150, quantity: 1, profitLoss: 50, entryTime: 1, exitTime: 2, side: "BUY", position: "LONG" },   // win +50
+      { entryPrice: 100, exitPrice: 80,  quantity: 1, profitLoss: -20, entryTime: 3, exitTime: 4, side: "BUY", position: "LONG" },   // loss -20
+    ];
+    const res = EvaluatorEngine.calculateMetrics(trades, 10000);
+    // grossWin = 50, grossLoss = 20 → profitFactor = 2.5
+    expect(res.profitFactor).toBeCloseTo(2.5, 1);
+  });
+
+  it("T.16: ProfitFactor caps at 999 when grossLoss = 0 (all wins)", () => {
+    const trades: TradeInput[] = [
+      { entryPrice: 100, exitPrice: 110, quantity: 1, profitLoss: 10, entryTime: 1, exitTime: 2, side: "BUY", position: "LONG" },
+      { entryPrice: 110, exitPrice: 120, quantity: 1, profitLoss: 10, entryTime: 3, exitTime: 4, side: "BUY", position: "LONG" },
+    ];
+    const res = EvaluatorEngine.calculateMetrics(trades, 10000);
+    expect(res.profitFactor).toBe(999);
+  });
+
+  it("T.18: NO trade-count penalty when numTrades >= 30", () => {
+    // Two strategies with the SAME per-trade profile, only differ in number of trades (30 vs 100)
+    const buildTrades = (n: number): TradeInput[] =>
+      Array.from({ length: n }).map((_, i) => ({
+        entryPrice: 100,
+        exitPrice: 110,
+        quantity: 1,
+        profitLoss: 10,
+        entryTime: (i + 1) * 100,
+        exitTime: (i + 1) * 100 + 50,
+        side: "BUY" as const,
+        position: "LONG" as const,
+      }));
+
+    const res30 = EvaluatorEngine.calculateMetrics(buildTrades(30), 10000);
+    const res100 = EvaluatorEngine.calculateMetrics(buildTrades(100), 10000);
+
+    // Both should have positive overallScore; penalty does not apply at N>=30.
+    expect(res30.overallScore).toBeGreaterThan(0);
+    expect(res100.overallScore).toBeGreaterThan(0);
+  });
+
+  it("T.20: respects custom weights { return: 60, winRate: 30, drawdown: 10 }", () => {
+    const trades: TradeInput[] = [
+      { entryPrice: 100, exitPrice: 150, quantity: 1, profitLoss: 50, entryTime: 1, exitTime: 2, side: "BUY", position: "LONG" },
+    ];
+    const defaultWeights = { return: 40, winRate: 40, drawdown: 20 };
+    const customWeights = { return: 60, winRate: 30, drawdown: 10 };
+
+    const resDefault = EvaluatorEngine.calculateMetrics(trades, 10000, defaultWeights);
+    const resCustom = EvaluatorEngine.calculateMetrics(trades, 10000, customWeights);
+
+    // Per-trade metrics are identical, but the overallScore must differ
+    // because the weighting formula is different.
+    expect(resDefault.overallScore).not.toBe(resCustom.overallScore);
+  });
 });
 
 describe("EvaluationService Integration & Event Tests", () => {

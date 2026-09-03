@@ -5,6 +5,7 @@ import type { MarketDataContainer } from "../../modules/market-data";
 import type { SearchContainer } from "../../modules/search";
 import { buildStrategyRouter } from "../../modules/strategy/presentation/strategy.routes";
 import { backtestRouter } from "../../modules/backtest/presentation/backtest.routes";
+import { buildEvaluationRouter } from "../../modules/evaluation/presentation/evaluation.routes";
 import { buildNewsRouter } from "../../modules/news/presentation/news.routes";
 import { buildSentimentRouter } from "../../modules/sentiment/presentation/sentiment.routes";
 import { buildLeaderboardRouter } from "../../modules/leaderboard/presentation/leaderboard.routes";
@@ -16,6 +17,7 @@ export const apiRouter: Router = Router();
 
 apiRouter.use(healthRouter);
 apiRouter.use("/backtests", backtestRouter);
+apiRouter.use("/evaluation", buildEvaluationRouter());
 apiRouter.use("/news", buildNewsRouter());
 apiRouter.use("/sentiment", buildSentimentRouter());
 apiRouter.use("/leaderboard", buildLeaderboardRouter());

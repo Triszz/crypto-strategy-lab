@@ -14,6 +14,7 @@ import { bootstrapStrategies } from "./modules/strategy";
 import { syncBuiltInStrategies } from "./modules/strategy/persistence/builtInStrategies";
 import { getPrismaClient } from "./infrastructure/database/prisma";
 import { EvaluationService } from "./modules/evaluation/application/evaluation.service";
+import { getEvaluationWorker } from "./modules/evaluation/infrastructure/evaluation.worker";
 import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
 import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
 
@@ -41,6 +42,9 @@ async function main(): Promise<void> {
 
   // Instantiate Event Listeners for Evaluation and Leaderboard modules
   new EvaluationService();
+  // Bootstrap the EvaluationWorker so it starts consuming jobs from the "evaluation" queue.
+  const evaluationWorker = getEvaluationWorker();
+  evaluationWorker.start();
   new LeaderboardService(new PrismaLeaderboardRepository());
 
   const app = createApp();
@@ -104,7 +108,7 @@ async function main(): Promise<void> {
   // health checks immediately while backfill + WS connect happen.
   void marketStartPromise;
 
-  installShutdown(httpServer, marketData, search, news);
+  installShutdown(httpServer, marketData, search, news, evaluationWorker);
 }
 
 function installShutdown(
@@ -112,6 +116,7 @@ function installShutdown(
   marketData: ReturnType<typeof buildMarketDataContainer>,
   _search: ReturnType<typeof buildSearchContainer>,
   news: ReturnType<typeof buildNewsContainer>,
+  evaluationWorker: ReturnType<typeof getEvaluationWorker>,
 ): void {
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -149,6 +154,12 @@ function installShutdown(
       await closeRedisConnection();
     } catch (err) {
       logger.warn({ err }, "Redis close error");
+    }
+
+    try {
+      await evaluationWorker.stop();
+    } catch (err) {
+      logger.warn({ err }, "EvaluationWorker shutdown error");
     }
 
     try {

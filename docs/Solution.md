@@ -411,7 +411,7 @@ CandleRepository
               ▼
         SocketGateway.broadcast
               │
-              ▼
+                
            Frontend
 
 
@@ -435,7 +435,7 @@ StrategyRegistry.resolve
 persist StrategyVersion
 
 
-(3) SEARCH / BACKTEST LOOP
+(3) SEARCH / BACKTEST LOOP (Continuous Strategy Loop)
 
 Frontend
     │
@@ -446,49 +446,135 @@ POST /search/start
 SearchService.createRun
     │
     ▼
-StrategyGenerator
-    │
-    ├──▶ emit("StrategyGenerated")
-    │
-    ▼
-BullMQ: backtest queue
-    │
-    ▼
-BacktestWorker.process
-    │
-    ▼
-Strategy.analyze(ctx) on each candle
-    │
-    ▼
-simulate trades
-    │
-    ▼
-persist Experiment + Trades + Result
-    │
-    ▼
-emit("BacktestCompleted")
-    │
-    ▼
-EvaluationWorker
-    │
-    ▼
-Evaluator.calculate(trades)
-    │
-    ▼
-persist BacktestResult
-    │
-    ▼
-emit("StrategyEvaluated")
-    │
-    ▼
-LeaderboardService
-    │
-    ├──▶ recompute top-K
-    ├──▶ upsert LeaderboardEntry
-    └──▶ emit("LeaderboardUpdated")
-              │
-              ▼
-           Frontend
+    ┌───────────────────────────────────────────────────────────────┐
+    │                  CONTINUOUS STRATEGY LOOP                     │
+    │                                                               │
+    │   ┌────────────────────────────────────────────────────┐    │
+    │   │                                                     │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │   StrategyGenerator   │                         │    │
+    │   │  │   • RandomGenerator   │                         │    │
+    │   │  │   • DomainGuided      │                         │    │
+    │   │  └──────────┬────────────┘                         │    │
+    │   │             │ generate candidate                   │    │
+    │   │             │ emit("StrategyGenerated")            │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │  BullMQ: backtest     │                         │    │
+    │   │  │        queue          │                         │    │
+    │   │  └──────────┬────────────┘                         │    │
+    │   │             │ dispatch                             │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │  BacktestWorker.     │                         │    │
+    │   │  │      process()        │                         │    │
+    │   │  └──────────┬────────────┘                         │    │
+    │   │             │                                       │    │
+    │   │             │ Strategy.analyze(ctx) on each candle │    │
+    │   │             │ simulate trades                      │    │
+    │   │             │ persist Experiment + Trades          │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │ emit("BacktestCompleted")                      │    │
+    │   │  └──────────┬────────────┘                         │    │
+    │   │             │                                       │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │  EvaluationWorker     │                         │    │
+    │   │  └──────────┬────────────┘                         │    │
+    │   │             │ Evaluator.calculate(trades)          │    │
+    │   │             │ compute metrics:                     │    │
+    │   │             │   • Return, WinRate                  │    │
+    │   │             │   • MaxDrawdown, Sharpe              │    │
+    │   │             │   • OverallScore                     │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │ persist BacktestResult│                         │    │
+    │   │  └──────────┬────────────┘                         │    │
+    │   │             │                                       │    │
+    │   │             │ emit("StrategyEvaluated")            │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │  LeaderboardService   │                         │    │
+    │   │  │   • recompute top-K   │                         │    │
+    │   │  │   • upsert Entry      │                         │    │
+    │   │  └──────────┬────────────┘                         │    │
+    │   │             │                                       │    │
+    │   │             │ emit("LeaderboardUpdated")           │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────┐                         │    │
+    │   │  │      Frontend         │                         │    │
+    │   │  │   (realtime update)   │                         │    │
+    │   │  └───────────────────────┘                         │    │
+    │   │             │                                       │    │
+    │   │             ▼                                       │    │
+    │   │  ┌───────────────────────────────────────┐         │    │
+    │   │  │   SearchController/StopCondition      │         │    │
+    │   │  │   • Check maxCandidates               │         │    │
+    │   │  │   • Check time limit                  │         │    │
+    │   │  │   • Check user stop signal            │         │    │
+    │   │  │   • Check no improvement threshold    │         │    │
+    │   │  └──────────┬────────────────────────────┘         │    │
+    │   │             │                                       │    │
+    │   │    ┌────────┴────────┐                             │    │
+    │   │    │                 │                             │    │
+    │   │   No                Yes                            │    │
+    │   │    │                 │                             │    │
+    │   │    │          emit("SearchCompleted")             │    │
+    │   │    │                 │                             │    │
+    │   │    │                 └──────────────────────────┐  │    │
+    │   │    │                                            │  │    │
+    │   └────┘◀───────── Loop back to Generator ─────────┘  │    │
+    │                                                         │    │
+    └─────────────────────────────────────────────────────────────┘
+                            │
+                            │ when loop exits
+                            ▼
+                        Frontend
+                  (display final results)
+
+**Loop Logic:**
+
+┌─────────────────────────────────────────────────────────────────────┐
+│ SearchController checks StopCondition after each candidate:         │
+│                                                                     │
+│ • NO STOP → continue:                                               │
+│   - Generated < maxCandidates (e.g. 100)                            │
+│   - Elapsed time < timeLimit (e.g. 1 hour)                          │
+│   - User hasn't clicked "Stop" button                               │
+│   - Top strategy improved in last N candidates                      │
+│   → Generate next candidate, enqueue backtest, repeat loop          │
+│                                                                     │
+│ • STOP → exit:                                                      │
+│   - maxCandidates reached                                           │
+│   - timeLimit exceeded                                              │
+│   - User manually stopped                                           │
+│   - No improvement for 50 consecutive candidates                    │
+│   → emit("SearchCompleted"), notify Frontend, save final results    │
+└─────────────────────────────────────────────────────────────────────┘
+
+**Why the Loop is Important for Architecture:**
+
+1. **Decoupling**: Generator → Queue → Worker → Evaluator → Leaderboard
+   - Each component runs independently
+   - Failure in one doesn't crash others
+
+2. **Scalability**: Add more BacktestWorkers to process queue faster
+   - Loop continues regardless of worker count
+   - Horizontal scaling without code changes
+
+3. **Observability**: Frontend receives realtime updates at each stage
+   - SearchProgress events show: "47/100 candidates tested"
+   - LeaderboardUpdated shows current best strategy
+
+4. **Control**: StopCondition provides multiple exit strategies
+   - Prevent infinite loops
+   - Allow user intervention
+   - Support different search strategies (time-based vs count-based)
+
+5. **Extensibility**: Easy to swap StrategyGenerator
+   - RandomGenerator → GeneticAlgorithm
+   - No changes to Backtest/Evaluator/Leaderboard
 
 
 (4) NEWS / SENTIMENT FLOW

@@ -69,10 +69,15 @@ export class MarketDataService {
       "market-data.charts.loaded",
     );
 
-    // On boot, only fetch candles that are missing since the last
-    // run — keep existing data intact. If the DB is empty for a
-    // chart, `backfillMissing` falls back to seeding the latest N.
+    // Clear all existing candles on server restart
+    this.logger.info("market-data.clearing-old-candles");
+    await this.repo.deleteAll();
+    this.logger.info("market-data.old-candles-cleared");
+
+    // Fetch fresh 100 candles for each chart
+    this.logger.info("market-data.fetching-initial-candles");
     await this.backfill.backfillMissing(chartConfigs);
+    this.logger.info("market-data.initial-candles-fetched");
 
     // Wire WS -> EventBus *before* connecting so we never miss the
     // first "CandleClosed" emitted by the freshly opened stream.
@@ -88,22 +93,22 @@ export class MarketDataService {
     // the work), but the periodic timer provides the fallback net.
     this.reconciliation.startPeriodic();
 
-    this.logger.info("market-data.start.complete");
+    // this.logger.info("market-data.start.complete");
     return { symbols, defaults, chartConfigs };
   }
 
   async stop(): Promise<void> {
-    this.logger.info("market-data.stop");
+    // this.logger.info("market-data.stop");
     this.reconciliation.stopPeriodic();
     this.unwireWsStatus();
     this.unwire();
     try {
       await this.wsAdapter.disconnect();
     } catch (err) {
-      this.logger.warn(
-        { err: (err as Error).message },
-        "market-data.stop.ws-error",
-      );
+      // this.logger.warn(
+      //   { err: (err as Error).message },
+      //   "market-data.stop.ws-error",
+      // );
     }
   }
 
@@ -165,13 +170,13 @@ export class MarketDataService {
       try {
         await this.repo.upsert(candle);
       } catch (err) {
-        this.logger.error(
-          {
-            candleKey: candleKey(candle),
-            err: (err as Error).message,
-          },
-          "market-data.persist.failed",
-        );
+        // this.logger.error(
+        //   {
+        //     candleKey: candleKey(candle),
+        //     err: (err as Error).message,
+        //   },
+        //   "market-data.persist.failed",
+        // );
       }
     };
 
@@ -209,21 +214,21 @@ export class MarketDataService {
         // Edge: reconnecting → connected. Fire-and-forget; errors are
         // logged inside `reconcileAll`.
         this.reconnecting = false;
-        this.logger.info(
-          { since: status.since },
-          "market-data.reconcile.reconnect-triggered",
-        );
+        // this.logger.info(
+        //   { since: status.since },
+        //   "market-data.reconcile.reconnect-triggered",
+        // );
         void this.reconciliation.reconcileAll("reconnect").then((results) => {
           const filled = results.filter((r) => !r.skipped);
           if (filled.length > 0) {
-            this.logger.info(
-              {
-                streams: filled.length,
-                totalFetched: filled.reduce((s, r) => s + r.fetched, 0),
-                totalUpserted: filled.reduce((s, r) => s + r.upserted, 0),
-              },
-              "market-data.reconcile.reconnect-filled",
-            );
+            // this.logger.info(
+            //   {
+            //     streams: filled.length,
+            //     totalFetched: filled.reduce((s, r) => s + r.fetched, 0),
+            //     totalUpserted: filled.reduce((s, r) => s + r.upserted, 0),
+            //   },
+            //   "market-data.reconcile.reconnect-filled",
+            // );
           }
         });
       }

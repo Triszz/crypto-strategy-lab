@@ -239,10 +239,26 @@ function LightweightChartPane({
       />
 
       <div className="flex justify-between items-center border-t border-slate-100 pt-3 mt-1">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
-          <span className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm bg-emerald-500" />
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px] font-medium text-slate-500">Cập nhật realtime</span>
+            <span className="w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm bg-emerald-500" />
+          </div>
+          
+          {/* Load 100 candles button */}
+          <button
+            onClick={onLoadOlder}
+            disabled={!hasMoreData}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 border border-blue-200/60 hover:border-blue-300 text-blue-700 hover:text-blue-800 transition-all text-[10px] font-bold shadow-sm hover:shadow group/btn disabled:opacity-50 disabled:cursor-not-allowed"
+            title="Load thêm 100 nến lịch sử"
+          >
+            <svg className="w-3 h-3 group-hover/btn:scale-110 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16l-4-4m0 0l4-4m-4 4h18" />
+            </svg>
+            <span>Load 100 nến</span>
+          </button>
         </div>
+        
         {candles.length > 0 && (
           <span className="text-[10px] font-medium text-slate-400">
             {candles.length} candles
@@ -420,20 +436,11 @@ export function LegacyChartPane({
 
       setViewport((prev) => ({ ...prev, startIdx: newStartIdx }));
 
-      // Near LEFT edge (viewing oldest data) → load older
-      const nearLeftEdge = newStartIdx <= LOAD_MARGIN && !viewport.isLoadingOlder;
-      if (nearLeftEdge && totalCandles > 0) {
-        setViewport((prev) => ({ ...prev, isLoadingOlder: true }));
-        onLoadOlder();
-        setTimeout(() => {
-          setViewport((prev) => ({ ...prev, isLoadingOlder: false }));
-        }, 1500);
-      }
-      // NOTE: load newer is intentionally removed — WebSocket continuously
-      // appends/updates the latest candle in real time.
+      // NOTE: Auto-load when dragging near edge is intentionally removed.
+      // User must click "Load 100 nến" button to manually trigger load-more.
+      // WebSocket continuously appends/updates the latest candle in real time.
     },
-    [isDragging, dragStartX, dragStartStartIdx, candleWidth, maxStartIdx,
-     viewport.isLoadingOlder, totalCandles, onLoadOlder],
+    [isDragging, dragStartX, dragStartStartIdx, candleWidth, maxStartIdx],
   );
 
   const handleMouseUp = useCallback(() => {
@@ -1016,48 +1023,57 @@ export default function RealtimeDashboard() {
   );
 
   // ── 6. Load older data handler per chart ────────────────────────────────
-  const loadOlderHandlers = useMemo(() => {
-    const handlers: Record<number, () => void> = {};
-    for (let chartIndex = 0; chartIndex < chartCount; chartIndex++) {
-      const tf = timeframes[chartIndex];
-      if (!tf) continue;
+  const handleLoadOlder = useCallback((chartIndex: number) => {
+    const tf = timeframes[chartIndex];
+    if (!tf) return;
+    
+    // ✅ Lấy candles từ state HIỆN TẠI để đảm bảo luôn có dữ liệu mới nhất
+    setCandlesData((currentCandlesData) => {
+      const currentCandles = currentCandlesData[tf] ?? [];
+      const oldestCandle = currentCandles[0];
       
-      handlers[chartIndex] = () => {
-        setCandlesData((currentData) => {
-          const currentCandles = currentData[tf] ?? [];
-          const oldestCandle = currentCandles[0];
-          if (!oldestCandle) return currentData;
+      if (!oldestCandle) {
+        console.warn(`[Dashboard] No candles to load before (chart ${chartIndex + 1})`);
+        return currentCandlesData; // không thay đổi state
+      }
 
-          loadMoreCandles({
-            symbol: selectedSymbol,
-            timeframe: tf,
-            beforeMs: oldestCandle.openTime,
-            limit: 100,
-          }).then(({ candles: older }) => {
-            if (older.length === 0) {
-              // No more historical data available
-              setHasMoreData((prev) => ({ ...prev, [tf]: false }));
-              return;
-            }
-            const olderLocal = older.map((c) => rawToLocal(c, tf));
-            setCandlesData((prev) => {
-              const existing = prev[tf] ?? [];
-              const merged = [...olderLocal, ...existing].sort(
-                (a, b) => a.openTime - b.openTime,
-              );
-              return {
-                ...prev,
-                [tf]: merged.length > 500 ? merged.slice(-500) : merged,
-              };
-            });
-          }).catch(() => {});
+      console.log(`[Dashboard] Load more clicked: chart ${chartIndex + 1}, timeframe ${tf}`);
+      console.log(`[Dashboard] Oldest candle: ${new Date(oldestCandle.openTime).toISOString()}, beforeMs: ${oldestCandle.openTime}`);
 
-          return currentData;
+      // Gọi API bên ngoài setCandlesData để tránh stale closure
+      loadMoreCandles({
+        symbol: selectedSymbol,
+        timeframe: tf,
+        beforeMs: oldestCandle.openTime,
+        limit: 100,
+      }).then(({ candles: older }) => {
+        console.log(`[Dashboard] Received ${older.length} older candles for ${tf}`);
+        
+        if (older.length === 0) {
+          console.log(`[Dashboard] No more data available for ${tf}`);
+          setHasMoreData((prev) => ({ ...prev, [tf]: false }));
+          return;
+        }
+        
+        const olderLocal = older.map((c) => rawToLocal(c, tf));
+        setCandlesData((prev) => {
+          const existing = prev[tf] ?? [];
+          const merged = [...olderLocal, ...existing].sort(
+            (a, b) => a.openTime - b.openTime,
+          );
+          console.log(`[Dashboard] Merged: ${olderLocal.length} + ${existing.length} = ${merged.length} candles`);
+          return {
+            ...prev,
+            [tf]: merged.length > 500 ? merged.slice(-500) : merged,
+          };
         });
-      };
-    }
-    return handlers;
-  }, [chartCount, timeframes, selectedSymbol]);
+      }).catch((err) => {
+        console.error(`[Dashboard] Load more failed for ${tf}:`, err);
+      });
+      
+      return currentCandlesData; // trả về state cũ, API sẽ update sau
+    });
+  }, [timeframes, selectedSymbol]);
 
   // NOTE: load-newer handlers intentionally removed.
   // Realtime WebSocket continuously appends/updates the latest candle,
@@ -1198,7 +1214,7 @@ export default function RealtimeDashboard() {
                   priceChangePct={priceChangePct}
                   onTimeframeChange={handleTimeframeChange}
                   isLoadingTf={loadingTfCharts.has(chartIndex)}
-                  onLoadOlder={loadOlderHandlers[chartIndex] ?? (() => {})}
+                  onLoadOlder={() => handleLoadOlder(chartIndex)}
                   hasMoreData={hasMoreData[tf] ?? true}
                   symbol={selectedSymbol}
                 />

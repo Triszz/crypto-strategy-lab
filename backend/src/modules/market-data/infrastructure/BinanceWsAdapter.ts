@@ -74,10 +74,10 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     this.heartbeat = new HeartbeatMonitor({
       timeoutMs: this.heartbeatMs,
       onTimeout: () => {
-        this.logger.warn(
-          { streams: this.activeStreams() },
-          "binance.ws.heartbeat.timeout",
-        );
+        // this.logger.warn(
+        //   { streams: this.activeStreams() },
+        //   "binance.ws.heartbeat.timeout",
+        // );
         // Force-close the socket so the 'close' handler schedules a reconnect.
         this.ws?.close();
       },
@@ -108,7 +108,7 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
   }
 
   private async openConnection(): Promise<void> {
-    this.logger.info({ streams: this.activeStreams() }, "binance.ws.connecting");
+    // this.logger.info({ streams: this.activeStreams() }, "binance.ws.connecting");
     this.emit("status", { state: "connecting" });
     this.ready = false;
 
@@ -153,7 +153,7 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     });
     ws.addEventListener("error", (event: Event) => {
       const message = extractErrorMessage(event) ?? "unknown";
-      this.logger.warn({ message }, "binance.ws.error");
+      // this.logger.warn({ message }, "binance.ws.error");
     });
 
     await opened;
@@ -164,10 +164,10 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     this.ready = true;
     this.emit("status", { state: "connected", since: Date.now() });
     this.emit("ready");
-    this.logger.info(
-      { streams: this.activeStreams() },
-      "binance.ws.connected",
-    );
+    // this.logger.info(
+    //   { streams: this.activeStreams() },
+    //   "binance.ws.connected",
+    // );
   }
 
   async disconnect(): Promise<void> {
@@ -269,7 +269,7 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     this.stopPing();
     this.ready = false;
     const reasonStr = reason?.toString?.() || `code ${code}`;
-    this.logger.warn({ code, reason: reasonStr }, "binance.ws.closed");
+    // this.logger.warn({ code, reason: reasonStr }, "binance.ws.closed");
     this.emit("status", { state: "closed", reason: reasonStr });
     if (!this.stopped) {
       this.scheduleReconnect();
@@ -286,10 +286,10 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     setTimeout(() => {
       if (this.stopped) return;
       this.connect().catch((err) => {
-        this.logger.error(
-          { err: (err as Error).message, attempt: this.reconnect.attempt },
-          "binance.ws.reconnect.failed",
-        );
+        // this.logger.error(
+        //   { err: (err as Error).message, attempt: this.reconnect.attempt },
+        //   "binance.ws.reconnect.failed",
+        // );
         this.scheduleReconnect();
       });
     }, delay);

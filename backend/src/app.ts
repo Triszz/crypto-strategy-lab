@@ -1,4 +1,5 @@
 import express, { type Application, type NextFunction, type Request, type Response } from "express";
+import morgan from "morgan";
 import { loadEnv } from "./config/env";
 import { apiRouter } from "./api/routes";
 import { errorHandler, notFoundHandler } from "./api/middleware";
@@ -43,6 +44,9 @@ export function createApp(): Application {
   // CORS must run before the API router so pre-flight OPTIONS requests
   // are handled before any route logic.
   app.use(corsMiddleware(env));
+
+  // Morgan HTTP request logger (dev format for colored output)
+  app.use(morgan("dev"));
 
   // Lightweight access log. The structured logger (Pino) is the
   // single source of truth for application logs.

@@ -677,7 +677,7 @@ export class BacktestService {
           initialCapital: result.metrics.initialCapital,
           finalCapital: result.metrics.finalCapital,
           totalReturn: result.metrics.totalReturn,
-          winRate: result.metrics.winRate,
+          winRate: Math.min(0.9999, Math.max(0, result.metrics.winRate > 1 ? result.metrics.winRate / 100 : result.metrics.winRate)),
           maxDrawdown: result.metrics.maxDrawdown,
           numTrades: result.metrics.numTrades,
           numWinningTrades: result.metrics.numWinningTrades,

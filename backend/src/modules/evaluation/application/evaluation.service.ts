@@ -63,6 +63,34 @@ export class EvaluationService {
         logger.warn({ payload }, "[EvaluationService] Received BacktestCompleted with no experimentId; ignoring");
         return;
       }
+
+      // ╔════════════════════════════════════════════════════════════════════╗
+      // ║ 📥  EVALUATION SERVICE: Nhận được event BacktestCompleted          ║
+      // ╚════════════════════════════════════════════════════════════════════╝
+      console.log("\n\x1b[1m\x1b[36m╔══════════════════════════════════════════════════════════════════════════╗\x1b[0m");
+      console.log("\x1b[1m\x1b[36m║  📥  [EVALUATION-SERVICE] Received BacktestCompleted event              ║\x1b[0m");
+      console.log("\x1b[1m\x1b[36m╠══════════════════════════════════════════════════════════════════════════╣\x1b[0m");
+      console.log(`\x1b[1m\x1b[36m║  Experiment ID : \x1b[1m\x1b[33m${payload.experimentId}\x1b[0m\x1b[1m\x1b[36m${" ".repeat(Math.max(0, 56 - payload.experimentId.length))}║\x1b[0m`);
+      console.log(`\x1b[1m\x1b[36m║  Job ID        : \x1b[0m${payload.jobId ?? "N/A"}${" ".repeat(Math.max(0, 56 - (payload.jobId?.length ?? 3)))}║`);
+      console.log(`\x1b[1m\x1b[36m║  Candidate ID  : \x1b[0m${payload.candidateId ?? "N/A"}${" ".repeat(Math.max(0, 56 - (payload.candidateId?.length ?? 3)))}║`);
+      console.log(`\x1b[1m\x1b[36m║  Symbol        : \x1b[1m\x1b[33m${payload.symbol ?? "?"}\x1b[0m\x1b[1m\x1b[36m  Timeframe: \x1b[1m\x1b[33m${payload.timeframe ?? "?"}\x1b[0m\x1b[1m\x1b[36m${" ".repeat(Math.max(0, 26 - (payload.symbol?.length ?? 1) - (payload.timeframe?.length ?? 1)))}║\x1b[0m`);
+      console.log(`\x1b[1m\x1b[36m║  Strategy      : \x1b[0m${payload.strategyName ?? "?"}${" ".repeat(Math.max(0, 56 - (payload.strategyName?.length ?? 1)))}║`);
+      console.log("\x1b[1m\x1b[36m╠══════════════════════════════════════════════════════════════════════════╣\x1b[0m");
+      console.log(`\x1b[1m\x1b[36m║  ▶ Enqueuing evaluation job (jobId = eval-${payload.experimentId})${" ".repeat(Math.max(0, 24 - payload.experimentId.length))}║\x1b[0m`);
+      console.log("\x1b[1m\x1b[36m╚══════════════════════════════════════════════════════════════════════════╝\x1b[0m\n");
+
+      logger.info(
+        {
+          tag: "[EVALUATION-SERVICE]",
+          experimentId: payload.experimentId,
+          jobId: payload.jobId,
+          symbol: payload.symbol,
+          timeframe: payload.timeframe,
+          strategyName: payload.strategyName,
+        },
+        "BacktestCompleted received; enqueuing evaluation",
+      );
+
       void this.handleBacktestCompleted(payload);
     });
 
@@ -85,9 +113,14 @@ export class EvaluationService {
       "BacktestCompleted received; enqueuing evaluation",
     );
 
-    void this.evaluationQueue.enqueue(experimentId).catch((err: unknown) => {
-      const message = err instanceof Error ? err.message : String(err);
-      logger.error({ err: message, experimentId }, "Failed to enqueue evaluation job");
-    });
+    void this.evaluationQueue.enqueue(experimentId)
+      .then(() => {
+        console.log(`\x1b[1m\x1b[32m   ✅ [EVALUATION-SERVICE] Enqueued successfully → waiting for EvaluationWorker\x1b[0m\n`);
+      })
+      .catch((err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.log(`\x1b[1m\x1b[31m   ❌ [EVALUATION-SERVICE] FAILED to enqueue: ${message}\x1b[0m\n`);
+        logger.error({ err: message, experimentId }, "Failed to enqueue evaluation job");
+      });
   }
 }

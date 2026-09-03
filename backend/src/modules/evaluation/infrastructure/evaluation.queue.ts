@@ -166,6 +166,40 @@ export class BullMQEvaluationQueue {
       logger.info("BullMQ EvaluationQueue closed");
     }
   }
+
+  /**
+   * Cleans up stale jobs left over from previous server runs / crashes.
+   *
+   * Called once on boot to remove:
+   *  - `failed` jobs older than 24 h (would only be retried 3× then die)
+   *  - `completed` jobs older than 1 h (already consumed by their workers)
+   *
+   * Without this, a Redis restart picks up old `experimentId`s from
+   * past sessions whose trades were never written to the DB — causing
+   * misleading "no trades found" failures that retry 3× then disappear.
+   *
+   * No-op when Redis is unavailable.
+   */
+  public async cleanStaleJobsOnBoot(): Promise<void> {
+    if (!this.queue) {
+      logger.warn("[EvaluationQueue] Redis unavailable; skipping stale-job cleanup");
+      return;
+    }
+
+    try {
+      const failed = await this.queue.clean(24 * 60 * 60 * 1000, 1000, "failed");
+      const completed = await this.queue.clean(60 * 60 * 1000, 1000, "completed");
+      const delayed = await this.queue.clean(24 * 60 * 60 * 1000, 1000, "delayed");
+
+      logger.info(
+        { failed, completed, delayed },
+        "[EvaluationQueue] Stale jobs cleaned on boot",
+      );
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.warn({ err: message }, "[EvaluationQueue] Stale-job cleanup failed (non-fatal)");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

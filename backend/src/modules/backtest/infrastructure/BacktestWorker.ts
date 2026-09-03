@@ -60,20 +60,8 @@ export class BacktestWorker {
         result: output,
       };
 
-      // 4. Emit BacktestCompleted event
-      try {
-        eventBus.publish("BacktestCompleted", {
-          jobId,
-          experimentId: output.experimentId,
-          symbol: output.symbol,
-          timeframe: output.timeframe,
-          strategyName: output.strategyName,
-          metrics: output.result.metrics,
-          completedAt: new Date().toISOString(),
-        });
-      } catch (e) {
-        logger.warn({ err: e, jobId }, "Failed to publish BacktestCompleted event");
-      }
+      // 4. BacktestCompleted event was ALREADY emitted by BacktestService.runBacktest
+      //    (single source of truth) — do not re-emit here.
 
       return completedProgress;
     } catch (error: any) {

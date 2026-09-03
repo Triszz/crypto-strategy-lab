@@ -16,6 +16,7 @@ import { getPrismaClient } from "./infrastructure/database/prisma";
 import { EvaluationService } from "./modules/evaluation/application/evaluation.service";
 import { getEvaluationWorker } from "./modules/evaluation/infrastructure/evaluation.worker";
 import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
+import { LoopOrchestratorService } from "./modules/leaderboard/application/loop-orchestrator.service";
 import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
 import { getBullMQBacktestQueue, getBullMQBacktestWorker } from "./modules/backtest";
 
@@ -51,6 +52,7 @@ async function main(): Promise<void> {
   const evaluationWorker = getEvaluationWorker();
   evaluationWorker.start();
   new LeaderboardService(new PrismaLeaderboardRepository());
+  new LoopOrchestratorService();
 
   const app = createApp();
   const httpServer = http.createServer(app);

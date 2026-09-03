@@ -22,6 +22,7 @@ export default function MainLayout() {
     { path: '/combination', label: 'Combination', icon: Combine },
     { path: '/discovery', label: 'Discovery', icon: Search },
     { path: '/leaderboard', label: 'Leaderboard', icon: Trophy },
+    { path: '/loop', label: 'Continuous Loop', icon: FlaskConical },
     { path: '/backtest', label: 'Backtest', icon: LineChart },
     { path: '/news-crawler', label: 'News Crawler', icon: Newspaper },
     { path: '/settings', label: 'Settings', icon: Settings },

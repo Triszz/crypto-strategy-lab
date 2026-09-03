@@ -9,7 +9,7 @@ import { getEventBus } from "./shared/event-bus";
 import { buildMarketDataContainer } from "./modules/market-data";
 import { buildSearchContainer } from "./modules/search";
 import { buildNewsContainer } from "./modules/news/news.container";
-import { mountMarketData, mountSearch, mountStrategy } from "./api/routes";
+import { mountMarketData, mountSearch, mountStrategy, mountLoop } from "./api/routes";
 import { bootstrapStrategies } from "./modules/strategy";
 import { syncBuiltInStrategies } from "./modules/strategy/persistence/builtInStrategies";
 import { getPrismaClient } from "./infrastructure/database/prisma";
@@ -17,6 +17,7 @@ import { EvaluationService } from "./modules/evaluation/application/evaluation.s
 import { getEvaluationWorker } from "./modules/evaluation/infrastructure/evaluation.worker";
 import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
 import { LoopOrchestratorService } from "./modules/leaderboard/application/loop-orchestrator.service";
+import { LoopOrchestratorRunner } from "./modules/leaderboard/application/loop-orchestrator-runner";
 import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
 import { getBullMQBacktestQueue, getBullMQBacktestWorker } from "./modules/backtest";
 
@@ -52,7 +53,7 @@ async function main(): Promise<void> {
   const evaluationWorker = getEvaluationWorker();
   evaluationWorker.start();
   new LeaderboardService(new PrismaLeaderboardRepository());
-  new LoopOrchestratorService();
+  const loopOrchestrator = new LoopOrchestratorService();
 
   const app = createApp();
   const httpServer = http.createServer(app);
@@ -74,6 +75,19 @@ async function main(): Promise<void> {
   // Build and mount the Search container.
   const search = buildSearchContainer();
   mountSearch(search);
+
+  // Build the Strategy/Search-side Loop runner. It consumes
+  // `NewTopStrategyFound` published by LeaderboardService and turns
+  // each Top-1 into a new SearchRun via LoopMutationGenerator. The
+  // runner reuses `search.repository` + `search.strategyVersionMapper`
+  // so no second pipeline is created.
+  const loopRunner = new LoopOrchestratorRunner({
+    searchRepository: search.repository,
+    strategyVersionMapper: search.strategyVersionMapper,
+    candidateCount: 5,
+  });
+  loopRunner.startListening();
+  mountLoop({ orchestrator: loopOrchestrator, runner: loopRunner });
 
   // Build and start the News module.
   const news = buildNewsContainer(

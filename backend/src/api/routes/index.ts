@@ -9,6 +9,9 @@ import { buildEvaluationRouter } from "../../modules/evaluation/presentation/eva
 import { buildNewsRouter } from "../../modules/news/presentation/news.routes";
 import { buildSentimentRouter } from "../../modules/sentiment/presentation/sentiment.routes";
 import { buildLeaderboardRouter } from "../../modules/leaderboard/presentation/leaderboard.routes";
+import { buildLoopRouter } from "../../modules/leaderboard/presentation/loop.routes";
+import type { LoopOrchestratorService } from "../../modules/leaderboard/application/loop-orchestrator.service";
+import type { LoopOrchestratorRunner } from "../../modules/leaderboard/application/loop-orchestrator-runner";
 
 /**
  * Aggregates every module-owned route under `/api`.
@@ -25,6 +28,7 @@ apiRouter.use("/leaderboard", buildLeaderboardRouter());
 let mountedMarketData: MarketDataContainer | null = null;
 let mountedSearch: SearchContainer | null = null;
 let mountedStrategy: ReturnType<typeof buildStrategyRouter> | null = null;
+let mountedLoop: ReturnType<typeof buildLoopRouter> | null = null;
 
 export function mountMarketData(container: MarketDataContainer): void {
   if (mountedMarketData) return;
@@ -42,6 +46,15 @@ export function mountStrategy(): void {
   if (mountedStrategy) return;
   mountedStrategy = buildStrategyRouter();
   apiRouter.use("/strategies", mountedStrategy);
+}
+
+export function mountLoop(deps: {
+  orchestrator: LoopOrchestratorService;
+  runner?: LoopOrchestratorRunner;
+}): void {
+  if (mountedLoop) return;
+  mountedLoop = buildLoopRouter(deps);
+  apiRouter.use("/loop", mountedLoop);
 }
 
 void buildMarketDataContainer;

@@ -306,19 +306,52 @@ model LeaderboardEntry {
 }
 
 model LoopRunState {
-  id                 String   @id @default(uuid()) @db.Uuid
-  loopId             String   @unique @map("loop_id") @db.VarChar(64)
-  status             String   @default("RUNNING") @db.VarChar(32)
-  maxCandidates      Int      @default(100) @map("max_candidates")
-  timeLimitSeconds   Int      @default(3600) @map("time_limit_seconds")
-  noImprovementCap   Int      @default(50) @map("no_improvement_cap")
-  totalEvaluated     Int      @default(0) @map("total_evaluated")
-  noImprovementCount Int      @default(0) @map("no_improvement_count")
-  bestScoreSoFar     Decimal  @default(0) @map("best_score_so_far") @db.Decimal(10, 4)
-  startedAt          DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
-  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  id                    String   @id @default(uuid()) @db.Uuid
+  loopId                String   @unique @map("loop_id") @db.VarChar(64)
+  status                String   @default("RUNNING") @db.VarChar(32)
+  maxCandidates         Int      @default(100) @map("max_candidates")
+  timeLimitSeconds      Int      @default(3600) @map("time_limit_seconds")
+  noImprovementCap      Int      @default(50) @map("no_improvement_cap")
+  totalEvaluated        Int      @default(0) @map("total_evaluated")
+  noImprovementCount    Int      @default(0) @map("no_improvement_count")
+  bestScoreSoFar        Decimal  @default(0) @map("best_score_so_far") @db.Decimal(10, 4)
+  currentIteration      Int      @default(0) @map("current_iteration")
+  lastIterationSearchRunId String? @map("last_iteration_search_run_id") @db.Uuid
+  startedAt             DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
+  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  iterations            LoopIteration[]
+  processedEvents       LoopProcessedEvent[]
 
   @@map("loop_run_states")
+}
+
+model LoopIteration {
+  id                    String   @id @default(uuid()) @db.Uuid
+  loopId                String   @map("loop_id") @db.VarChar(64)
+  iterationIndex        Int      @map("iteration_index")
+  parentStrategyVersionId String  @map("parent_strategy_version_id") @db.Uuid
+  searchRunId           String?  @map("search_run_id") @db.Uuid
+  candidateCount        Int      @default(0) @map("candidate_count")
+  status                String   @default("DONE") @db.VarChar(32)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  loop                  LoopRunState @relation(fields: [loopId], references: [loopId], onDelete: Cascade)
+
+  @@index([loopId, iterationIndex(sort: Desc)])
+  @@map("loop_iterations")
+}
+
+model LoopProcessedEvent {
+  id                    String   @id @default(uuid()) @db.Uuid
+  dedupeKey             String   @unique @map("dedupe_key") @db.VarChar(255)
+  strategyVersionId     String   @map("strategy_version_id") @db.Uuid
+  overallScore          Decimal  @map("overall_score") @db.Decimal(10, 4)
+  evaluatedAt           DateTime @map("evaluated_at") @db.Timestamptz(3)
+  loopId                String?  @map("loop_id") @db.VarChar(64)
+  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  loop                  LoopRunState? @relation(fields: [loopId], references: [loopId], onDelete: SetNull)
+
+  @@index([loopId, createdAt(sort: Desc)])
+  @@map("loop_processed_events")
 }
 
 model RankingHistory {

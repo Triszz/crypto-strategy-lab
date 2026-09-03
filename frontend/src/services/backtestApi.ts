@@ -7,6 +7,8 @@ export interface RunBacktestPayload {
   initialCapital?: number;
   feePercent?: number;
   slippageBps?: number;
+  fromTime?: number;
+  toTime?: number;
   stopLossPct?: number;
   takeProfitPct?: number;
   sync?: boolean;
@@ -57,6 +59,14 @@ export interface BacktestRunResponseData {
     trades: TradeItemApi[];
     equityCurve: EquityPointApi[];
   };
+  candles?: Array<{
+    openTime: number;
+    open: number;
+    high: number;
+    low: number;
+    close: number;
+    volume: number;
+  }>;
 }
 
 export interface JobProgressResponseData {

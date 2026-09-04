@@ -3,16 +3,19 @@
  *
  * REST endpoints for the Continuous Strategy Loop:
  *
- *   POST   /api/loop/start        — start (or restart) a loop
- *   POST   /api/loop/pause       — pause a RUNNING loop
- *   POST   /api/loop/resume      — resume a PAUSED loop
- *   POST   /api/loop/stop        — stop a loop
- *   GET    /api/loop/status      — current loop state (or 404 if no loop)
- *   GET    /api/loop/progress    — current iteration + best + elapsed
- *   GET    /api/loop/list        — list all loops
+ *   POST   /api/loop/start         — start (or restart) a loop; optionally
+ *                                      register an existing SearchRun as
+ *                                      iteration #1 (initial combination search)
+ *   POST   /api/loop/pause         — pause a RUNNING loop
+ *   POST   /api/loop/resume        — resume a PAUSED loop
+ *   POST   /api/loop/stop          — stop a loop
+ *   GET    /api/loop/status        — current loop state (or 404 if no loop)
+ *   GET    /api/loop/progress      — iteration + best (loop-local) + elapsed
+ *   GET    /api/loop/candidates    — candidates grouped by iteration
+ *   GET    /api/loop/list          — list all loops
  *
  * The router delegates to `LoopOrchestratorService` (state + stop
- * conditions) and `LoopOrchestratorRunner` (iteration progress) when
+ * conditions) and `LoopOrchestratorRunner` (iteration metadata) when
  * available. It NEVER touches CandidateStrategy or Backtest directly.
  */
 import { Router, type Request, type Response, type NextFunction } from "express";
@@ -34,8 +37,18 @@ export interface LoopRouterDeps {
 const StartSchema = z.object({
   loopId: z.string().min(1).max(64).optional(),
   maxCandidates: z.number().int().positive().max(100_000).optional(),
+  maxIterations: z.number().int().positive().max(1000).optional(),
   timeLimitSeconds: z.number().int().positive().max(86_400).optional(),
   noImprovementCap: z.number().int().positive().max(10_000).optional(),
+  candidateCountPerIteration: z.number().int().min(1).max(100).optional(),
+  mutationRatio: z.number().min(0).max(1).optional(),
+  crossoverRatio: z.number().min(0).max(1).optional(),
+  explorationRatio: z.number().min(0).max(1).optional(),
+  elitePoolSize: z.number().int().min(1).max(20).optional(),
+  // ── Initial iteration binding ──────────────────────────────────────────
+  // When provided, the existing SearchRun is registered as iteration #1.
+  initialSearchRunId: z.string().uuid().optional(),
+  parentStrategyVersionId: z.string().uuid().optional(),
 });
 
 const IdSchema = z.object({
@@ -59,18 +72,42 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
       return;
     }
     try {
-      // Use a single computed loopId so the response and the DB row
-      // refer to the same instance — even when the body omits loopId.
       const effectiveLoopId =
         parsed.data.loopId ?? `loop-${Date.now()}`;
+
+      // Start (or restart) the loop in the orchestrator.
       await deps.orchestrator.startLoop({
         loopId: effectiveLoopId,
         maxCandidates: parsed.data.maxCandidates,
+        maxIterations: parsed.data.maxIterations,
         timeLimitSeconds: parsed.data.timeLimitSeconds,
         noImprovementCap: parsed.data.noImprovementCap,
+        candidateCountPerIteration: parsed.data.candidateCountPerIteration,
+        mutationRatio: parsed.data.mutationRatio,
+        crossoverRatio: parsed.data.crossoverRatio,
+        explorationRatio: parsed.data.explorationRatio,
+        elitePoolSize: parsed.data.elitePoolSize,
+        initialParentStrategyVersionId: parsed.data.parentStrategyVersionId,
       });
+
+      // Register the initial SearchRun as LoopIteration #1 if provided.
+      // This is called by Combination.handleSubmit() after startSearch() has
+      // created the initial full-search SearchRun.
+      if (
+        parsed.data.initialSearchRunId &&
+        parsed.data.parentStrategyVersionId &&
+        deps.runner
+      ) {
+        await deps.runner.registerInitialSearchRun({
+          loopId: effectiveLoopId,
+          searchRunId: parsed.data.initialSearchRunId,
+          parentStrategyVersionId: parsed.data.parentStrategyVersionId,
+          candidateCount: parsed.data.candidateCountPerIteration ?? 5,
+        });
+      }
+
       const state = await deps.runner?.getRuntimeState(effectiveLoopId);
-      res.json({ success: true as const, data: state ?? { status: "RUNNING" } });
+      res.json({ success: true as const, data: state ?? { status: "RUNNING", loopId: effectiveLoopId } });
     } catch (err) {
       log.error({ err }, "loop.api.start.error");
       next(err);
@@ -166,32 +203,100 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
         res.status(404).json({ success: false, error: "NOT_FOUND" });
         return;
       }
-      // Augment with best leaderboard row (top-1) for UI.
-      const best = await prisma.leaderboardEntry.findFirst({
-        where: {
-          // We don't have symbolId directly here — fetch from any
-          // iteration we tracked.
-        },
-        orderBy: { overallScore: "desc" },
-      });
       const lastIter = await prisma.loopIteration.findFirst({
         where: { loopId },
         orderBy: { iterationIndex: "desc" },
-        include: {
-          // No direct relation; surface raw fields only.
-        },
       });
       res.json({
         success: true as const,
         data: {
           ...state,
-          leaderboardTopScore: best ? Number(best.overallScore) : null,
           lastIterationParentStrategyVersionId:
             lastIter?.parentStrategyVersionId ?? null,
         },
       });
     } catch (err) {
       log.error({ err, loopId }, "loop.api.progress.error");
+      next(err);
+    }
+  });
+
+  // ── GET /api/loop/candidates?loopId=… ──────────────────────────────────
+  // Returns candidates for the loop grouped by iteration.
+  router.get("/candidates", async (req: Request, res: Response, next: NextFunction) => {
+    const loopId = (req.query["loopId"] as string | undefined) ?? undefined;
+    if (!loopId) {
+      res.status(400).json({ success: false, error: "MISSING_LOOP_ID" });
+      return;
+    }
+    try {
+      const iterations = await prisma.loopIteration.findMany({
+        where: { loopId },
+        orderBy: { iterationIndex: "asc" },
+      });
+
+      const iterationsWithCandidates = await Promise.all(
+        iterations.map(async (iter) => {
+          if (!iter.searchRunId) {
+            return {
+              iterationIndex: iter.iterationIndex,
+              status: iter.status,
+              parentStrategyVersionId: iter.parentStrategyVersionId,
+              candidateCount: iter.candidateCount,
+              evaluatedCount: iter.evaluatedCount,
+              bestScoreInIteration: Number(iter.bestScoreInIteration),
+              bestStrategyVersionId: iter.bestStrategyVersionId,
+              completedAt: iter.completedAt?.toISOString() ?? null,
+              candidates: [],
+            };
+          }
+          const candidates = await prisma.candidateStrategy.findMany({
+            where: { searchRunId: iter.searchRunId },
+            orderBy: { createdAt: "asc" },
+            include: {
+              strategyVersion: {
+                select: {
+                  name: true,
+                  implementationRef: true,
+                  definition: { select: { type: true } },
+                },
+              },
+            },
+          });
+          const withMetrics = await Promise.all(
+            candidates.map(async (c) => {
+              const result = await prisma.backtestResult.findFirst({
+                where: { experiment: { candidateId: c.id } },
+                orderBy: { overallScore: "desc" },
+              });
+              return {
+                id: c.id,
+                strategyName: c.strategyVersion.name,
+                strategyType: c.strategyVersion.definition.type,
+                overallScore: result ? Number(result.overallScore) : null,
+                totalReturn: result ? Number(result.totalReturn) : null,
+                winRate: result ? Number(result.winRate) : null,
+                maxDrawdown: result ? Number(result.maxDrawdown) : null,
+              };
+            }),
+          );
+          return {
+            iterationIndex: iter.iterationIndex,
+            status: iter.status,
+            parentStrategyVersionId: iter.parentStrategyVersionId,
+            candidateCount: iter.candidateCount,
+            evaluatedCount: iter.evaluatedCount,
+            bestScoreInIteration: Number(iter.bestScoreInIteration),
+            bestStrategyVersionId: iter.bestStrategyVersionId,
+            completedAt: iter.completedAt?.toISOString() ?? null,
+            candidates: withMetrics,
+          };
+        }),
+      );
+
+      res.json({ success: true as const, data: iterationsWithCandidates });
+    } catch (err) {
+      log.error({ err, loopId }, "loop.api.candidates.error");
       next(err);
     }
   });

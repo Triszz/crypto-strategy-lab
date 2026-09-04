@@ -2,45 +2,79 @@
  * Loop API client. Calls `/api/loop/*` on the backend (Vite proxies
  * `/api` to the backend at `http://localhost:3000`).
  *
- * The Loop UI subscribes to these endpoints for:
- *   - start / pause / resume / stop
- *   - status (current state)
- *   - progress (iteration counter, best score, elapsed time)
- *
- * No metric is hardcoded; every value comes from the backend.
+ * Phase 3 — Continuous Strategy Loop:
+ *   - Loop-specific best metrics (not global leaderboard Top-1)
+ *   - Separate cumulative (totalEvaluated) vs current-iteration counters
+ *   - Candidate history per iteration
+ *   - Initial SearchRun binding for Iteration #1
  */
-
 const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
 
+/** Loop status as returned by GET /api/loop/status */
 export interface LoopStatusResponse {
   loopId: string;
   status: string;
   currentIteration: number;
   maxIterations: number;
-  maxCandidates: number;
+  /** Cumulative candidates evaluated across all iterations. */
   totalEvaluated: number;
+  /** Max cumulative candidates allowed. */
+  maxCandidates: number;
+  /** How many NEW candidates this iteration should generate. */
+  candidateCountPerIteration: number;
   noImprovementCount: number;
   noImprovementCap: number;
-  bestScoreSoFar: number;
+  bestScore: number;
   bestStrategyVersionId: string | null;
-  bestStrategyType: string | null;
   bestStrategyName: string | null;
+  bestStrategyType: string | null;
   bestStrategySymbolCode: string | null;
   bestStrategyTimeframe: string | null;
   bestTotalReturn: number | null;
   bestWinRate: number | null;
+  bestMaxDrawdown: number | null;
+  stopReason: string | null;
   lastIterationSearchRunId: string | null;
   startedAt: string;
   updatedAt: string;
   elapsedSeconds: number;
   timeLimitSeconds: number;
+  /** Live count of candidates in the current (in-flight) iteration. */
+  currentIterationCandidateCount: number;
+  /** Live count of evaluated candidates in the current iteration. */
+  currentIterationEvaluatedCount: number;
 }
 
+/** Loop progress — augments status with parent strategy id. */
 export interface LoopProgressResponse extends LoopStatusResponse {
-  leaderboardTopScore: number | null;
   lastIterationParentStrategyVersionId: string | null;
 }
 
+/** Single candidate within an iteration. */
+export interface LoopCandidateItem {
+  id: string;
+  strategyName: string;
+  strategyType: string;
+  overallScore: number | null;
+  totalReturn: number | null;
+  winRate: number | null;
+  maxDrawdown: number | null;
+}
+
+/** One iteration's data including its candidate list. */
+export interface LoopIterationData {
+  iterationIndex: number;
+  status: string;
+  parentStrategyVersionId: string;
+  candidateCount: number;
+  evaluatedCount: number;
+  bestScoreInIteration: number;
+  bestStrategyVersionId: string | null;
+  completedAt: string | null;
+  candidates: LoopCandidateItem[];
+}
+
+/** List item for the loop list (sidebar). */
 export interface LoopListItem {
   id: string;
   loopId: string;
@@ -57,11 +91,22 @@ export interface LoopListItem {
   updatedAt: string;
 }
 
+/** Input to POST /api/loop/start */
 export interface StartLoopInput {
   loopId?: string;
   maxCandidates?: number;
+  maxIterations?: number;
   timeLimitSeconds?: number;
   noImprovementCap?: number;
+  candidateCountPerIteration?: number;
+  mutationRatio?: number;
+  crossoverRatio?: number;
+  explorationRatio?: number;
+  elitePoolSize?: number;
+  /** Bind an existing SearchRun as iteration #1. */
+  initialSearchRunId?: string;
+  /** The parent StrategyVersion to use for iteration #1. */
+  parentStrategyVersionId?: string;
 }
 
 async function unwrap<T>(res: Response): Promise<T> {
@@ -89,7 +134,8 @@ async function get<T>(path: string): Promise<T> {
   return unwrap<T>(res);
 }
 
-/** Start (or restart) the loop. */
+/** Start (or restart) the loop. Pass `initialSearchRunId` + `parentStrategyVersionId`
+ * to bind the initial Combination SearchRun as Iteration #1. */
 export async function startLoop(input: StartLoopInput = {}): Promise<LoopStatusResponse> {
   return post<LoopStatusResponse>("/api/loop/start", input);
 }
@@ -129,6 +175,11 @@ export async function getLoopProgress(loopId: string): Promise<LoopProgressRespo
     if (msg.includes("NOT_FOUND")) return null;
     throw err;
   }
+}
+
+/** Read all iterations with their candidate history for a loop. */
+export async function getLoopCandidates(loopId: string): Promise<LoopIterationData[]> {
+  return get<LoopIterationData[]>(`/api/loop/candidates?loopId=${encodeURIComponent(loopId)}`);
 }
 
 /** List all loops (most recent first). */

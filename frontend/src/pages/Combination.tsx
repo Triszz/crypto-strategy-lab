@@ -52,6 +52,54 @@ import {
 } from "../services/searchApi";
 import { startLoop, type LoopStatusResponse } from "../services/loopApi";
 
+/**
+ * Resolve the parent StrategyVersion for the initial loop iteration.
+ *
+ * Picks the FIRST CandidateStrategy row from the SearchRun. The actual
+ * loop parent will be re-derived from the iteration's best candidate by
+ * the backend runner on SearchCompleted — this value is only used as a
+ * valid FK placeholder.
+ *
+ * Falls back to ANY active StrategyVersion when the SearchRun has no
+ * candidates yet (rare race condition).
+ */
+async function resolveInitialParentId(searchRunId: string): Promise<string> {
+  const base = import.meta.env.VITE_API_URL ?? "http://localhost:3000";
+  try {
+    const res = await fetch(
+      `${base}/api/search/${encodeURIComponent(searchRunId)}/candidates`,
+      { credentials: "include" },
+    );
+    if (res.ok) {
+      const json = (await res.json().catch(() => null)) as
+        | { success: true; data: Array<{ strategyVersionId: string }> }
+        | null;
+      if (json?.success && json.data && json.data.length > 0 && json.data[0]?.strategyVersionId) {
+        return json.data[0].strategyVersionId;
+      }
+    }
+  } catch {
+    // ignore — fallback below
+  }
+  // Last-resort fallback: any active StrategyVersion.
+  try {
+    const res = await fetch(`${base}/api/strategy/list`, { credentials: "include" });
+    if (res.ok) {
+      const json = (await res.json().catch(() => null)) as
+        | { success: true; data: Array<{ strategyVersionId?: string }> }
+        | null;
+      const candidate = json?.data?.find((s) => !!s.strategyVersionId);
+      if (candidate?.strategyVersionId) return candidate.strategyVersionId;
+    }
+  } catch {
+    // ignore — final throw below
+  }
+  throw new Error(
+    "Unable to resolve an initial parent StrategyVersion for the Continuous Loop. " +
+      "Make sure the Combination search produced at least one candidate before starting the loop.",
+  );
+}
+
 // ─── Family Groups (Domain Rules — Module 6 §17.2) ───────────────────────────
 
 /**
@@ -427,21 +475,27 @@ export default function CombinationPage() {
       // Combination actions can each have their own loop instance and
       // the Search page can navigate to /loop?loopId=… without guessing.
       //
-      // If the loop start fails for any reason we log it as a non-fatal
-      // warning — the Search results are still useful on their own.
+      // The INITIAL iteration of the loop is the SearchRun we just
+      // created (no new SearchRun is started for iteration #1). We
+      // forward `initialSearchRunId` so the runner registers iteration
+      // #1 correctly. The parent StrategyVersion is updated AFTER
+      // evaluation completes (the runner sets it from the best
+      // candidate of the iteration). For the schema FK constraint we
+      // still need a valid UUID placeholder — we resolve the first
+      // strategyVersionId produced by the search.
       let startedLoop: LoopStatusResponse | null = null;
       let loopStartError: string | null = null;
       try {
+        const initialParentId = await resolveInitialParentId(result.searchRunId);
         startedLoop = await startLoop({
-          // Use a deterministic loopId derived from the SearchRun so the
-          // same SearchRun always maps to the same Loop, but multiple
-          // concurrent combinations don't collide.
           loopId: `combo-${result.searchRunId}`,
-          // Tight defaults so a quick demo shows progress; the dedicated
-          // /loop page lets the user override these manually.
           maxCandidates: Math.max(10, maxCandidates * 5),
+          maxIterations: 20,
+          candidateCountPerIteration: 5,
           timeLimitSeconds: 1800,
           noImprovementCap: 25,
+          initialSearchRunId: result.searchRunId,
+          parentStrategyVersionId: initialParentId,
         });
       } catch (err) {
         loopStartError =

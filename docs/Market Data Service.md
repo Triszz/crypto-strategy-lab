@@ -139,28 +139,37 @@ Các quyết định kiến trúc được chốt theo 6 driver ưu tiên:
 
 ```
 backend/src/modules/market-data/
-├── domain/
-│   ├── Candle.ts                      # Internal type + candleKey + candleRoom
-│   ├── Timeframe.ts                   # Union type + Binance map + helpers
-│   ├── ChartConfig.ts                 # Chart projection (4 panes)
-│   ├── CandleRepository.port.ts       # Repository interface (Hexagonal/Port)
-│   └── events.ts                      # Event names + CandleClosedEvent schema
+├── core/                              # 🆕 Core types & interfaces (Provider pattern)
+│   ├── types.ts                       # Candle, Timeframe, ChartConfig types
+│   ├── events.ts                      # WsConnectionStatus, event types
+│   └── ports.ts                       # MarketDataProvider interface
 │
-├── application/
+├── domain/                            # Legacy domain types (kept for compatibility)
+│   ├── Candle.ts                      # Candle type + helpers (candleKey, candleRoom)
+│   ├── Timeframe.ts                   # Timeframe type + Binance mappings
+│   ├── ChartConfig.ts                 # Chart config type
+│   ├── CandleRepository.port.ts       # Repository interface
+│   └── events.ts                      # Legacy event definitions
+│
+├── providers/                         # 🆕 Exchange implementations
+│   └── binance/
+│       ├── BinanceProvider.ts         # Implements MarketDataProvider (unified facade)
+│       ├── BinanceRestClient.ts       # REST API client (historical data)
+│       ├── BinanceWsClient.ts         # WebSocket client (realtime streams)
+│       ├── BinanceNormalizer.ts       # Binance DTO → internal Candle
+│       └── ReconnectStrategy.ts       # Exponential backoff với jitter
+│
+├── services/                          # 🆕 Business logic (provider-agnostic)
 │   ├── MarketDataService.ts           # Orchestrator (boot + subscribe/release)
-│   ├── SymbolSyncService.ts           # Sync symbols từ Binance /exchangeInfo
+│   ├── SymbolSyncService.ts           # Sync symbols từ exchange
 │   ├── DefaultChartSeeder.ts          # Seed 6 timeframes + 4 default charts
-│   ├── BackfillService.ts             # backfillInitial + loadMore
+│   ├── BackfillService.ts             # Historical data backfill + load-more
 │   └── ReconciliationService.ts       # Reconnect + Periodic gap-fill
 │
-├── infrastructure/
-│   ├── BinanceRestAdapter.ts          # Historical data (retry, rate-limit)
-│   ├── BinanceWsAdapter.ts            # Realtime WS + ref-count + reconnect
-│   ├── CandleNormalizer.ts            # Binance DTO → internal Candle
-│   ├── PostgresCandleRepository.ts    # Prisma-backed persistence + caches
-│   └── ReconnectStrategy.ts           # Exponential backoff với jitter
+├── storage/                           # 🆕 Persistence layer
+│   └── PostgresCandleRepository.ts    # Prisma-backed persistence + caches
 │
-├── realtime/
+├── realtime/                          # Socket.IO layer
 │   ├── HeartbeatMonitor.ts            # Dead connection detection (30s timeout)
 │   ├── SocketGateway.ts               # Socket.IO handlers + room broadcast
 │   └── CandlePersister.ts             # EventBus → repository bridge
@@ -172,6 +181,15 @@ backend/src/modules/market-data/
 ├── container.ts                       # DI wiring (composition root)
 └── index.ts                           # Public exports
 ```
+
+**Quy tắc phụ thuộc (Dependency Rule) - Provider Pattern:**
+
+- `core` → không phụ thuộc gì cả (zero dependency trong module).
+- `providers` → phụ thuộc `core` (implement MarketDataProvider interface) + third-party libs.
+- `services` → phụ thuộc `core` (sử dụng MarketDataProvider interface), KHÔNG phụ thuộc `providers`.
+- `storage` → phụ thuộc `domain` (implement CandleRepository port) + Prisma.
+- `realtime` → phụ thuộc `core` + `services`.
+- `presentation` → phụ thuộc `services`.
 
 **Quy tắc phụ thuộc (Dependency Rule):**
 
@@ -331,7 +349,21 @@ Limit clamp: `1 <= limit <= 1000`.
 
 ### 6.4 MarketDataService (Orchestrator)
 
-Mục đích: top-level facade, gọi 1 lần lúc boot, quản lý lifecycle.
+Mục đích: top-level facade, gọi 1 lần lúc boot, quản lý lifecycle. Sau refactor, service phụ thuộc vào **MarketDataProvider interface** thay vì concrete Binance adapters.
+
+**Constructor signature (sau refactor):**
+
+```typescript
+constructor(
+  private readonly provider: MarketDataProvider,     // ✅ Interface, not BinanceWsAdapter
+  private readonly repo: CandleRepository,            // ✅ Interface
+  private readonly symbolSync: SymbolSyncService,
+  private readonly chartSeeder: DefaultChartSeeder,
+  private readonly backfill: BackfillService,
+  private readonly reconciliation: ReconciliationService,
+  private readonly logger: Logger,
+) {}
+```
 
 #### `start()` — boot sequence (theo đúng thứ tự)
 
@@ -341,32 +373,106 @@ Mục đích: top-level facade, gọi 1 lần lúc boot, quản lý lifecycle.
 4. **`backfill.backfillMissing(chartConfigs)`** — incremental catch-up:
    - `repo.getLatestOpen(...)` mỗi chart.
    - Nếu rỗng → fallback `fetchLatest(initialCandles)`.
-   - Ngược lại → `rest.fetchSince(dbLatest+1, now)` → `repo.upsertBatch` mỗi batch.
+   - Ngược lại → `provider.fetchCandles(...)` với range → `repo.upsertBatch` mỗi batch.
    - DB cũ được giữ nguyên — không wipe.
    - Sau fill: `repo.trimToLatest(symbol, timeframe, MAX_CANDLES_PER_CHART=100)` mỗi chart.
-5. **`wireWsToEventBus()`** — đăng ký listener từ WS adapter lên EventBus + persistence listener (xem §10).
-6. **`wsAdapter.connect()`** — mở WS.
-7. **`wsAdapter.subscribe(...)` × 4** — subscribe 4 default streams.
+5. **`wireEvents()`** — đăng ký listener từ provider lên EventBus + persistence (xem §10).
+6. **`provider.connect()`** — mở WS.
+7. **`provider.subscribe(...)` × 4** — subscribe 4 default streams.
+8. **`reconciliation.startPeriodic()`** — khởi động periodic gap-fill timer.
 
 Trả về `{ symbols, defaults, chartConfigs }` cho caller log/debug.
 
-**Thứ tự quan trọng:** `wireWsToEventBus()` phải chạy **trước** `connect()` để không miss candle close đầu tiên emit ngay khi stream mở.
+**Thứ tự quan trọng:** `wireEvents()` phải chạy **trước** `provider.connect()` để không miss candle close đầu tiên emit ngay khi stream mở.
 
 #### `stop()` — shutdown
 
-1. Unwire event handlers.
-2. `wsAdapter.disconnect()` — gửi close frame 1000, drain, cleanup.
-3. WS error trong lúc shutdown → log warn, không rethrow.
+1. `reconciliation.stopPeriodic()` — dừng periodic timer.
+2. Unwire event handlers.
+3. `provider.disconnect()` — gửi close frame 1000, drain, cleanup.
+4. WS error trong lúc shutdown → log warn, không rethrow.
 
 #### `ensureSubscribed(symbol, timeframe)` / `releaseSubscription(...)`
 
-Lazy subscribe — gọi từ `SocketGateway` khi client browser yêu cầu stream mà Market Data chưa có. Ref-count trong adapter đảm bảo không double-subscribe.
+Lazy subscribe — gọi từ `SocketGateway` khi client browser yêu cầu stream mà Market Data chưa có. Ref-count trong provider đảm bảo không double-subscribe.
 
 ---
 
 ## 7. Infrastructure
 
-### 7.1 BinanceRestAdapter
+### 7.1 BinanceProvider (Unified Facade)
+
+**File:** `providers/binance/BinanceProvider.ts`
+
+**Architecture:** `BinanceProvider extends EventEmitter` và implements `MarketDataProvider` interface.
+
+Provider là **unified facade** kết hợp `BinanceRestClient` (historical data) và `BinanceWsClient` (realtime streams). Services chỉ phụ thuộc vào `MarketDataProvider` interface, không biết concrete Binance implementation.
+
+**Event forwarding:**
+
+```typescript
+export class BinanceProvider extends EventEmitter implements MarketDataProvider {
+  private rest: BinanceRestClient;
+  private ws: BinanceWsClient;
+  
+  constructor(config: { logger: Logger }) {
+    super();
+    this.rest = new BinanceRestClient(config);
+    this.ws = new BinanceWsClient(config);
+    
+    // Forward WebSocket events với normalized names
+    this.ws.on("CandleClosed", (candle: Candle) => {
+      this.emit("candle:closed", candle);
+    });
+    
+    this.ws.on("CandleUpdating", (candle: Candle) => {
+      this.emit("candle:updating", candle);
+    });
+    
+    this.ws.on("status", (status) => {
+      this.emit("status", status);
+    });
+  }
+  
+  // REST delegation
+  async fetchCandles(opts: FetchCandlesOptions): Promise<Candle[]> {
+    return this.rest.fetchKlines(opts);
+  }
+  
+  async fetchSymbols() {
+    return this.rest.fetchExchangeInfo();
+  }
+  
+  // WebSocket delegation
+  async connect(): Promise<void> {
+    return this.ws.connect();
+  }
+  
+  async disconnect(): Promise<void> {
+    return this.ws.disconnect();
+  }
+  
+  async subscribe(symbol: string, timeframe: Timeframe): Promise<void> {
+    return this.ws.subscribe(symbol, timeframe);
+  }
+  
+  async unsubscribe(symbol: string, timeframe: Timeframe): Promise<void> {
+    return this.ws.unsubscribe(symbol, timeframe);
+  }
+  
+  isConnected(): boolean {
+    return this.ws.isConnected();
+  }
+  
+  activeStreams(): string[] {
+    return this.ws.activeStreams();
+  }
+}
+```
+
+### 7.2 BinanceRestClient
+
+**File:** `providers/binance/BinanceRestClient.ts`
 
 Endpoint:
 
@@ -386,9 +492,11 @@ Method exposed:
 - Max retries: 3.
 - Retry on: HTTP 429, 5xx, AbortError.
 - Delay: exponential backoff (500ms → 1000ms → 2000ms), cap 4000ms.
-- Rate-limit: sleep 80ms giữa các requests ở BackfillService level (adapter không tự throttle — caller chịu trách nhiệm).
+- Rate-limit: sleep 80ms giữa các requests ở BackfillService level (client không tự throttle — caller chịu trách nhiệm).
 
-### 7.2 CandleNormalizer
+### 7.3 CandleNormalizer
+
+**File:** `providers/binance/BinanceNormalizer.ts`
 
 Điểm duy nhất biết Binance format. Mọi conversion Binance DTO → internal `Candle` đều qua đây.
 
@@ -402,9 +510,11 @@ Class chỉ có static method, không có state:
 - `fromRestKlines(symbol, rows, timeframe)` — parse batch.
 - `fromWsKline(msg)` — parse WS message; interval từ `k.i` phải thuộc `SUPPORTED_TIMEFRAMES` (throw nếu không).
 
-### 7.3 BinanceWsAdapter
+### 7.4 BinanceWsClient
 
-**Architecture:** `BinanceWsAdapter extends EventEmitter` — sử dụng **Node.js EventEmitter** để publish events internal, **KHÔNG dùng EventBus** (EventBus dùng ở layer khác).
+**File:** `providers/binance/BinanceWsClient.ts`
+
+**Architecture:** `BinanceWsClient extends EventEmitter` — sử dụng **Node.js EventEmitter** để publish events internal.
 
 Endpoint:
 
@@ -538,9 +648,11 @@ Attempt 6+ → 30000ms (capped)
 
 `reset()` được gọi khi connect thành công → attempt về 1.
 
-### 7.4 HeartbeatMonitor
+### 7.5 HeartbeatMonitor
 
-*(thuộc realtime layer, nhưng được compose trong adapter)*
+**File:** `realtime/HeartbeatMonitor.ts`
+
+*(thuộc realtime layer, nhưng được compose trong BinanceWsClient)*
 
 - Timeout: **30 giây** không có message → coi như chết (silent drop).
 - Check interval: 10 giây (timeout / 3).
@@ -548,7 +660,9 @@ Attempt 6+ → 30000ms (capped)
 
 Lý do cần: TCP half-open hoặc proxy im lặng có thể làm WS "connected" nhưng không nhận được message nữa — phải có watchdog.
 
-### 7.5 PostgresCandleRepository
+### 7.6 PostgresCandleRepository
+
+**File:** `storage/PostgresCandleRepository.ts`
 
 Implement `CandleRepository` port bằng Prisma.
 
@@ -583,10 +697,10 @@ Bridge giữa `EventBus` và repository. Subscribe `MARKET_DATA_EVENTS.CANDLE_CL
 
 Lắng nghe Socket.IO connection từ frontend. Forward subscribe/unsubscribe xuống `MarketDataService.ensureSubscribed` / `releaseSubscription`. Broadcast candle events tới các room tương ứng (`candles:{symbol}@{timeframe}`).
 
-Subscribe **2** listener trên `BinanceWsAdapter`:
+Subscribe **2** listener trên `MarketDataProvider`:
 
-- `CandleClosed` → broadcast `{type: "CandleClosed", ...payload}` tới room.
-- `CandleUpdating` → broadcast `{type: "CandleUpdating", ...payload}` tới cùng room (xem §11.3).
+- `candle:closed` → broadcast `{type: "CandleClosed", ...payload}` tới room.
+- `candle:updating` → broadcast `{type: "CandleUpdating", ...payload}` tới cùng room (xem §11.3).
 
 Cả hai dùng cùng payload shape (`CandleClosedEventPayload`), nên client phân biệt qua `event` name trong dispatch.
 
@@ -615,11 +729,11 @@ Tất cả endpoint validate input qua `zod` schema → reject 400 nếu invalid
 
 ### 10.1 Wiring — Hai layer event riêng biệt
 
-**Layer 1: BinanceWsAdapter → MarketDataService (EventEmitter)**
+**Layer 1: BinanceWsClient → BinanceProvider (EventEmitter)**
 
 ```typescript
-// BinanceWsAdapter extends EventEmitter
-export class BinanceWsAdapter extends EventEmitter {
+// BinanceWsClient extends EventEmitter
+export class BinanceWsClient extends EventEmitter {
   private handleMessage(data: string) {
     const candle = CandleNormalizer.fromWsKline(kmsg);
     if (kmsg.k.x) {
@@ -635,39 +749,61 @@ export class BinanceWsAdapter extends EventEmitter {
 }
 ```
 
-**Layer 2: MarketDataService → Modules khác (EventBus)**
-
-`MarketDataService.wireWsToEventBus()` đăng ký **3 listener** trên `BinanceWsAdapter`:
+**Layer 2: BinanceProvider → MarketDataService (EventEmitter normalization)**
 
 ```typescript
-// 1. CandleClosed → publish ra EventBus (cho Strategy, Backtest, Search)
+// BinanceProvider normalizes event names
+export class BinanceProvider extends EventEmitter {
+  constructor() {
+    // Forward with normalized names
+    this.ws.on("CandleClosed", (candle) => {
+      this.emit("candle:closed", candle);  // ← Normalized name
+    });
+    
+    this.ws.on("CandleUpdating", (candle) => {
+      this.emit("candle:updating", candle);
+    });
+    
+    this.ws.on("status", (status) => {
+      this.emit("status", status);
+    });
+  }
+}
+```
+
+**Layer 3: MarketDataService → Modules khác (EventBus)**
+
+`MarketDataService.wireEvents()` đăng ký **3 listener** trên `MarketDataProvider`:
+
+```typescript
+// 1. candle:closed → publish ra EventBus (cho Strategy, Backtest, Search)
 const onClosed = (candle: Candle): void => {
   this.eventBus.publish(MARKET_DATA_EVENTS.CANDLE_CLOSED, candle);
 };
-this.wsAdapter.on("CandleClosed", onClosed);  // ← EventEmitter.on()
+this.provider.on("candle:closed", onClosed);  // ← EventEmitter.on()
 
-// 2. CandleUpdating → publish ra EventBus (cho Strategy live tick)
+// 2. candle:updating → publish ra EventBus (cho Strategy live tick)
 const onUpdating = (candle: Candle): void => {
   this.eventBus.publish(MARKET_DATA_EVENTS.CANDLE_UPDATING, candle);
 };
-this.wsAdapter.on("CandleUpdating", onUpdating);
+this.provider.on("candle:updating", onUpdating);
 
-// 3. CandleClosed → persist vào DB (fire-and-forget, latency-sensitive)
+// 3. candle:closed → persist vào DB (fire-and-forget, latency-sensitive)
 const onClosedPersist = (candle: Candle): void => {
   void this.repo.upsert(candle);
 };
-this.wsAdapter.on("CandleClosed", onClosedPersist);
+this.provider.on("candle:closed", onClosedPersist);
 ```
 
-**Lý do tách 2 listener cho `CandleClosed`:**
+**Lý do tách 2 listener cho `candle:closed`:**
 
 - **EventBus publish** — cho các consumer khác (Strategy, Backtest, Search, SocketGateway).
-- **Direct persist** — concern của Market Data, làm thẳng trong adapter để giảm hop (không qua EventBus vì latency-sensitive).
+- **Direct persist** — concern của Market Data, làm thẳng trong service để giảm hop (không qua EventBus vì latency-sensitive).
 
 **Reconnect status wiring:**
 
 ```typescript
-// MarketDataService.wireReconnectReconciliation()
+// MarketDataService.wireEvents()
 const onStatus = (status: WsConnectionStatus): void => {
   if (status.state === "reconnecting") {
     this.reconnecting = true;
@@ -678,7 +814,7 @@ const onStatus = (status: WsConnectionStatus): void => {
     void this.reconciliation.reconcileAll("reconnect");
   }
 };
-this.wsAdapter.on("status", onStatus);
+this.provider.on("status", onStatus);
 ```
 
 ### 10.2 EventEmitter vs EventBus — So sánh
@@ -737,8 +873,8 @@ Semantics phân biệt qua `event` name và nguồn gốc:
                    │
                    ▼
 ┌─────────────────────────────────────────────────────────┐
-│ BinanceWsAdapter.handleMessage()                        │
-│  ├─ Parse → CandleNormalizer.fromWsKline()              │
+│ BinanceWsClient.handleMessage()                         │
+│  ├─ Parse → BinanceNormalizer.fromWsKline()             │
 │  ├─ if (k.x === true):                                  │
 │  │    this.emit("CandleClosed", candle)  ← EventEmitter │
 │  └─ else:                                               │
@@ -747,17 +883,24 @@ Semantics phân biệt qua `event` name và nguồn gốc:
                    │ (EventEmitter internal)
                    ▼
 ┌─────────────────────────────────────────────────────────┐
+│ BinanceProvider (event normalization)                   │
+│  ├─ on("CandleClosed") → emit("candle:closed")         │
+│  └─ on("CandleUpdating") → emit("candle:updating")     │
+└──────────────────┬──────────────────────────────────────┘
+                   │ (EventEmitter, normalized names)
+                   ▼
+┌─────────────────────────────────────────────────────────┐
 │ MarketDataService (3 listeners)                         │
 │                                                         │
-│ 1. on("CandleClosed") → EventBus.publish(...)          │
+│ 1. on("candle:closed") → EventBus.publish(...)         │
 │    ├─ Publish MARKET_DATA_EVENTS.CANDLE_CLOSED         │
 │    └─ Consumer: Strategy, Backtest, Search, Socket     │
 │                                                         │
-│ 2. on("CandleUpdating") → EventBus.publish(...)        │
+│ 2. on("candle:updating") → EventBus.publish(...)       │
 │    ├─ Publish MARKET_DATA_EVENTS.CANDLE_UPDATING       │
 │    └─ Consumer: Strategy (live signal), SocketGateway  │
 │                                                         │
-│ 3. on("CandleClosed") → repo.upsert(candle)            │
+│ 3. on("candle:closed") → repo.upsert(candle)           │
 │    └─ Fire-and-forget persist (không qua EventBus)     │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -824,12 +967,12 @@ Nhánh 2 xảy ra khi `incoming.openTime` lớn hơn phần tử cuối — ngh�
 Server start
   │
   ├─ buildMarketDataContainer() (DI wiring)
+  │     ├─ BinanceProvider (BinanceRestClient + BinanceWsClient)
   │     ├─ PostgresCandleRepository
-  │     ├─ BinanceRestAdapter
-  │     ├─ BinanceWsAdapter
   │     ├─ BackfillService
   │     ├─ SymbolSyncService
   │     ├─ DefaultChartSeeder
+  │     ├─ ReconciliationService
   │     ├─ MarketDataService
   │     ├─ SocketGateway
   │     └─ CandlePersister
@@ -853,24 +996,27 @@ Server start
         ├─ 4. backfill.backfillMissing(chartConfigs)
         │      ├─ repo.getLatestOpen() mỗi chart
         │      ├─ empty DB → fetchLatest(100) fallback
-        │      ├─ else → fetchSince(dbLatest+1, now) + upsertBatch
+        │      ├─ else → provider.fetchCandles(range) + upsertBatch
         │      └─ trimToLatest(MAX_CANDLES_PER_CHART=100) mỗi chart
         │         (DB cũ giữ nguyên, KHÔNG wipe, nhưng cap về 100/chart)
         │
-        ├─ 5. wireWsToEventBus()
-        │      → on("CandleClosed") → EventBus.publish
-        │      → on("CandleUpdating") → EventBus.publish
-        │      → on("CandleClosed") → repo.upsert (fire-and-forget)
+        ├─ 5. wireEvents()
+        │      → on("candle:closed") → EventBus.publish
+        │      → on("candle:updating") → EventBus.publish
+        │      → on("candle:closed") → repo.upsert (fire-and-forget)
         │
         ├─ 5b. socketGateway.start()
-        │      → on("CandleClosed") → io.to(room).emit(...)
-        │      → on("CandleUpdating") → io.to(room).emit(...)
-        │      (phải chạy TRƯỚC wsAdapter.connect() để không miss tick đầu tiên)
+        │      → on("candle:closed") → io.to(room).emit(...)
+        │      → on("candle:updating") → io.to(room).emit(...)
+        │      (phải chạy TRƯỚC provider.connect() để không miss tick đầu tiên)
         │
-        ├─ 6. wsAdapter.connect() (mở WS)
+        ├─ 6. provider.connect() (mở WS)
         │
-        └─ 7. wsAdapter.subscribe(...) × 4
-              → btcusdt@kline_1m, 1h, 4h, 1d
+        ├─ 7. provider.subscribe(...) × 4
+        │      → btcusdt@kline_1m, 1h, 4h, 1d
+        │
+        └─ 8. reconciliation.startPeriodic()
+              → Periodic gap-fill timer
 ```
 
 **Tính idempotent:** re-run `start()` (vd: test) an toàn. SymbolSync + ChartSeeder đều idempotent; `clearAndBackfill` đảm bảo fresh data.
@@ -894,7 +1040,7 @@ Frontend GET /api/candles?symbol=BTCUSDT&timeframe=1h&limit=500
   │
   ├─► Auto-backfill: nếu rows.length < 10
   │     → BackfillService.loadMore(symbol, tf, now, 100)
-  │     → Binance REST → repo.upsertBatch
+  │     → provider.fetchCandles(...) → repo.upsertBatch
   │     → re-query
   │
   └─► res.json({ success: true, data: candles })
@@ -907,9 +1053,9 @@ Frontend POST /api/candles/load-more
   body: { symbol, timeframe, beforeMs, limit }
   │
   ├─► BackfillService.loadMore(symbol, tf, beforeMs, limit)
-  │     BinanceRestAdapter.fetchKlines({ endMs: beforeMs, limit })
+  │     provider.fetchCandles({ endMs: beforeMs, limit })
   │     → Binance trả candle cũ nhất trước beforeMs
-  │     CandleNormalizer.fromRestKlines()
+  │     BinanceNormalizer.fromRestKlines()
   │     PostgresCandleRepository.upsertBatch()
   │
   └─► res.json({ inserted, candles: sorted ASC })
@@ -921,23 +1067,25 @@ Frontend POST /api/candles/load-more
 ```
 Binance WS stream
   │
-  ├─► BinanceWsAdapter.handleMessage()
+  ├─► BinanceWsClient.handleMessage()
   │     JSON parse → isWrappedMessage → kmsg
   │
   ├─► heartbeat.beat() (reset watchdog timer)
   │
-  ├─► CandleNormalizer.fromWsKline(kmsg)
+  ├─► BinanceNormalizer.fromWsKline(kmsg)
   │
   ├─► if (kmsg.k.x === true):
   │     emit("CandleClosed", candle)
-  │       ├─► EventBus.publish("CANDLE_CLOSED")
-  │       │      → Strategy / Backtest / Search / Frontend nhận
-  │       └─► repo.upsert(candle) (async, không block)
+  │       └─► BinanceProvider.emit("candle:closed", candle)
+  │             ├─► EventBus.publish("CANDLE_CLOSED")
+  │             │      → Strategy / Backtest / Search / Frontend nhận
+  │             └─► repo.upsert(candle) (async, không block)
   │
   └─► else:
         emit("CandleUpdating", candle)
-          └─► EventBus.publish("CANDLE_UPDATING")
-                → Frontend update chart (chưa đóng)
+          └─► BinanceProvider.emit("candle:updating", candle)
+                └─► EventBus.publish("CANDLE_UPDATING")
+                      → Frontend update chart (chưa đóng)
 ```
 
 ---
@@ -1126,14 +1274,21 @@ Cả hai trường hợp đã được giải quyết tự động bằng Reconn
 
 | Dependency | Vai trò | Swap được? |
 |---|---|---|
-| Binance REST API | Source historical candles + exchange info | Có (qua `BinanceRestAdapter` interface) |
-| Binance WebSocket | Source realtime candles | Có (qua `BinanceWsAdapter` interface) |
-| PostgreSQL | Persist candles + metadata | Có (qua `CandleRepository` port) |
-| Prisma Client | ORM cho PostgreSQL | Có (chỉ trong `infrastructure`, không leak ra application) |
-| Socket.IO | Push realtime tới frontend | Có (qua `SocketGateway`) |
-| EventBus (in-proc) | Contract giữa Market Data và modules khác | Không (đây là contract ổn định) |
+| Binance REST API | Source historical candles + exchange info | ✅ Có (qua `MarketDataProvider` interface) |
+| Binance WebSocket | Source realtime candles | ✅ Có (qua `MarketDataProvider` interface) |
+| PostgreSQL | Persist candles + metadata | ✅ Có (qua `CandleRepository` port) |
+| Prisma Client | ORM cho PostgreSQL | ✅ Có (chỉ trong `storage`, không leak ra services) |
+| Socket.IO | Push realtime tới frontend | ✅ Có (qua `SocketGateway`) |
+| EventBus (in-proc) | Contract giữa Market Data và modules khác | ⚠️ Không (đây là contract ổn định) |
 
-Mọi dependency external đều **đằng sau interface** trong application layer — không bao giờ để Binance DTO / Prisma client lọt ra ngoài.
+**Provider Pattern benefits:**
+- `BinanceProvider` implements `MarketDataProvider` interface.
+- Services phụ thuộc vào interface, không phụ thuộc concrete Binance classes.
+- Swap provider bằng cách thay đổi 1 dòng trong `container.ts`:
+  ```typescript
+  const provider = new OkxProvider({ logger });  // thay vì BinanceProvider
+  ```
+- Mọi dependency external đều **đằng sau interface** trong services layer — không bao giờ để Binance DTO / Prisma client lọt ra ngoài.
 
 ---
 

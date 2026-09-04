@@ -1,16 +1,16 @@
 import { setTimeout as wait } from "node:timers/promises";
-import { loadEnv } from "../../../config/env";
-import type { Logger } from "../../../shared/logger/logger";
-import type { Candle } from "../domain/Candle";
-import type { Timeframe } from "../domain/Timeframe";
+import { loadEnv } from "../../../../config/env";
+import type { Logger } from "../../../../shared/logger/logger";
+import type { Candle } from "../../core/types";
+import type { Timeframe } from "../../core/types";
 import {
   TIMEFRAME_TO_BINANCE,
   getBinanceStreamName,
-} from "../domain/Timeframe";
+} from "../../core/types";
 import {
   CandleNormalizer,
   type BinanceKlineDTO,
-} from "./CandleNormalizer";
+} from "./BinanceNormalizer";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RETRIES = 3;
@@ -47,11 +47,11 @@ export interface BinanceExchangeInfo {
 }
 
 /**
- * Thin Binance REST adapter. Public endpoints only — no API key.
+ * Binance REST client. Public endpoints only — no API key.
  * All Binance-specific knowledge (URL shape, retry policy, rate-limit
  * pause) lives here so the rest of the codebase never imports the SDK.
  */
-export class BinanceRestAdapter {
+export class BinanceRestClient {
   private readonly baseUrl: string;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;

@@ -824,20 +824,29 @@ export default function RealtimeDashboard() {
         console.log("[Init] initTf:", initTf);
         setTimeframes(initTf);
         
-        // Load initial candles for all timeframes
+        // Load initial candles for ALL timeframes in parallel
         (async () => {
           const next: Record<string, LocalCandle[]> = {};
           try {
-            for (const cfg of normalizedConfigs) {
-              console.log(`[Init] Fetching ${cfg.timeframe} candles...`);
+            const fetchPromises = normalizedConfigs.map(async (cfg) => {
+              console.log(`[Init] Fetching ${cfg.timeframe} candles for chart ${cfg.chartIndex}...`);
               const candles = await fetchCandles({
                 symbol: selectedSymbol,
                 timeframe: cfg.timeframe,
                 limit: 100,
               });
               console.log(`[Init] Received ${candles.length} candles for ${cfg.timeframe}`);
-              next[cfg.timeframe] = candles.map((c) => rawToLocal(c, cfg.timeframe));
+              return { timeframe: cfg.timeframe, candles };
+            });
+            
+            // Wait for ALL fetches to complete
+            const results = await Promise.all(fetchPromises);
+            
+            // Populate candlesData for all timeframes
+            for (const { timeframe, candles } of results) {
+              next[timeframe] = candles.map((c) => rawToLocal(c, timeframe));
             }
+            
             console.log(`[Init] Setting candlesData:`, Object.keys(next).map(tf => `${tf}: ${next[tf].length}`));
             setCandlesData(next);
             setLoadingConfigs(false);

@@ -1,10 +1,10 @@
 import { setTimeout as wait } from "node:timers/promises";
 import type { Logger } from "../../../shared/logger/logger";
-import type { Candle } from "../domain/Candle";
-import { type Timeframe } from "../domain/Timeframe";
-import type { BinanceRestAdapter } from "../infrastructure/BinanceRestAdapter";
-import type { CandleRepository } from "../domain/CandleRepository.port";
-import type { ChartConfig } from "../domain/ChartConfig";
+import type { Candle } from "../core/types";
+import { type Timeframe } from "../core/types";
+import type { MarketDataProvider } from "../core/ports";
+import type { CandleRepository } from "../core/ports";
+import type { ChartConfig } from "../core/types";
 
 export interface BackfillProgress {
   chartIndex: number;
@@ -23,14 +23,14 @@ const DEFAULT_MAX_CANDLES_PER_CHART = 100;
 const MAX_PER_REQUEST = 1_000;
 
 /**
- * Coordinates bulk historical fetches against Binance REST and writes
+ * Coordinates bulk historical fetches against exchange and writes
  * them into the `candles` table. The service is used both for the
  * boot-time initial feed (newest N candles per chart pane) and the
  * on-demand "load more" endpoint driven by infinite-scroll charts.
  */
 export class BackfillService {
   constructor(
-    private readonly rest: BinanceRestAdapter,
+    private readonly provider: MarketDataProvider,
     private readonly repo: CandleRepository,
     private readonly logger: Logger,
     private readonly initialCandles: number = DEFAULT_INITIAL_CANDLES,
@@ -53,7 +53,7 @@ export class BackfillService {
       let total = 0;
       let batches = 0;
       try {
-        const candles = await this.rest.fetchLatest(
+        const candles = await this.provider.fetchLatest(
           chart.symbol,
           chart.timeframe,
           Math.min(this.initialCandles, MAX_PER_REQUEST),
@@ -119,7 +119,7 @@ export class BackfillService {
             },
             "market-data.backfill-missing.empty-db",
           );
-          const candles = await this.rest.fetchLatest(
+          const candles = await this.provider.fetchLatest(
             chart.symbol,
             chart.timeframe,
             Math.min(this.initialCandles, MAX_PER_REQUEST),
@@ -142,7 +142,7 @@ export class BackfillService {
               "market-data.backfill-missing.already-fresh",
             );
           } else {
-            for await (const batch of this.rest.fetchSince(
+            for await (const batch of this.provider.fetchSince(
               chart.symbol,
               chart.timeframe,
               fromMs,
@@ -225,7 +225,7 @@ export class BackfillService {
     const safeLimit = Math.min(Math.max(limit, 1), MAX_PER_REQUEST);
     
     // Fetch candles BEFORE beforeMs (exclude the candle at beforeMs itself)
-    const rows = await this.rest.fetchKlines({
+    const rows = await this.provider.fetchCandles({
       symbol,
       timeframe,
       endMs: beforeMs - 1,

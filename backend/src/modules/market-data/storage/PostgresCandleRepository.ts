@@ -1,11 +1,11 @@
 import { Prisma, PrismaClient } from "@prisma/client";
 import type { Logger } from "../../../shared/logger/logger";
-import type { Candle } from "../domain/Candle";
+import type { Candle } from "../core/types";
 import type {
   CandleQuery,
   CandleRepository,
-} from "../domain/CandleRepository.port";
-import type { Timeframe } from "../domain/Timeframe";
+} from "../core/ports";
+import type { Timeframe } from "../core/types";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
 
 interface SymbolTimeframeIds {

@@ -1,10 +1,10 @@
-import type { Candle } from "../domain/Candle";
-import type { Timeframe } from "../domain/Timeframe";
+import type { Candle } from "../../core/types";
+import type { Timeframe } from "../../core/types";
 import {
   parseBinanceInterval,
   TIMEFRAME_TO_BINANCE,
   timeframeToMs,
-} from "../domain/Timeframe";
+} from "../../core/types";
 
 /**
  * REST `GET /api/v3/klines` returns one row per array index. We declare

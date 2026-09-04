@@ -5,7 +5,7 @@ import {
   DEFAULT_TIMEFRAMES,
   SUPPORTED_TIMEFRAMES,
   type Timeframe,
-} from "../domain/Timeframe";
+} from "../core/types";
 
 type PrismaTx = Parameters<Parameters<PrismaClient["$transaction"]>[0]>[0];
 type ChartConfigRow = {

@@ -42,6 +42,8 @@ import {
   type LoopStatusResponse,
 } from "../services/loopApi";
 
+import LeaderboardCard from "../components/LeaderboardCard";
+
 const POLL_INTERVAL_MS = 3000;
 
 function formatSeconds(s: number): string {
@@ -113,7 +115,33 @@ function bestStrategyDisplayName(s: {
   bestStrategyTimeframe?: string | null;
 }): string {
   if (s.bestStrategyName && s.bestStrategyName.trim().length > 0) {
-    return s.bestStrategyName;
+    let clean = s.bestStrategyName
+      .replace(/^Domain-guided\s+/i, '')
+      .replace(/^Composite:\s+/i, '');
+
+    const rawParts = clean.split(/[\+,\-]/).map((p) => p.trim()).filter(Boolean);
+    let maCount = 0;
+    const totalMa = rawParts.filter((p) => /ma|moving/i.test(p)).length;
+
+    clean = rawParts
+      .map((part) => {
+        const lower = part.toLowerCase();
+        if (lower.includes('ma') || lower.includes('moving')) {
+          maCount++;
+          if (totalMa > 1) {
+            return maCount === 1 ? 'MA (Fast)' : maCount === 2 ? 'MA (Slow)' : `MA (${maCount})`;
+          }
+          return 'MA';
+        }
+        if (lower.includes('rsi')) return 'RSI';
+        if (lower.includes('s/r') || lower.includes('support') || lower.includes('resistance')) return 'S/R';
+        if (lower.includes('bollinger') || lower.includes('bb')) return 'Bollinger';
+        if (lower.includes('sentiment') || lower.includes('news')) return 'Sentiment';
+        return part.charAt(0).toUpperCase() + part.slice(1);
+      })
+      .join(' + ');
+
+    return clean;
   }
   if (s.bestStrategyVersionId) {
     return s.bestStrategyVersionId.slice(0, 8) + "…";
@@ -154,7 +182,7 @@ export default function Loop() {
   }, [loopIdFromUrl]);
 
   const [status, setStatus] = useState<LoopStatusResponse | null>(null);
-  const [progress, setProgress] = useState<LoopProgressResponse | null>(null);
+  const [, setProgress] = useState<LoopProgressResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -329,137 +357,109 @@ export default function Loop() {
         </div>
       )}
 
-      {/* Main grid: 2/3 = live panel, 1/3 = controls */}
+      {/* Main grid: 2/3 = live panel + leaderboard, 1/3 = controls */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Live Panel */}
-        <article className="lg:col-span-2 bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-5">
-          <div className="flex justify-between items-start">
-            <div>
-              <h3 className="text-sm font-extrabold text-slate-800">Live Progress</h3>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                Loop ID: <span className="font-mono">{loopId}</span>
-              </p>
-            </div>
-            <span
-              data-testid="loop-status"
-              className={`px-3 py-1 rounded-lg text-xs font-black tracking-wider ${statusBadgeClass(loopStatus)}`}
-            >
-              {loopStatus}
-            </span>
-          </div>
-
-          {!status ? (
-            <div className="flex flex-col items-center justify-center py-12 gap-3 text-slate-400">
-              {busy ? (
-                <Loader2 className="w-6 h-6 animate-spin" />
-              ) : (
-                <Activity className="w-6 h-6" />
-              )}
-              <span className="text-xs">
-                No Continuous Strategy Loop is currently running.{" "}
-                {loopIdFromUrl
-                  ? `No loop found for loopId=${loopId}.`
-                  : "Configure a Combination and click Run Combination to start one."}
+        {/* Left Column: Live Panel + Leaderboard */}
+        <div className="lg:col-span-2 flex flex-col gap-6">
+          {/* Live Panel */}
+          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-5">
+            <div className="flex justify-between items-start">
+              <div>
+                <h3 className="text-sm font-extrabold text-slate-800">Live Progress</h3>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  Loop ID: <span className="font-mono">{loopId}</span>
+                </p>
+              </div>
+              <span
+                data-testid="loop-status"
+                className={`px-3 py-1 rounded-lg text-xs font-black tracking-wider ${statusBadgeClass(loopStatus)}`}
+              >
+                {loopStatus}
               </span>
             </div>
-          ) : (
-            <>
-              {/* Top metrics grid */}
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-                <MetricBox
-                  label="Iteration"
-                  value={`${status.currentIteration} / ${status.maxIterations}`}
-                />
-                <MetricBox
-                  label="Candidates Checked"
-                  value={`${status.totalEvaluated} / ${status.maxCandidates}`}
-                />
-                <MetricBox
-                  label="Best Score"
-                  value={status.bestScoreSoFar.toFixed(2)}
-                />
-                <MetricBox
-                  label="Best Strategy"
-                  value={bestStrategyDisplayName(status)}
-                />
-                <MetricBox
-                  label="Profit / Total Return"
-                  value={formatSignedPercent(status.bestTotalReturn)}
-                />
-                <MetricBox
-                  label="Win Rate"
-                  value={formatPercent(status.bestWinRate)}
-                />
-                <MetricBox
-                  label="Loop Status"
-                  value={loopStatus}
-                />
-                <MetricBox
-                  label="No Improvement"
-                  value={`${status.noImprovementCount} / ${status.noImprovementCap}`}
-                />
-                <MetricBox
-                  label="Elapsed"
-                  value={formatSeconds(elapsedSeconds)}
-                />
-                <MetricBox
-                  label="Time Limit"
-                  value={formatSeconds(status.timeLimitSeconds)}
-                />
-                <MetricBox
-                  label="Stop Reason"
-                  value={stopReasonLabel(loopStatus)}
-                />
-                <MetricBox
-                  label="Symbol · Timeframe"
-                  value={bestStrategyContext(status) || "—"}
-                />
-              </div>
 
-              {/* Best strategy reference (now shows profit / win rate etc.) */}
-              <div className="border-t border-slate-100 pt-4 mt-2">
-                <h4 className="text-xs font-extrabold text-slate-700 mb-2">Best Strategy Details</h4>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {!status ? (
+              <div className="flex flex-col items-center justify-center py-12 gap-3 text-slate-400">
+                {busy ? (
+                  <Loader2 className="w-6 h-6 animate-spin" />
+                ) : (
+                  <Activity className="w-6 h-6" />
+                )}
+                <span className="text-xs">
+                  No Continuous Strategy Loop is currently running.{" "}
+                  {loopIdFromUrl
+                    ? `No loop found for loopId=${loopId}.`
+                    : "Configure a Combination and click Run Combination to start one."}
+                </span>
+              </div>
+            ) : (
+              <>
+                {/* Top metrics grid */}
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                   <MetricBox
-                    label="Strategy Version"
-                    value={
-                      status.bestStrategyVersionId
-                        ? status.bestStrategyVersionId.slice(0, 8) + "…"
-                        : "(none yet)"
-                    }
+                    label="Iteration"
+                    value={`${status.currentIteration} / ${status.maxIterations}`}
                   />
                   <MetricBox
-                    label="Type"
-                    value={status.bestStrategyType ?? "—"}
+                    label="Candidates Checked"
+                    value={`${status.totalEvaluated} / ${status.maxCandidates}`}
                   />
-                  {progress?.leaderboardTopScore !== null &&
-                    progress?.leaderboardTopScore !== undefined && (
-                      <MetricBox
-                        label="Leaderboard Top Score"
-                        value={progress.leaderboardTopScore.toFixed(2)}
-                      />
-                    )}
-                  {progress?.lastIterationParentStrategyVersionId && (
-                    <MetricBox
-                      label="Last Iteration Parent"
-                      value={
-                        progress.lastIterationParentStrategyVersionId.slice(0, 8) + "…"
-                      }
-                    />
-                  )}
+                  <MetricBox
+                    label="Best Score"
+                    value={status.bestScoreSoFar.toFixed(2)}
+                  />
+                  <MetricBox
+                    label="Best Strategy"
+                    value={bestStrategyDisplayName(status)}
+                  />
+                  <MetricBox
+                    label="Profit / Total Return"
+                    value={formatSignedPercent(status.bestTotalReturn)}
+                  />
+                  <MetricBox
+                    label="Win Rate"
+                    value={formatPercent(status.bestWinRate)}
+                  />
+                  <MetricBox
+                    label="Loop Status"
+                    value={loopStatus}
+                  />
+                  <MetricBox
+                    label="No Improvement"
+                    value={`${status.noImprovementCount} / ${status.noImprovementCap}`}
+                  />
+                  <MetricBox
+                    label="Elapsed"
+                    value={formatSeconds(elapsedSeconds)}
+                  />
+                  <MetricBox
+                    label="Time Limit"
+                    value={formatSeconds(status.timeLimitSeconds)}
+                  />
+                  <MetricBox
+                    label="Stop Reason"
+                    value={stopReasonLabel(loopStatus)}
+                  />
+                  <MetricBox
+                    label="Symbol · Timeframe"
+                    value={bestStrategyContext(status) || "—"}
+                  />
                 </div>
-              </div>
 
-              {/* Last iteration search run link */}
-              {status.lastIterationSearchRunId && (
-                <div className="text-[11px] text-slate-400 font-mono">
-                  Last iteration SearchRun:{" "}
-                  <span className="text-slate-700">{status.lastIterationSearchRunId}</span>
-                </div>
-              )}
-            </>
-          )}
-        </article>
+                {/* Additional metrics line */}
+                {status.lastIterationSearchRunId && (
+                  <div className="text-[11px] text-slate-400 font-mono pt-2 border-t border-slate-100">
+                    Last iteration SearchRun:{" "}
+                    <span className="text-slate-700">{status.lastIterationSearchRunId}</span>
+                  </div>
+                )}
+              </>
+            )}
+          </article>
+
+          {/* Embedded Leaderboard Card with Live Socket Updates */}
+          <LeaderboardCard limit={5} title="Leaderboard (Top strategies)" />
+        </div>
 
         {/* Controls */}
         <aside className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 sticky top-6">

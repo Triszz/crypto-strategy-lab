@@ -173,6 +173,6 @@ export class CombinationEngine {
     }
 
     const rawTotalWeight = votes.reduce((sum, v) => sum + v.weight, 0);
-    return combineComponentVotes(votes, rawTotalWeight);
+    return combineComponentVotes(votes, rawTotalWeight, config.operator);
   }
 }

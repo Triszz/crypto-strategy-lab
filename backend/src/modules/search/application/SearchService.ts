@@ -31,7 +31,7 @@ import { anyStopCondition } from "../domain/StopCondition";
 import { getStrategyRegistry } from "../../strategy/domain/StrategyRegistry";
 import type { SearchRunRecord } from "./SearchRepository.port";
 import { RandomGenerator } from "../generators/RandomGenerator";
-import { DomainGuidedGenerator } from "../generators/DomainGuidedGenerator";
+import { DomainGuidedGenerator, type DomainGuidedConfig } from "../generators/DomainGuidedGenerator";
 
 // ─── Events ───────────────────────────────────────────────────────────────────
 
@@ -246,7 +246,7 @@ export class SearchService {
         };
       }
 
-      const generator = this.buildGenerator(algorithm, spaces);
+      const generator = this.buildGenerator(algorithm, spaces, searchRun.config);
       const onCandidate = this.buildOnCandidate(searchRunId);
 
       const state: SearchState = {
@@ -345,15 +345,29 @@ export class SearchService {
    * Generator classes are always loaded regardless of algorithm choice — this
    * is acceptable since there are only 2 generators and they're tiny.
    */
-  private buildGenerator(algorithm: string, spaces: ParameterSpace[]): StrategyGenerator {
+  private buildGenerator(
+    algorithm: string,
+    spaces: ParameterSpace[],
+    persistedConfig: Readonly<Record<string, unknown>> = {},
+  ): StrategyGenerator {
     if (algorithm === "random") {
       const gen = new RandomGenerator();
       gen.spaces = spaces;
+      gen.applyConfig(persistedConfig as unknown as Parameters<typeof gen.applyConfig>[0]);
       return gen;
     }
     if (algorithm === "domain_guided") {
       const gen = new DomainGuidedGenerator();
       gen.spaces = spaces;
+      // DomainGuidedGenerator needs the family-group config from the
+      // persisted SearchRun row. If none was provided we still call
+      // applyConfig() so domainConfig is initialised and the generator
+      // produces no candidates instead of throwing on a missing field.
+      gen.applyConfig(persistedConfig as unknown as DomainGuidedConfig | undefined);
+      // Inject the StrategyRegistry so the generator can resolve each
+      // ParameterSpace to its concrete Strategy and read the family
+      // metadata. Without this, family→space mapping cannot be built.
+      gen.setRegistry(getStrategyRegistry());
       return gen;
     }
     throw new Error(`Unknown algorithm: ${algorithm}`);
@@ -361,32 +375,44 @@ export class SearchService {
 
   private buildOnCandidate(searchRunId: string): OnCandidate {
     return async (candidate: SearchCandidate): Promise<boolean> => {
-      try {
-        const versionInfo = await this.resolveCandidate(candidate);
-        await this.repository.createCandidate({
-          searchRunId,
-          strategyVersionId: versionInfo.strategyVersionId,
-          parameters: this.candidateParameters(candidate),
-        });
+      // NOTE on error handling:
+      //
+      // The `OnCandidate` callback has two failure modes:
+      //
+      //   1. Genuine back-pressure: the controller (e.g. a queue) refuses
+      //      more work. The generator should pause. Return `false`.
+      //
+      //   2. Candidate processing error: resolveCandidate() or
+      //      repository.createCandidate() throws. The generator should NOT
+      //      treat this as back-pressure — it would silently swallow the
+      //      real cause of the failure and continue, leaving the SearchRun
+      //      with status DONE/STOPPED but a misleading `totalQueued=0`.
+      //
+      // We therefore:
+      //   - Let the resolve/persist code throw. The outer `try/catch` in
+      //     `start()` marks the SearchRun FAILED with the error message
+      //     and emits SearchFailed.
+      //   - Reserve `false` for true back-pressure (currently never raised
+      //     in MVP; future async queue plumbing can return `false` here).
+      const versionInfo = await this.resolveCandidate(candidate);
+      const candidateRecord = await this.repository.createCandidate({
+        searchRunId,
+        strategyVersionId: versionInfo.strategyVersionId,
+        parameters: this.candidateParameters(candidate),
+      });
 
-        this.eventBus.publish<CandidateGeneratedEvent>("StrategyGenerated", {
-          searchRunId,
-          candidateId: candidate.candidateId,
-          candidateType: candidate.candidateType,
-          strategyId:
-            candidate.candidateType === "BASE"
-              ? (candidate as BaseCandidate).strategyId
-              : (candidate as CompositeCandidate).config.id,
-        });
+      this.eventBus.publish<CandidateGeneratedEvent>("StrategyGenerated", {
+        searchRunId,
+        candidateId: candidateRecord.id,
+        candidateType: candidate.candidateType,
+        strategyId:
+          candidate.candidateType === "BASE"
+            ? (candidate as BaseCandidate).strategyId
+            : (candidate as CompositeCandidate).config.id,
+      });
 
-        return true;
-      } catch (err) {
-        this.log.error(
-          { err, searchRunId, candidateId: candidate.candidateId },
-          "search.service.on-candidate.error",
-        );
-        return false;
-      }
+      // Successful processing → tell the generator it can continue.
+      return true;
     };
   }
 
@@ -398,7 +424,9 @@ export class SearchService {
       const registry = getStrategyRegistry();
       const strategy = registry.resolve(base.strategyId);
       if (!strategy) {
-        throw new Error(`Strategy ${base.strategyId} not found in registry`);
+        throw new Error(
+          `resolveCandidate[${candidate.candidateId}]: BASE strategy "${base.strategyId}" not found in registry`,
+        );
       }
       const info = await this.strategyVersionMapper.resolveBaseStrategy(
         strategy.id,
@@ -407,11 +435,18 @@ export class SearchService {
       return { strategyVersionId: info.strategyVersionId };
     }
     const composite = candidate as CompositeCandidate;
-    const info = await this.strategyVersionMapper.resolveCompositeStrategy(
-      composite.config,
-      composite.config.name,
-    );
-    return { strategyVersionId: info.strategyVersionId };
+    try {
+      const info = await this.strategyVersionMapper.resolveCompositeStrategy(
+        composite.config,
+        composite.config.name,
+      );
+      return { strategyVersionId: info.strategyVersionId };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `resolveCandidate[${candidate.candidateId}]: COMPOSITE "${composite.config.id}" — ${msg}`,
+      );
+    }
   }
 
   private candidateParameters(candidate: SearchCandidate): Record<string, unknown> {
@@ -419,17 +454,21 @@ export class SearchService {
       return { ...(candidate as BaseCandidate).parameters };
     }
     // COMPOSITE: store the CombinationConfig as JSON parameters.
-    // CombinationEngine reads `_config` at backtest time.
+    // BacktestService reads `_config` at backtest time and forwards the
+    // per-component `parameters` to CombinationEngine which in turn injects
+    // them into the per-component `StrategyContext.parameters`.
     const composite = candidate as CompositeCandidate;
     return {
       _candidateType: "COMPOSITE",
       _config: {
         id: composite.config.id,
         name: composite.config.name,
+        operator: composite.config.operator,
         components: composite.config.components.map((c) => ({
           strategyId: c.strategyId,
           weight: c.weight,
           position: c.position,
+          ...(c.parameters !== undefined ? { parameters: c.parameters } : {}),
         })),
       },
     };

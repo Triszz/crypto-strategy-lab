@@ -1,16 +1,17 @@
 import { NavLink, Outlet } from 'react-router-dom';
-import { 
-  Activity, 
-  Cpu, 
-  Search, 
+import {
+  Activity,
+  Cpu,
+  Search,
   Trophy,
-  LineChart, 
-  Newspaper, 
-  Settings, 
-  FlaskConical, 
-  ChevronDown, 
+  LineChart,
+  Newspaper,
+  Settings,
+  FlaskConical,
+  ChevronDown,
   GraduationCap,
-  ListFilter
+  ListFilter,
+  Combine,
 } from 'lucide-react';
 
 export default function MainLayout() {
@@ -18,8 +19,10 @@ export default function MainLayout() {
     { path: '/realtime', label: 'Realtime', icon: Activity },
     { path: '/strategy-engine', label: 'Strategy Engine', icon: Cpu },
     { path: '/strategy', label: 'Strategy Library', icon: ListFilter },
+    { path: '/combination', label: 'Combination', icon: Combine },
     { path: '/discovery', label: 'Discovery', icon: Search },
     { path: '/leaderboard', label: 'Leaderboard', icon: Trophy },
+    { path: '/loop', label: 'Continuous Loop', icon: FlaskConical },
     { path: '/backtest', label: 'Backtest', icon: LineChart },
     { path: '/news-crawler', label: 'News Crawler', icon: Newspaper },
     { path: '/settings', label: 'Settings', icon: Settings },

@@ -21,14 +21,11 @@ import {
   History,
   Award,
   Layers,
-  TrendingUp,
-  Activity,
-  BarChart2,
-  Zap,
   Loader2,
 } from 'lucide-react';
 import {
   fetchSearchRuns,
+  fetchSearchRunCandidates,
   type SearchRunListItem,
 } from '../services/searchApi';
 import {
@@ -43,6 +40,12 @@ export default function Discovery() {
   const [runs, setRuns] = useState<SearchRunListItem[]>([]);
   const [runsLoading, setRunsLoading] = useState(true);
   const [runsError, setRunsError] = useState<string | null>(null);
+
+  // ── Strategy names per run (populated after runs load) ─────────────
+  // Keyed by runId; value is array of strategy names from the candidates.
+  const [candidateNamesByRunId, setCandidateNamesByRunId] = useState<
+    Record<string, string[]>
+  >({});
 
   // ── Real strategies (replaces hardcoded indicators) ───────────────
   const [strategies, setStrategies] = useState<StrategyListItem[]>([]);
@@ -80,8 +83,66 @@ export default function Discovery() {
     void loadStrategies();
   }, [loadRuns, loadStrategies]);
 
+  // ── Backward-compat: fetch candidate strategy names for runs that ──
+  //    have NO strategies resolved server-side. New runs started from
+  //    the Combination Builder include the strategies inline; only legacy
+  //    runs need the extra round-trip to GET /:id/candidates.
+  useEffect(() => {
+    if (!runs || runs.length === 0) return;
+
+    const needsFallback = runs.filter(
+      (r) =>
+        r.status === "DONE" &&
+        r.candidateCount > 0 &&
+        r.strategies.length === 0 &&
+        !candidateNamesByRunId[r.id],
+    );
+    if (needsFallback.length === 0) return;
+
+    void Promise.all(
+      needsFallback.map(async (r) => {
+        try {
+          const candidates = await fetchSearchRunCandidates(r.id);
+          const names = [...new Set(
+            candidates
+              .map((c) => c.strategyVersion?.name ?? null)
+              .filter((n): n is string => n !== null)
+              .slice(0, 6),
+          )];
+          setCandidateNamesByRunId((prev) => ({
+            ...prev,
+            [r.id]: names,
+          }));
+        } catch {
+          // Non-critical — leave the cell blank on failure
+        }
+      }),
+    );
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runs]);
+
   return (
     <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto">
+      {/* Combination Builder callout (Module 6 §17) */}
+      <article
+        onClick={() => navigate("/combination")}
+        className="cursor-pointer bg-gradient-to-r from-blue-50 to-indigo-50 border border-blue-200/60 p-4 rounded-2xl flex items-center gap-4 hover:shadow-md transition-shadow group"
+      >
+        <div className="w-12 h-12 rounded-xl bg-white border border-blue-100 flex items-center justify-center text-blue-600 shadow-sm shrink-0">
+          <Layers className="w-5 h-5" />
+        </div>
+        <div className="flex-1">
+          <div className="text-sm font-extrabold text-slate-800">
+            Strategy Combination Builder (Module 6 §17)
+          </div>
+          <p className="text-[11px] text-slate-500 font-medium leading-relaxed">
+            Chọn một strategy cho mỗi nhóm chỉ báo (Trend / Momentum / Structure / …) và chạy
+            Domain-guided Search — backend sẽ sinh tất cả tổ hợp hợp lệ.
+          </p>
+        </div>
+        <ChevronRight className="w-5 h-5 text-blue-500 group-hover:translate-x-1 transition-transform" />
+      </article>
+
       {/* Top Header */}
       <header className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
         <div>
@@ -219,7 +280,7 @@ export default function Discovery() {
                 <table className="w-full text-xs font-bold text-slate-600 text-left">
                   <thead>
                     <tr className="bg-slate-50 text-slate-400 border-b border-slate-100 text-[10px] tracking-wider">
-                      <th className="py-3 px-3">Strategy / Status</th>
+                      <th className="py-3 px-3">Strategies</th>
                       <th className="py-3 px-3">Symbol</th>
                       <th className="py-3 px-3">Timeframe</th>
                       <th className="py-3 px-3 text-right">Candidates</th>
@@ -228,11 +289,65 @@ export default function Discovery() {
                     </tr>
                   </thead>
                   <tbody>
-                    {runs.map((run) => (
+                    {runs.map((run) => {
+                      // Prefer server-resolved strategies from the saved
+                      // combination; fall back to lazily-fetched candidate
+                      // names for legacy runs that lack a combinationId.
+                      const inlineStrategies = run.strategies ?? [];
+                      const fallbackNames = candidateNamesByRunId[run.id] ?? [];
+                      const displayItems = inlineStrategies.length > 0
+                        ? inlineStrategies.map((s) => ({
+                            name: s.name,
+                            family: s.family,
+                          }))
+                        : fallbackNames.map((name) => ({ name, family: "" }));
+                      return (
                       <tr key={run.id} className="border-b border-slate-50 last:border-b-0 hover:bg-slate-50 transition-colors">
                         <td className="py-3 px-3">
                           <div className="flex flex-col gap-1">
-                            <span className="text-slate-800 font-extrabold">{run.algorithm.name}</span>
+                            {/* Algorithm type badge — single compact label, no redundant text */}
+                            <div className="flex items-center gap-2 flex-wrap">
+                              {run.algorithm.code === "domain_guided" && (
+                                <span className="text-[9px] font-black uppercase tracking-wider text-purple-700 bg-purple-50 px-1.5 py-0.5 rounded border border-purple-100">
+                                  Domain-guided
+                                </span>
+                              )}
+                              {run.algorithm.code === "random" && (
+                                <span className="text-[9px] font-black uppercase tracking-wider text-amber-700 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-100">
+                                  Random
+                                </span>
+                              )}
+                              {!["domain_guided", "random"].includes(run.algorithm.code) && (
+                                <span className="text-[9px] font-mono font-bold text-slate-400 px-1.5 py-0.5 rounded border bg-slate-50 border-slate-100">
+                                  {run.algorithm.code}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Specific strategies (e.g. MA + RSI + BB) */}
+                            {displayItems.length > 0 ? (
+                              <div className="flex flex-wrap items-center gap-1 mt-0.5">
+                                {displayItems.map((s, idx) => (
+                                  <span
+                                    key={idx}
+                                    className="flex items-center gap-1"
+                                    title={s.family ? `${s.name} (${s.family})` : s.name}
+                                  >
+                                    <span className={`text-[10px] font-extrabold px-1.5 py-0.5 rounded border ${familyBadge(s.family)}`}>
+                                      {s.name.length > 22 ? s.name.slice(0, 20) + "…" : s.name}
+                                    </span>
+                                    {idx < displayItems.length - 1 && (
+                                      <span className="text-slate-400 font-bold text-[10px]">+</span>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                            ) : run.status === "DONE" ? (
+                              <span className="text-[9px] text-slate-400 italic mt-0.5">
+                                {run.candidateCount > 0 ? "Loading strategy names…" : "No candidates"}
+                              </span>
+                            ) : null}
+
                             <StatusBadge status={run.status} />
                           </div>
                         </td>
@@ -254,7 +369,8 @@ export default function Discovery() {
                           </button>
                         </td>
                       </tr>
-                    ))}
+                    );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -267,10 +383,11 @@ export default function Discovery() {
             <div>
               <div className="font-extrabold text-slate-800 mb-1">Cách tạo một Discovery mới</div>
               <ol className="list-decimal pl-5 space-y-1">
-                <li>Mở một strategy ở cột trái.</li>
+                <li><strong>Option A — Combination Builder</strong>: vào <span className="font-mono font-bold text-blue-700">/combination</span>, chọn strategies theo nhóm (Trend/Momentum/Structure/…), bấm Run Combination — combination được lưu vào database.</li>
+                <li><strong>Option B — Single Strategy</strong>: mở một strategy ở cột trái.</li>
                 <li>Cấu hình parameters và validate.</li>
                 <li>Chọn symbol, algorithm, maxCandidates ở panel "Run Discovery".</li>
-                <li>Bấm <span className="font-bold text-blue-700">Run Discovery</span> — SearchRun sẽ xuất hiện trong bảng trên.</li>
+                <li>Bấm <span className="font-bold text-blue-700">Run Discovery</span> — SearchRun xuất hiện trong bảng dưới.</li>
                 <li>Bấm <span className="font-bold text-blue-700">View Results</span> để xem candidates và chạy Backtest.</li>
               </ol>
             </div>

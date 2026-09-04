@@ -263,6 +263,116 @@ export function buildStrategyRouter(deps: StrategyRouterDeps = {}): Router {
     res.json({ success: true as const, data: { strategy } });
   });
 
+  // ─── Saved Combinations ──────────────────────────────────────────────────────
+
+  /**
+   * POST /api/strategies/combinations
+   *
+   * Persist a user-created strategy combination to the saved_combinations table.
+   * The combination can then be used as the basis for a Domain-guided or
+   * Random Search run (via POST /api/search/start with the returned id in
+   * generatorConfig.combinationId, or simply by the user reviewing saved combos).
+   *
+   * Body:
+   *   name:        string  (required)
+   *   description: string  (optional)
+   *   operator:    "MAJORITY_VOTE" | "WEIGHTED"  (default WEIGHTED)
+   *   components:  Array<{ strategyId: string, weight: number, position: number }>
+   *   tags:        string[] (optional)
+   *   ownerId:     string   (optional)
+   *
+   * Response 201: { success: true, data: SavedCombinationDto }
+   * Response 400: { success: false, error: string }
+   */
+  const SaveCombinationSchema = z.object({
+    name: z.string().min(1, "name is required").max(255),
+    description: z.string().max(1000).optional(),
+    operator: z
+      .enum(["MAJORITY_VOTE", "WEIGHTED"])
+      .optional()
+      .default("WEIGHTED"),
+    components: z
+      .array(
+        z.object({
+          strategyId: z.string().min(1),
+          weight: z.number().min(0).max(1),
+          position: z.number().int().min(0),
+        }),
+      )
+      .min(1, "at least one component is required"),
+    tags: z.array(z.string().min(1).max(64)).max(50).optional().default([]),
+    ownerId: z.string().max(64).optional(),
+  });
+
+  router.post("/combinations", async (req: Request, res: Response, next: NextFunction) => {
+    const parsed = SaveCombinationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        error: "INVALID_BODY",
+        details: parsed.error.issues,
+      });
+      return;
+    }
+    try {
+      const prisma = getPrismaClient();
+      const record = await prisma.savedCombination.create({
+        data: {
+          name: parsed.data.name,
+          description: parsed.data.description,
+          operator: parsed.data.operator as never,
+          components: parsed.data.components as never,
+          tags: parsed.data.tags,
+          ownerId: parsed.data.ownerId,
+        },
+      });
+      res.status(201).json({
+        success: true as const,
+        data: toCombinationDto(record),
+      });
+    } catch (err) {
+      log.error({ err }, "strategy.combination.create.error");
+      next(err);
+    }
+  });
+
+  /**
+   * GET /api/strategies/combinations
+   *
+   * Lists all saved combinations, most recent first.
+   *
+   * Query: ?limit=20&cursor=<id>
+   *
+   * Response 200: { success: true, data: SavedCombinationDto[] }
+   */
+  router.get("/combinations", async (req: Request, res: Response, next: NextFunction) => {
+    try {
+      const limitRaw = req.query["limit"];
+      const cursor = req.query["cursor"];
+      const limit = (() => {
+        if (typeof limitRaw !== "string") return 50;
+        const n = Number.parseInt(limitRaw, 10);
+        return Number.isFinite(n) ? Math.min(Math.max(n, 1), 200) : 50;
+      })();
+
+      const prisma = getPrismaClient();
+      const rows = await prisma.savedCombination.findMany({
+        orderBy: { createdAt: "desc" },
+        take: limit,
+        ...(typeof cursor === "string" && cursor.length > 0
+          ? { cursor: { id: cursor }, skip: 1 }
+          : {}),
+      });
+      res.json({
+        success: true as const,
+        data: rows.map(toCombinationDto),
+      });
+    } catch (err) {
+      log.error({ err }, "strategy.combination.list.error");
+      next(err);
+    }
+  });
+
   return router;
 }
 
@@ -300,6 +410,57 @@ function toSavedStrategyDto(r: {
     description: r.description,
     jsonDef: r.jsonDef,
     source: r.source,
+    tags: r.tags,
+    ownerId: r.ownerId,
+    createdAt: r.createdAt.toISOString(),
+    updatedAt: r.updatedAt.toISOString(),
+  };
+}
+
+// ─── SavedCombination DTO ────────────────────────────────────────────────────
+
+export interface CombinationComponentDto {
+  readonly strategyId: string;
+  readonly weight: number;
+  readonly position: number;
+}
+
+export interface SavedCombinationDto {
+  readonly id: string;
+  readonly name: string;
+  readonly description: string | null;
+  readonly operator: "MAJORITY_VOTE" | "WEIGHTED";
+  readonly components: ReadonlyArray<CombinationComponentDto>;
+  readonly tags: ReadonlyArray<string>;
+  readonly ownerId: string | null;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+}
+
+function toCombinationDto(r: {
+  id: string;
+  name: string;
+  description: string | null;
+  operator: string;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  components: any;
+  tags: ReadonlyArray<string>;
+  ownerId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}): SavedCombinationDto {
+  const allowedOperators = ["MAJORITY_VOTE", "WEIGHTED"] as const;
+  type Operator = (typeof allowedOperators)[number];
+  const operator: Operator = (allowedOperators as readonly string[]).includes(r.operator)
+    ? (r.operator as Operator)
+    : "WEIGHTED";
+
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description,
+    operator,
+    components: (Array.isArray(r.components) ? r.components : []) as ReadonlyArray<CombinationComponentDto>,
     tags: r.tags,
     ownerId: r.ownerId,
     createdAt: r.createdAt.toISOString(),

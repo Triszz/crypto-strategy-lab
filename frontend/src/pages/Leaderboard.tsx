@@ -2,8 +2,10 @@
  * Leaderboard Page — Displays Top-K Ranked Trading Strategies.
  *
  * Features:
- * - Real REST API fetching via `fetchTopKLeaderboard({ symbol, timeframe })`
+ * - Real REST API fetching via `fetchTopKLeaderboard({ symbol, timeframe, strategyType, sortBy })`
  * - Realtime updates via WebSocket event `LeaderboardUpdated`
+ * - Dynamic Sorting dropdown (Overall Score, Return %, Winrate %, Max Drawdown, Sharpe)
+ * - Strategy Type Filter (BASE vs COMPOSITE)
  * - Rank Badges (🥇 Gold, 🥈 Silver, 🥉 Bronze)
  * - Modal to view `RankingHistory` graph/timeline for any strategy
  */
@@ -16,12 +18,15 @@ import {
   HelpCircle,
   Bell,
   History,
+  Layers,
+  SlidersHorizontal,
 } from 'lucide-react';
 import {
   fetchTopKLeaderboard,
   fetchLeaderboardHistory,
   type LeaderboardItemApi,
   type RankingHistoryItemApi,
+  type LeaderboardFilterParams,
 } from '../lib/leaderboardApi';
 import { on, connect } from '../lib/socket';
 import { HttpError } from '../lib/http';
@@ -29,6 +34,9 @@ import { HttpError } from '../lib/http';
 export default function Leaderboard() {
   const [symbolFilter, setSymbolFilter] = useState<string>('ALL');
   const [timeframeFilter, setTimeframeFilter] = useState<string>('ALL');
+  const [typeFilter, setTypeFilter] = useState<string>('ALL');
+  const [sortByFilter, setSortByFilter] = useState<LeaderboardFilterParams['sortBy']>('overallScore');
+
   const [leaderboard, setLeaderboard] = useState<LeaderboardItemApi[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +53,8 @@ export default function Leaderboard() {
       const data = await fetchTopKLeaderboard({
         symbol: symbolFilter === 'ALL' ? undefined : symbolFilter,
         timeframe: timeframeFilter === 'ALL' ? undefined : timeframeFilter,
+        strategyType: typeFilter === 'ALL' ? undefined : typeFilter,
+        sortBy: sortByFilter,
         limit: 20,
       });
       setLeaderboard(data);
@@ -54,7 +64,7 @@ export default function Leaderboard() {
     } finally {
       setIsLoading(false);
     }
-  }, [symbolFilter, timeframeFilter]);
+  }, [symbolFilter, timeframeFilter, typeFilter, sortByFilter]);
 
   useEffect(() => {
     void loadLeaderboard();
@@ -89,7 +99,7 @@ export default function Leaderboard() {
   const top3 = leaderboard[2];
 
   return (
-    <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto text-left">
+    <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto text-left font-sans">
       {/* Top Header */}
       <header className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
         <div>
@@ -98,13 +108,13 @@ export default function Leaderboard() {
             Bảng Xếp Hạng Chiến Lược (Leaderboard)
           </h2>
           <p className="text-xs text-slate-400 font-semibold mt-1">
-            Xếp hạng các chiến lược giao dịch có Score cao nhất từ Evaluator Engine (Cập nhật realtime qua WebSocket)
+            Xếp hạng các chiến lược đơn lẻ (Base) & kết hợp (Composite) tốt nhất (Cập nhật realtime qua WebSocket)
           </p>
         </div>
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2 bg-amber-50 text-amber-700 border border-amber-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
             <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-            <span>Leaderboard Module · Realtime Active</span>
+            <span>Leaderboard Module v2 · Dynamic Sort Active</span>
           </div>
           <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors">
             <HelpCircle className="w-5 h-5" />
@@ -119,6 +129,44 @@ export default function Leaderboard() {
       {/* Filter Control Bar */}
       <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-wrap gap-5 items-center justify-between">
         <div className="flex flex-wrap gap-4 items-center">
+          {/* Sort By Dropdown */}
+          <div className="flex items-center gap-2 bg-blue-50/70 border border-blue-200/60 px-3 py-1.5 rounded-xl">
+            <SlidersHorizontal className="w-3.5 h-3.5 text-blue-600" />
+            <label className="text-[10px] font-extrabold text-blue-700 uppercase tracking-wider">Sắp xếp theo:</label>
+            <div className="relative">
+              <select
+                value={sortByFilter}
+                onChange={(e) => setSortByFilter(e.target.value as LeaderboardFilterParams['sortBy'])}
+                className="appearance-none px-2.5 py-1 rounded-lg bg-white border border-blue-200 text-xs font-black text-blue-900 pr-7 cursor-pointer"
+              >
+                <option value="overallScore">Overall Score</option>
+                <option value="totalReturn">Total Return (%)</option>
+                <option value="winRate">Win Rate (%)</option>
+                <option value="maxDrawdown">Max Drawdown (Nhỏ nhất)</option>
+                <option value="sharpeRatio">Sharpe Ratio</option>
+              </select>
+              <ChevronDown className="w-3.5 h-3.5 text-blue-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Strategy Type Filter */}
+          <div className="flex items-center gap-2">
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Loại chiến lược:</label>
+            <div className="relative">
+              <select
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                className="appearance-none px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 pr-8 cursor-pointer"
+              >
+                <option value="ALL">Tất cả (Base & Composite)</option>
+                <option value="BASE">🧩 Chỉ Base Strategy</option>
+                <option value="COMPOSITE">🔗 Chỉ Composite Strategy</option>
+              </select>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            </div>
+          </div>
+
+          {/* Coin Filter */}
           <div className="flex items-center gap-2">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Cặp tiền:</label>
             <div className="relative">
@@ -136,6 +184,7 @@ export default function Leaderboard() {
             </div>
           </div>
 
+          {/* Timeframe Filter */}
           <div className="flex items-center gap-2">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Timeframe:</label>
             <div className="relative">
@@ -177,9 +226,12 @@ export default function Leaderboard() {
                 <span className="w-10 h-10 rounded-xl bg-slate-100 text-slate-600 font-black text-sm flex items-center justify-center border border-slate-200 shadow-xs">
                   🥈 #2
                 </span>
-                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                  Score: {top2.overallScore}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <TypeBadge type={top2.strategyType} />
+                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                    Score: {top2.overallScore}
+                  </span>
+                </div>
               </div>
               <div className="mt-4">
                 <h4 className="text-base font-extrabold text-slate-900">{top2.strategyName}</h4>
@@ -200,9 +252,12 @@ export default function Leaderboard() {
                 <span className="w-12 h-12 rounded-2xl bg-amber-500 text-white font-black text-lg flex items-center justify-center shadow-md shadow-amber-200">
                   🥇 #1
                 </span>
-                <span className="text-xs font-black px-3 py-1 rounded-full bg-amber-500 text-white shadow-xs">
-                  Score: {top1.overallScore}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <TypeBadge type={top1.strategyType} />
+                  <span className="text-xs font-black px-3 py-1 rounded-full bg-amber-500 text-white shadow-xs">
+                    Score: {top1.overallScore}
+                  </span>
+                </div>
               </div>
               <div className="mt-4">
                 <span className="text-[9px] font-black uppercase tracking-widest text-amber-600">QUÁN QUÂN HIGHEST SCORE</span>
@@ -234,9 +289,12 @@ export default function Leaderboard() {
                 <span className="w-10 h-10 rounded-xl bg-amber-100 text-amber-800 font-black text-sm flex items-center justify-center border border-amber-200 shadow-xs">
                   🥉 #3
                 </span>
-                <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
-                  Score: {top3.overallScore}
-                </span>
+                <div className="flex items-center gap-1.5">
+                  <TypeBadge type={top3.strategyType} />
+                  <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-100 text-amber-800">
+                    Score: {top3.overallScore}
+                  </span>
+                </div>
               </div>
               <div className="mt-4">
                 <h4 className="text-base font-extrabold text-slate-900">{top3.strategyName}</h4>
@@ -257,7 +315,9 @@ export default function Leaderboard() {
           <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
             <span>Bảng Xếp Hạng Chi Tiết ({leaderboard.length} chiến lược)</span>
           </h3>
-          <span className="text-xs font-bold text-slate-400">Tự động sắp xếp theo Overall Score DESC</span>
+          <span className="text-xs font-bold text-blue-600">
+            Sắp xếp theo: {sortByLabel(sortByFilter)}
+          </span>
         </div>
 
         {error && (
@@ -268,9 +328,10 @@ export default function Leaderboard() {
 
         <div className="overflow-x-auto rounded-xl border border-slate-100">
           <table className="w-full text-xs font-bold text-slate-600 text-left">
-            <thead className="bg-slate-50 text-slate-400 border-b border-slate-100 text-[10px] tracking-wider">
+            <thead className="bg-slate-50 text-slate-400 border-b border-slate-100 text-[10px] tracking-wider uppercase">
               <tr>
                 <th className="py-3 px-4 text-center">Thứ Hạng</th>
+                <th className="py-3 px-3 text-center">Loại</th>
                 <th className="py-3 px-4">Tên Chiến Lược</th>
                 <th className="py-3 px-3">Cặp Coin</th>
                 <th className="py-3 px-3">Timeframe</th>
@@ -285,14 +346,14 @@ export default function Leaderboard() {
             <tbody>
               {isLoading && leaderboard.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-slate-400 font-semibold">
+                  <td colSpan={11} className="py-8 text-center text-slate-400 font-semibold">
                     Đang tải dữ liệu Bảng xếp hạng...
                   </td>
                 </tr>
               ) : leaderboard.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="py-8 text-center text-slate-400 font-semibold">
-                    Chưa có chiến lược nào được đánh giá. Hãy chạy Backtest để đẩy dữ liệu lên Leaderboard!
+                  <td colSpan={11} className="py-8 text-center text-slate-400 font-semibold">
+                    Chưa có chiến lược nào phù hợp với bộ lọc. Hãy chạy Backtest để đẩy dữ liệu lên Leaderboard!
                   </td>
                 </tr>
               ) : (
@@ -307,6 +368,9 @@ export default function Leaderboard() {
                       }`}>
                         #{item.rank}
                       </span>
+                    </td>
+                    <td className="py-3 px-3 text-center">
+                      <TypeBadge type={item.strategyType} />
                     </td>
                     <td className="py-3 px-4 font-black text-slate-900">
                       {item.strategyName}
@@ -390,4 +454,36 @@ export default function Leaderboard() {
       )}
     </div>
   );
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+function TypeBadge({ type }: { type?: string }) {
+  const isComposite = type === 'COMPOSITE';
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[9px] font-black tracking-wider uppercase px-1.5 py-0.5 rounded border ${
+        isComposite
+          ? 'bg-purple-50 text-purple-700 border-purple-200'
+          : 'bg-blue-50 text-blue-700 border-blue-200'
+      }`}
+    >
+      {isComposite ? '🔗 COMPOSITE' : '🧩 BASE'}
+    </span>
+  );
+}
+
+function sortByLabel(sortBy?: string): string {
+  switch (sortBy) {
+    case 'totalReturn':
+      return 'Total Return (%)';
+    case 'winRate':
+      return 'Win Rate (%)';
+    case 'maxDrawdown':
+      return 'Max Drawdown (Nhỏ nhất)';
+    case 'sharpeRatio':
+      return 'Sharpe Ratio';
+    default:
+      return 'Overall Score DESC';
+  }
 }

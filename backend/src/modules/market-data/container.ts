@@ -81,7 +81,7 @@ export function buildMarketDataContainer(
     log,
   );
 
-  const persister = new CandlePersister(repo, log);
+  const persister = new CandlePersister(repo);
   const socketGateway = new SocketGateway(wsAdapter, service);
 
   const router = buildMarketDataRouter({

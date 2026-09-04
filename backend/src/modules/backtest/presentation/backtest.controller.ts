@@ -2,10 +2,18 @@ import type { Request, Response } from "express";
 import { getPrismaClient } from "../../../infrastructure/database";
 import { logger } from "../../../shared/logger/logger";
 import { BacktestService } from "../application/BacktestService";
+import { getBullMQBacktestQueue } from "../infrastructure/BullMQBacktestQueue";
 import { getBacktestQueue } from "../infrastructure/BacktestQueue";
 
 const backtestService = new BacktestService();
-const backtestQueue = getBacktestQueue();
+
+function getActiveQueue() {
+  try {
+    return getBullMQBacktestQueue();
+  } catch (_) {
+    return getBacktestQueue();
+  }
+}
 
 /**
  * Controller handling HTTP requests for the Backtesting engine.
@@ -45,6 +53,9 @@ export class BacktestController {
       const takeProfitPct = body.takeProfitPct;
       const sync = body.sync ?? false;
 
+      const fromTime = body.fromTime ? Number(body.fromTime) : undefined;
+      const toTime = body.toTime ? Number(body.toTime) : undefined;
+
       const params = {
         candidateId,
         symbol,
@@ -53,6 +64,8 @@ export class BacktestController {
         initialCapital: Number(initialCapital),
         feePercent: Number(feePercent),
         slippageBps: Number(slippageBps),
+        fromTime,
+        toTime,
         stopLossPct: stopLossPct !== undefined ? Number(stopLossPct) : undefined,
         takeProfitPct: takeProfitPct !== undefined ? Number(takeProfitPct) : undefined,
       };
@@ -66,7 +79,7 @@ export class BacktestController {
         return;
       }
 
-      const jobProgress = await backtestQueue.addJob(params);
+      const jobProgress = await getActiveQueue().addJob(params);
       res.status(202).json({
         success: true,
         data: jobProgress,
@@ -87,7 +100,7 @@ export class BacktestController {
   public async getJobStatus(req: Request, res: Response): Promise<void> {
     try {
       const jobId = req.params.jobId || "";
-      const job = backtestQueue.getJobProgress(jobId);
+      const job = getActiveQueue().getJobProgress(jobId);
 
       if (!job) {
         res.status(404).json({

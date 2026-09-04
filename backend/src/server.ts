@@ -9,11 +9,17 @@ import { getEventBus } from "./shared/event-bus";
 import { buildMarketDataContainer } from "./modules/market-data";
 import { buildSearchContainer } from "./modules/search";
 import { buildNewsContainer } from "./modules/news/news.container";
-import { mountMarketData, mountSearch, mountStrategy } from "./api/routes";
+import { mountMarketData, mountSearch, mountStrategy, mountLoop } from "./api/routes";
 import { bootstrapStrategies } from "./modules/strategy";
+import { syncBuiltInStrategies } from "./modules/strategy/persistence/builtInStrategies";
+import { getPrismaClient } from "./infrastructure/database/prisma";
 import { EvaluationService } from "./modules/evaluation/application/evaluation.service";
+import { getEvaluationWorker } from "./modules/evaluation/infrastructure/evaluation.worker";
 import { LeaderboardService } from "./modules/leaderboard/application/leaderboard.service";
+import { LoopOrchestratorService } from "./modules/leaderboard/application/loop-orchestrator.service";
+import { LoopOrchestratorRunner } from "./modules/leaderboard/application/loop-orchestrator-runner";
 import { PrismaLeaderboardRepository } from "./modules/leaderboard/infrastructure/prisma-leaderboard.repository";
+import { getBullMQBacktestQueue, getBullMQBacktestWorker } from "./modules/backtest";
 
 /**
  * Process entrypoint. Responsibilities:
@@ -37,9 +43,17 @@ async function main(): Promise<void> {
   getEventBus();
   getRedisConnection();
 
+  // Bootstrap BullMQ Backtest Queue & Worker early so it listens to StrategyGenerated events
+  getBullMQBacktestQueue();
+  getBullMQBacktestWorker();
+
   // Instantiate Event Listeners for Evaluation and Leaderboard modules
   new EvaluationService();
+  // Bootstrap the EvaluationWorker so it starts consuming jobs from the "evaluation" queue.
+  const evaluationWorker = getEvaluationWorker();
+  evaluationWorker.start();
   new LeaderboardService(new PrismaLeaderboardRepository());
+  const loopOrchestrator = new LoopOrchestratorService();
 
   const app = createApp();
   const httpServer = http.createServer(app);
@@ -62,6 +76,19 @@ async function main(): Promise<void> {
   const search = buildSearchContainer();
   mountSearch(search);
 
+  // Build the Strategy/Search-side Loop runner. It consumes
+  // `NewTopStrategyFound` published by LeaderboardService and turns
+  // each Top-1 into a new SearchRun via LoopMutationGenerator. The
+  // runner reuses `search.repository` + `search.strategyVersionMapper`
+  // so no second pipeline is created.
+  const loopRunner = new LoopOrchestratorRunner({
+    searchRepository: search.repository,
+    strategyVersionMapper: search.strategyVersionMapper,
+    candidateCount: 5,
+  });
+  loopRunner.startListening();
+  mountLoop({ orchestrator: loopOrchestrator, runner: loopRunner });
+
   // Build and start the News module.
   const news = buildNewsContainer(
     undefined,
@@ -72,6 +99,7 @@ async function main(): Promise<void> {
 
   // Mount Strategy catalogue routes (stateless, no container needed).
   bootstrapStrategies();
+  await syncBuiltInStrategies(getPrismaClient());
   mountStrategy();
 
   await new Promise<void>((resolve, reject) => {
@@ -101,7 +129,7 @@ async function main(): Promise<void> {
   // health checks immediately while backfill + WS connect happen.
   void marketStartPromise;
 
-  installShutdown(httpServer, marketData, search, news);
+  installShutdown(httpServer, marketData, search, news, evaluationWorker);
 }
 
 function installShutdown(
@@ -109,6 +137,7 @@ function installShutdown(
   marketData: ReturnType<typeof buildMarketDataContainer>,
   _search: ReturnType<typeof buildSearchContainer>,
   news: ReturnType<typeof buildNewsContainer>,
+  evaluationWorker: ReturnType<typeof getEvaluationWorker>,
 ): void {
   let shuttingDown = false;
   const shutdown = async (signal: NodeJS.Signals): Promise<void> => {
@@ -146,6 +175,12 @@ function installShutdown(
       await closeRedisConnection();
     } catch (err) {
       logger.warn({ err }, "Redis close error");
+    }
+
+    try {
+      await evaluationWorker.stop();
+    } catch (err) {
+      logger.warn({ err }, "EvaluationWorker shutdown error");
     }
 
     try {

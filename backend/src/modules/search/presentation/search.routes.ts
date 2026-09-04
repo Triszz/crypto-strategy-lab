@@ -29,6 +29,7 @@ import type { SearchService } from "../application/SearchService";
 import type { Logger } from "../../../shared/logger/logger";
 import { logger as rootLogger } from "../../../shared/logger/logger";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
+import { getStrategyRegistry } from "../../strategy/domain/StrategyRegistry";
 
 const StartSearchSchema = z.object({
   algorithmId: z.string().uuid(),
@@ -269,10 +270,11 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
 
       const summaries = await Promise.all(
         runs.map(async (r) => {
-          const [algorithm, symbol, candidateCount] = await Promise.all([
+          const [algorithm, symbol, candidateCount, strategies] = await Promise.all([
             deps.service.getAlgorithmSummary(r.algorithmId),
             deps.service.getSymbolSummary(r.symbolId),
             deps.service.countCandidatesByRun(r.id),
+            getStrategiesForRun(r.config, r.id),
           ]);
           return {
             id: r.id,
@@ -282,6 +284,7 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
             algorithm,
             symbol,
             candidateCount,
+            strategies,
             startedAt: r.startedAt?.toISOString() ?? null,
             finishedAt: r.finishedAt?.toISOString() ?? null,
             createdAt: r.createdAt.toISOString(),
@@ -453,4 +456,237 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
   });
 
   return router;
+}
+
+/**
+ * One component of a saved combination — name, family, and position
+ * within the combination (0 = first, 1 = second, …).
+ */
+export interface CombinationStrategySummary {
+  readonly name: string;
+  readonly family: string;
+  readonly position: number;
+}
+
+/**
+ * Resolve the strategies referenced by a SearchRun's combination.
+ *
+ * Two resolution paths are attempted in order:
+ *
+ *   1. **saved_combinations** (preferred) — reads `config.combinationId`,
+ *      loads the row from `saved_combinations`, then maps each
+ *      `components[].strategyId` to its BASE `StrategyVersion`. The
+ *      latest active version's `name` and family are returned. This is
+ *      the "user's original selection" path.
+ *
+ *   2. **composite_components** (fallback) — walks every
+ *      `CandidateStrategy` produced by this run; for any `COMPOSITE`
+ *      candidate it pulls the child BASE `StrategyVersion`s from
+ *      `composite_components`. The union of these BASE strategies,
+ *      ordered by their canonical position, is returned. This works
+ *      even when the `saved_combinations` table hasn't been migrated
+ *      yet (the live Supabase DB is currently missing that table).
+ *
+ *      For pure BASE runs, the candidate list itself is the source.
+ *
+ * Returns an empty array on any failure — Discovery UI must never
+ * break because of a missing combination reference.
+ */
+async function getStrategiesForRun(
+  config: unknown,
+  runId: string,
+): Promise<CombinationStrategySummary[]> {
+  if (!config || typeof config !== "object") return [];
+
+  const prisma = getPrismaClient();
+
+  // ── Path 1: saved_combinations (preferred when the table exists) ──
+  const combinationId = (config as { combinationId?: unknown }).combinationId;
+  if (typeof combinationId === "string" && combinationId.length > 0) {
+    try {
+      const combo = await prisma.savedCombination.findUnique({
+        where: { id: combinationId },
+      });
+      const rawComponents: Array<{
+        strategyId?: unknown;
+        position?: unknown;
+      }> = Array.isArray(combo?.components)
+        ? (combo!.components as Array<{ strategyId?: unknown; position?: unknown }>)
+        : [];
+
+      if (rawComponents.length > 0) {
+        const fromSaved = await resolveStrategiesFromComponentRefs(
+          prisma,
+          rawComponents,
+        );
+        if (fromSaved.length > 0) return fromSaved;
+      }
+    } catch {
+      // saved_combinations table likely doesn't exist yet — fall through
+      // to the candidate-based resolver below.
+    }
+  }
+
+  // ── Path 2: derive from candidates (works without saved_combinations) ──
+  try {
+    return await resolveStrategiesFromCandidates(prisma, runId);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Map a list of {strategyId, position} refs (from saved_combinations)
+ * to BASE StrategyVersion summaries.
+ */
+async function resolveStrategiesFromComponentRefs(
+  prisma: ReturnType<typeof getPrismaClient>,
+  rawComponents: ReadonlyArray<{ strategyId?: unknown; position?: unknown }>,
+): Promise<CombinationStrategySummary[]> {
+  const strategyIds = [
+    ...new Set(
+      rawComponents
+        .map((c) =>
+          typeof c.strategyId === "string" && c.strategyId.length > 0
+            ? c.strategyId
+            : null,
+        )
+        .filter((s): s is string => s !== null),
+    ),
+  ];
+  if (strategyIds.length === 0) return [];
+
+  // Prefer the in-process StrategyRegistry as the source of truth for
+  // taxonomy, but fall back to the DB family if not registered.
+  const registry = getStrategyRegistry();
+  const registryFamilyByRef = new Map<string, string>();
+  for (const id of strategyIds) {
+    const strat = registry.resolve(id);
+    if (strat?.family) registryFamilyByRef.set(id, String(strat.family));
+  }
+
+  const versions = await prisma.strategyVersion.findMany({
+    where: { implementationRef: { in: strategyIds }, isActive: true },
+    orderBy: { createdAt: "desc" },
+    include: { definition: { select: { family: true } } },
+  });
+
+  const latestByRef = new Map<string, { name: string; family: string }>();
+  for (const v of versions) {
+    if (latestByRef.has(v.implementationRef)) continue;
+    const family =
+      registryFamilyByRef.get(v.implementationRef) ??
+      (v.definition?.family ? String(v.definition.family) : "unknown");
+    latestByRef.set(v.implementationRef, { name: v.name, family });
+  }
+
+  const result: CombinationStrategySummary[] = [];
+  for (const c of rawComponents) {
+    if (typeof c.strategyId !== "string") continue;
+    const meta = latestByRef.get(c.strategyId);
+    if (!meta) continue;
+    const position =
+      typeof c.position === "number" && Number.isFinite(c.position)
+        ? c.position
+        : result.length;
+    result.push({ name: meta.name, family: meta.family, position });
+  }
+  return result;
+}
+
+/**
+ * Derive the strategies that participated in a SearchRun by walking
+ * its candidates. For COMPOSITE candidates, this returns the union of
+ * the BASE strategies referenced through `composite_components`,
+ * ordered by their canonical position. For pure BASE runs, it returns
+ * the unique BASE strategies seen across the candidates.
+ */
+async function resolveStrategiesFromCandidates(
+  prisma: ReturnType<typeof getPrismaClient>,
+  runId: string,
+): Promise<CombinationStrategySummary[]> {
+  const candidates = await prisma.candidateStrategy.findMany({
+    where: { searchRunId: runId },
+    select: {
+      strategyVersionId: true,
+      strategyVersion: {
+        select: {
+          implementationRef: true,
+          name: true,
+          definition: { select: { type: true } },
+        },
+      },
+    },
+  });
+  if (candidates.length === 0) return [];
+
+  // Registry lookup for canonical taxonomy (so COMPOSITE children get
+  // correct family even if DB family is stale).
+  const registry = getStrategyRegistry();
+  const registryFamilyByRef = new Map<string, string>();
+  const collectRegistryFamily = (ref: string) => {
+    if (registryFamilyByRef.has(ref)) return;
+    const s = registry.resolve(ref);
+    if (s?.family) registryFamilyByRef.set(ref, String(s.family));
+  };
+
+  const compositeVersionIds: string[] = [];
+  for (const c of candidates) {
+    const ref = c.strategyVersion?.implementationRef;
+    if (typeof ref === "string") collectRegistryFamily(ref);
+    if (c.strategyVersion?.definition?.type === "COMPOSITE") {
+      compositeVersionIds.push(c.strategyVersionId);
+    }
+  }
+
+  // No COMPOSITE candidates → all candidates are BASE; show each
+  // distinct BASE strategy that appeared, preserving run order.
+  if (compositeVersionIds.length === 0) {
+    const seen = new Set<string>();
+    const out: CombinationStrategySummary[] = [];
+    for (const c of candidates) {
+      const ref = c.strategyVersion?.implementationRef;
+      if (typeof ref !== "string" || seen.has(ref)) continue;
+      seen.add(ref);
+      const name = c.strategyVersion?.name ?? ref;
+      const family = registryFamilyByRef.get(ref) ?? "unknown";
+      out.push({ name, family, position: out.length });
+    }
+    return out;
+  }
+
+  // Walk composite_components for each COMPOSITE version referenced
+  // by a candidate. Deduplicate by implementationRef, keep the lowest
+  // observed position for a stable display order.
+  const components = await prisma.compositeComponent.findMany({
+    where: { compositeVersionId: { in: compositeVersionIds } },
+    orderBy: [{ compositeVersionId: "asc" }, { position: "asc" }],
+    include: {
+      componentVersion: {
+        select: {
+          implementationRef: true,
+          name: true,
+          definition: { select: { family: true } },
+        },
+      },
+    },
+  });
+
+  const byRef = new Map<string, CombinationStrategySummary>();
+  for (const c of components) {
+    const ref = c.componentVersion.implementationRef;
+    if (byRef.has(ref)) continue;
+    collectRegistryFamily(ref);
+    const family =
+      registryFamilyByRef.get(ref) ??
+      (c.componentVersion.definition?.family
+        ? String(c.componentVersion.definition.family)
+        : "unknown");
+    byRef.set(ref, {
+      name: c.componentVersion.name,
+      family,
+      position: c.position,
+    });
+  }
+  return [...byRef.values()].sort((a, b) => a.position - b.position);
 }

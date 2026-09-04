@@ -158,11 +158,6 @@ export default function StrategyEngine() {
     setSaveSuccessId(null);
   }
 
-  /** Reset the editor to empty/initial state. */
-  function resetEditor() {
-    applyStrategyJson(EMPTY_JSON);
-  }
-
   // ─── Mount: restore active strategy from localStorage + load history ──
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -278,11 +273,7 @@ export default function StrategyEngine() {
         source: 'USER_PROMPT',
         tags: strategyTags,
       });
-      const warn =
-        result.validation?.warnings && result.validation.warnings.length > 0
-          ? result.validation.warnings.join(' • ')
-          : undefined;
-      applyStrategyJson(result, warn);
+      applyStrategyJson(result, undefined);
     } catch (err) {
       const apiErr = err as Error & { code?: string; validation?: ValidationResponse };
       // Issue 5: Only write to promptError, never to urlImportError
@@ -318,11 +309,7 @@ export default function StrategyEngine() {
 
     try {
       const result = await importStrategyFromUrl({ url, tags: strategyTags });
-      const warn =
-        result.validation?.warnings && result.validation.warnings.length > 0
-          ? result.validation.warnings.join(' • ')
-          : undefined;
-      applyStrategyJson(result, warn);
+      applyStrategyJson(result, undefined);
     } catch (err) {
       const apiErr = err as Error & { code?: string };
       // Issue 4: Map machine-readable codes to user-friendly messages
@@ -495,7 +482,6 @@ export default function StrategyEngine() {
   // ─── Render ─────────────────────────────────────────────────────────
 
   const isBusy = isAnalyzing || isExtracting || isValidating || isSaving || isRestoring;
-  const hasDomainErrors = validation?.ok === false && (validation.errors?.length ?? 0) > 0;
 
   return (
     <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto">

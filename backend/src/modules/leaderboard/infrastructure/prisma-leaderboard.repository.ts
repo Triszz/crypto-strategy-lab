@@ -21,6 +21,7 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
     });
 
     const currentRank = existing ? existing.rank : 999;
+    const strategyType = entry.strategyType || "BASE";
 
     await this.prisma.leaderboardEntry.upsert({
       where: {
@@ -31,9 +32,13 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
         },
       },
       update: {
+        strategyType,
         totalReturn: entry.totalReturn,
         winRate: entry.winRate,
         maxDrawdown: entry.maxDrawdown,
+        sharpeRatio: entry.sharpeRatio !== undefined ? entry.sharpeRatio : null,
+        sortinoRatio: entry.sortinoRatio !== undefined ? entry.sortinoRatio : null,
+        calmarRatio: entry.calmarRatio !== undefined ? entry.calmarRatio : null,
         numTrades: entry.numTrades,
         overallScore: entry.overallScore,
         lastEvaluatedAt: new Date(),
@@ -42,9 +47,13 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
         strategyVersionId: entry.strategyVersionId,
         symbolId: entry.symbolId,
         timeframe: entry.timeframe,
+        strategyType,
         totalReturn: entry.totalReturn,
         winRate: entry.winRate,
         maxDrawdown: entry.maxDrawdown,
+        sharpeRatio: entry.sharpeRatio !== undefined ? entry.sharpeRatio : null,
+        sortinoRatio: entry.sortinoRatio !== undefined ? entry.sortinoRatio : null,
+        calmarRatio: entry.calmarRatio !== undefined ? entry.calmarRatio : null,
         numTrades: entry.numTrades,
         overallScore: entry.overallScore,
         rank: currentRank,
@@ -71,7 +80,7 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
     await this.prisma.$transaction(async (tx) => {
       for (let i = 0; i < entries.length; i++) {
         const newRank = i + 1;
-        const entry = entries[i];
+        const entry = entries[i]!;
 
         if (entry.rank !== newRank) {
           await tx.leaderboardEntry.update({
@@ -93,12 +102,16 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
           strategyVersionId: entry.strategyVersionId,
           strategyName: entry.strategyVersion?.name || "Strategy",
           strategyVersion: entry.strategyVersion?.version || "1.0.0",
+          strategyType: entry.strategyType || "BASE",
           symbolId: entry.symbolId,
           symbolCode: entry.symbol?.symbol || "BTCUSDT",
           timeframe: entry.timeframe,
           totalReturn: Number(entry.totalReturn),
           winRate: Number(entry.winRate),
           maxDrawdown: Number(entry.maxDrawdown),
+          sharpeRatio: entry.sharpeRatio ? Number(entry.sharpeRatio) : undefined,
+          sortinoRatio: entry.sortinoRatio ? Number(entry.sortinoRatio) : undefined,
+          calmarRatio: entry.calmarRatio ? Number(entry.calmarRatio) : undefined,
           numTrades: entry.numTrades,
           overallScore: Number(entry.overallScore),
           rank: newRank,
@@ -116,21 +129,31 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
 
     if (options.symbolId) {
       whereClause.symbolId = options.symbolId;
-    } else if (options.symbol) {
+    } else if (options.symbol && options.symbol !== "ALL") {
       const sym = await this.prisma.symbol.findFirst({
         where: { symbol: options.symbol.toUpperCase() },
       });
       if (sym) whereClause.symbolId = sym.id;
     }
 
-    if (options.timeframe) {
+    if (options.timeframe && options.timeframe !== "ALL") {
       whereClause.timeframe = options.timeframe;
     }
 
-    // Fix Bug #2 (spec 04-leaderboard-module.md §7.2): Order by overallScore DESC instead of rank ASC
+    if (options.strategyType && options.strategyType !== "ALL") {
+      whereClause.strategyType = options.strategyType.toUpperCase();
+    }
+
+    // Dynamic sorting based on options.sortBy
+    let orderByField: Record<string, "desc" | "asc"> = { overallScore: "desc" };
+    if (options.sortBy === "totalReturn") orderByField = { totalReturn: "desc" };
+    else if (options.sortBy === "winRate") orderByField = { winRate: "desc" };
+    else if (options.sortBy === "maxDrawdown") orderByField = { maxDrawdown: "asc" }; // lower MDD is better
+    else if (options.sortBy === "sharpeRatio") orderByField = { sharpeRatio: "desc" };
+
     const entries = await this.prisma.leaderboardEntry.findMany({
       where: whereClause,
-      orderBy: { overallScore: "desc" },
+      orderBy: orderByField,
       take: limit,
       include: {
         strategyVersion: true,
@@ -143,12 +166,16 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
       strategyVersionId: entry.strategyVersionId,
       strategyName: entry.strategyVersion?.name || "Strategy",
       strategyVersion: entry.strategyVersion?.version || "1.0.0",
+      strategyType: entry.strategyType || "BASE",
       symbolId: entry.symbolId,
       symbolCode: entry.symbol?.symbol || "BTCUSDT",
       timeframe: entry.timeframe,
       totalReturn: Number(entry.totalReturn),
       winRate: Number(entry.winRate),
       maxDrawdown: Number(entry.maxDrawdown),
+      sharpeRatio: entry.sharpeRatio ? Number(entry.sharpeRatio) : undefined,
+      sortinoRatio: entry.sortinoRatio ? Number(entry.sortinoRatio) : undefined,
+      calmarRatio: entry.calmarRatio ? Number(entry.calmarRatio) : undefined,
       numTrades: entry.numTrades,
       overallScore: Number(entry.overallScore),
       rank: index + 1,

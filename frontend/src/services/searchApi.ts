@@ -260,6 +260,17 @@ export interface SearchRunListItem {
     readonly quoteAsset: string;
   };
   readonly candidateCount: number;
+  /**
+   * Strategies resolved from the run's saved combination (if any).
+   * Populated only when the SearchRun was started from the Combination
+   * Builder with `generatorConfig.combinationId`. Each entry preserves
+   * the position from the original combination (0-based).
+   */
+  readonly strategies: ReadonlyArray<{
+    readonly name: string;
+    readonly family: string;
+    readonly position: number;
+  }>;
   readonly startedAt: string | null;
   readonly finishedAt: string | null;
   readonly createdAt: string;

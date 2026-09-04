@@ -9,6 +9,8 @@ import Backtest from './pages/Backtest';
 import NewsCrawler from './pages/NewsCrawler';
 import Settings from './pages/Settings';
 import Search from './pages/Search';
+import Combination from './pages/Combination';
+import Loop from './pages/Loop';
 
 export default function App() {
   return (
@@ -20,11 +22,13 @@ export default function App() {
           <Route path="/strategy-engine" element={<StrategyEngine />} />
           <Route path="/strategy" element={<Strategy />} />
           <Route path="/strategy/:strategyId" element={<Strategy />} />
+          <Route path="/combination" element={<Combination />} />
           <Route path="/search" element={<Navigate to="/strategy" replace />} />
           <Route path="/search/:searchRunId" element={<Search />} />
           <Route path="/discovery" element={<Discovery />} />
           <Route path="/leaderboard" element={<Leaderboard />} />
           <Route path="/backtest" element={<Backtest />} />
+          <Route path="/loop" element={<Loop />} />
           <Route path="/news-crawler" element={<NewsCrawler />} />
           <Route path="/settings" element={<Settings />} />
         </Route>

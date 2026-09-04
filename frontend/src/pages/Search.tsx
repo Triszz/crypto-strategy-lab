@@ -23,6 +23,9 @@ import {
   StopCircle,
   Hourglass,
   PlayCircle,
+  FlaskConical,
+  ChevronRight,
+  Loader2,
 } from "lucide-react";
 import {
   getSearchRun,
@@ -33,6 +36,10 @@ import {
   type CandidateItem,
 } from "../services/searchApi";
 import { backtestApi } from "../services/backtestApi";
+import {
+  getLoopStatus,
+  type LoopStatusResponse,
+} from "../services/loopApi";
 
 // ─── Lifecycle UI helpers ──────────────────────────────────────────────────────
 
@@ -398,6 +405,139 @@ function ErrorState({ message, onBack }: { message: string; onBack: () => void }
   );
 }
 
+// ─── Continuous Strategy Loop Status Card ───────────────────────────────────
+
+interface LoopStatusCardProps {
+  loopId: string | null;
+  status: LoopStatusResponse | null;
+  loading: boolean;
+  error: string | null;
+  startError: string | null;
+  onView: () => void;
+}
+
+const LOOP_STATUS_LABELS: Record<string, string> = {
+  RUNNING: "Running",
+  PAUSED: "Paused",
+  STOPPED_MAX_CANDIDATES: "Stopped (max candidates)",
+  STOPPED_TIMEOUT: "Stopped (timeout)",
+  STOPPED_NO_IMPROVEMENT: "Stopped (no improvement)",
+  STOPPED_MANUAL: "Stopped (manual)",
+  STOPPED: "Stopped",
+};
+
+function loopBadgeClass(status: string): string {
+  if (status === "RUNNING") return "bg-emerald-50 text-emerald-700 border-emerald-200";
+  if (status === "PAUSED") return "bg-amber-50 text-amber-700 border-amber-200";
+  if (status && status.startsWith("STOPPED")) return "bg-slate-100 text-slate-600 border-slate-200";
+  return "bg-slate-50 text-slate-500 border-slate-200";
+}
+
+function LoopStatusCard({
+  loopId,
+  status,
+  loading,
+  error,
+  startError,
+  onView,
+}: LoopStatusCardProps) {
+  // Hide entirely if no loopId was forwarded (the Search page can be
+  // opened directly from the catalogue without a Loop attached).
+  if (!loopId) return null;
+
+  const statusText = status ? (LOOP_STATUS_LABELS[status.status] ?? status.status) : "—";
+  const iteration = status
+    ? `${status.currentIteration} / ${status.maxIterations}`
+    : "—";
+  const candidates = status
+    ? `${status.totalEvaluated} / ${status.maxCandidates}`
+    : "—";
+  const bestScore = status ? status.bestScoreSoFar.toFixed(2) : "—";
+
+  return (
+    <article
+      data-testid="continuous-loop-status-card"
+      className="bg-gradient-to-br from-blue-50/60 to-indigo-50/40 border border-blue-100/60 rounded-2xl shadow-sm p-5 flex flex-col gap-4"
+    >
+      <div className="flex justify-between items-start gap-3">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
+            <FlaskConical className="w-4 h-4 text-blue-500" />
+            Continuous Strategy Loop
+          </h3>
+          <p className="text-[11px] text-slate-500 font-semibold">
+            Auto-started by Run Combination. Backend Loop Orchestrator
+            consumes <span className="font-mono">NewTopStrategyFound</span>
+            {" "}events to generate the next candidate.
+          </p>
+        </div>
+        <span
+          data-testid="continuous-loop-status"
+          className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-extrabold border ${loopBadgeClass(status?.status ?? "")}`}
+        >
+          {loading && <Loader2 className="w-3 h-3 animate-spin" />}
+          {statusText}
+        </span>
+      </div>
+
+      {startError && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 text-[11px] text-amber-700 font-semibold flex items-center gap-1.5">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          <span>
+            Auto-start reported: <span className="font-mono">{startError}</span>.
+            The Loop can still be started manually from the monitoring page.
+          </span>
+        </div>
+      )}
+
+      {error && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-3 py-2 text-[11px] text-red-700 font-semibold flex items-center gap-1.5">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          <span>Loop status fetch failed: {error}</span>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <LoopStat label="Iteration" value={iteration} />
+        <LoopStat label="Candidates Checked" value={candidates} />
+        <LoopStat label="Best Score" value={bestScore} />
+        <LoopStat
+          label="Loop ID"
+          value={<span className="font-mono text-[10px]">{loopId.slice(0, 12)}…</span>}
+        />
+      </div>
+
+      <button
+        onClick={onView}
+        data-testid="view-continuous-loop-btn"
+        className="self-end flex items-center gap-1.5 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold shadow-sm transition-colors"
+      >
+        View Continuous Loop
+        <ChevronRight className="w-3.5 h-3.5" />
+      </button>
+    </article>
+  );
+}
+
+function LoopStat({
+  label,
+  value,
+}: {
+  label: string;
+  value: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-1 bg-white/80 border border-blue-100 rounded-xl px-3 py-2.5">
+      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+        {label}
+      </span>
+      <span className="text-xs font-extrabold text-slate-800 font-mono break-all">
+        {value}
+      </span>
+    </div>
+  );
+}
+
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export default function SearchPage() {
@@ -411,6 +551,15 @@ export default function SearchPage() {
   // came from "Run Discovery". Falls back to null on direct navigation.
   const startResponse = (location.state as { startResponse?: StartSearchResponse } | null)?.startResponse ?? null;
 
+  // loopId is forwarded by Combination.handleSubmit() so the Search page
+  // can show the Continuous Strategy Loop status card and the "View
+  // Continuous Loop" button. We never invent a loopId here — we only
+  // use what the backend gave us (or the deterministic combo-<id> the
+  // Combination page fell back to).
+  const loopIdFromState = (location.state as { loopId?: string } | null)?.loopId ?? null;
+  const loopStartErrorFromState =
+    (location.state as { loopStartError?: string } | null)?.loopStartError ?? null;
+
   // ── State ──
   const [run, setRun] = useState<SearchRunSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -421,6 +570,11 @@ export default function SearchPage() {
   // polling stop so the list refreshes after a fresh DONE).
   const [candidates, setCandidates] = useState<CandidateItem[]>([]);
   const [candidatesError, setCandidatesError] = useState<string | null>(null);
+
+  // Continuous Strategy Loop status (compact card on the Search page).
+  const [loopStatus, setLoopStatus] = useState<LoopStatusResponse | null>(null);
+  const [loopLoading, setLoopLoading] = useState<boolean>(false);
+  const [loopError, setLoopError] = useState<string | null>(null);
 
   // Per-candidate backtest state: experimentId returned by /api/backtests/run
   // and any error message. Keyed by candidateId.
@@ -554,6 +708,54 @@ export default function SearchPage() {
     };
   }, [run?.status, searchRunId, loadOnce, loadCandidates]);
 
+  // ── Continuous Strategy Loop polling ─────────────────────────────────
+  // The Loop started automatically from Run Combination. We poll its
+  // status every 4s so the compact status card on this page stays in
+  // sync with /loop without duplicating the detailed monitoring UI.
+  // Cleanup is reliable via the ref pattern.
+  const loopTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadLoopStatus = useCallback(
+    async (id: string) => {
+      setLoopLoading(true);
+      try {
+        const status = await getLoopStatus(id);
+        setLoopStatus(status);
+        setLoopError(null);
+        return status;
+      } catch (err) {
+        const msg = (err as Error).message ?? "Failed to load loop status.";
+        setLoopError(msg);
+        return null;
+      } finally {
+        setLoopLoading(false);
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (!loopIdFromState) return;
+
+    // Initial fetch + clear any previous timer (StrictMode double-mount
+    // safety + react-router state changes).
+    void loadLoopStatus(loopIdFromState);
+    if (loopTimerRef.current) {
+      clearInterval(loopTimerRef.current);
+      loopTimerRef.current = null;
+    }
+    loopTimerRef.current = setInterval(() => {
+      void loadLoopStatus(loopIdFromState);
+    }, 4000);
+
+    return () => {
+      if (loopTimerRef.current) {
+        clearInterval(loopTimerRef.current);
+        loopTimerRef.current = null;
+      }
+    };
+  }, [loopIdFromState, loadLoopStatus]);
+
   // ── Render ──
 
   if (loading) return <LoadingState message="Loading search run…" />;
@@ -606,6 +808,21 @@ export default function SearchPage() {
 
       {/* Summary */}
       <RunSummaryCard run={run} startResponse={startResponse} />
+
+      {/* Continuous Strategy Loop status (auto-started by Run Combination) */}
+      <LoopStatusCard
+        loopId={loopIdFromState}
+        status={loopStatus}
+        loading={loopLoading}
+        error={loopError}
+        startError={loopStartErrorFromState}
+        onView={() => {
+          if (!loopIdFromState) return;
+          navigate(
+            `/loop?loopId=${encodeURIComponent(loopIdFromState)}`,
+          );
+        }}
+      />
 
       {/* Candidates — Search → Backtest integration */}
       <CandidatesSection

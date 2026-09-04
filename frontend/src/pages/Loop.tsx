@@ -20,6 +20,7 @@
  *   iteration execution) live in the backend `LoopOrchestratorRunner`.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Activity,
   Play,
@@ -68,9 +69,89 @@ function statusBadgeClass(status: string): string {
   }
 }
 
+/** Map loop status enum → human-readable explanation for the UI. */
+function stopReasonLabel(status: string): string {
+  switch (status) {
+    case "RUNNING":
+      return "Not stopped";
+    case "PAUSED":
+      return "Loop paused";
+    case "STOPPED_MAX_CANDIDATES":
+      return "Maximum candidates reached";
+    case "STOPPED_TIMEOUT":
+      return "Time limit reached";
+    case "STOPPED_NO_IMPROVEMENT":
+      return "No improvement limit reached";
+    case "STOPPED_MANUAL":
+      return "Manually stopped";
+    case "STOPPED":
+      return "Stopped";
+    default:
+      return "—";
+  }
+}
+
+/** Format a 0.8432 decimal as "+84.32%", or "—" when value is null. */
+function formatSignedPercent(value: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  const pct = value * 100;
+  const sign = pct > 0 ? "+" : "";
+  return `${sign}${pct.toFixed(2)}%`;
+}
+
+/** Format a 0.684 decimal as "68.40%", or "—" when value is null. */
+function formatPercent(value: number | null): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(2)}%`;
+}
+
+/** Pick the best human-readable strategy name for display. */
+function bestStrategyDisplayName(s: {
+  bestStrategyName?: string | null;
+  bestStrategyVersionId?: string | null;
+  bestStrategySymbolCode?: string | null;
+  bestStrategyTimeframe?: string | null;
+}): string {
+  if (s.bestStrategyName && s.bestStrategyName.trim().length > 0) {
+    return s.bestStrategyName;
+  }
+  if (s.bestStrategyVersionId) {
+    return s.bestStrategyVersionId.slice(0, 8) + "…";
+  }
+  return "(none yet)";
+}
+
+/** "BTCUSDT · 1h" suffix shown next to the strategy name when known. */
+function bestStrategyContext(s: {
+  bestStrategySymbolCode?: string | null;
+  bestStrategyTimeframe?: string | null;
+}): string {
+  const parts: string[] = [];
+  if (s.bestStrategySymbolCode) parts.push(s.bestStrategySymbolCode);
+  if (s.bestStrategyTimeframe) parts.push(s.bestStrategyTimeframe);
+  return parts.join(" · ");
+}
+
 export default function Loop() {
-  // Default loop id; the backend auto-creates one if none exists.
-  const [loopId, setLoopId] = useState<string>("main");
+  // Resolve loopId from ?loopId=... in the URL. Combination.handleSubmit
+  // navigates here via the "View Continuous Loop" button on /search/:id
+  // using the exact loopId returned by POST /api/loop/start — so this
+  // page always opens the right instance. When no query param is present
+  // we fall back to the legacy "main" id so direct visits to /loop still
+  // resolve to the persistent manual-test loop. The user can also override
+  // by typing into the input below.
+  const [searchParams] = useSearchParams();
+  const loopIdFromUrl = searchParams.get("loopId");
+  const [loopId, setLoopId] = useState<string>(loopIdFromUrl ?? "main");
+
+  // If the URL changes (e.g. user clicks "View Continuous Loop" again
+  // for a different Run Combination), keep the input in sync.
+  useEffect(() => {
+    if (loopIdFromUrl && loopIdFromUrl !== loopId) {
+      setLoopId(loopIdFromUrl);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loopIdFromUrl]);
 
   const [status, setStatus] = useState<LoopStatusResponse | null>(null);
   const [progress, setProgress] = useState<LoopProgressResponse | null>(null);
@@ -274,11 +355,16 @@ export default function Loop() {
               ) : (
                 <Activity className="w-6 h-6" />
               )}
-              <span className="text-xs">No loop started yet. Configure the loop and click Start.</span>
+              <span className="text-xs">
+                No Continuous Strategy Loop is currently running.{" "}
+                {loopIdFromUrl
+                  ? `No loop found for loopId=${loopId}.`
+                  : "Configure a Combination and click Run Combination to start one."}
+              </span>
             </div>
           ) : (
             <>
-              {/* Iteration / candidates / score */}
+              {/* Top metrics grid */}
               <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
                 <MetricBox
                   label="Iteration"
@@ -293,6 +379,22 @@ export default function Loop() {
                   value={status.bestScoreSoFar.toFixed(2)}
                 />
                 <MetricBox
+                  label="Best Strategy"
+                  value={bestStrategyDisplayName(status)}
+                />
+                <MetricBox
+                  label="Profit / Total Return"
+                  value={formatSignedPercent(status.bestTotalReturn)}
+                />
+                <MetricBox
+                  label="Win Rate"
+                  value={formatPercent(status.bestWinRate)}
+                />
+                <MetricBox
+                  label="Loop Status"
+                  value={loopStatus}
+                />
+                <MetricBox
                   label="No Improvement"
                   value={`${status.noImprovementCount} / ${status.noImprovementCap}`}
                 />
@@ -304,11 +406,19 @@ export default function Loop() {
                   label="Time Limit"
                   value={formatSeconds(status.timeLimitSeconds)}
                 />
+                <MetricBox
+                  label="Stop Reason"
+                  value={stopReasonLabel(loopStatus)}
+                />
+                <MetricBox
+                  label="Symbol · Timeframe"
+                  value={bestStrategyContext(status) || "—"}
+                />
               </div>
 
-              {/* Best strategy reference */}
+              {/* Best strategy reference (now shows profit / win rate etc.) */}
               <div className="border-t border-slate-100 pt-4 mt-2">
-                <h4 className="text-xs font-extrabold text-slate-700 mb-2">Current Best Strategy</h4>
+                <h4 className="text-xs font-extrabold text-slate-700 mb-2">Best Strategy Details</h4>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   <MetricBox
                     label="Strategy Version"

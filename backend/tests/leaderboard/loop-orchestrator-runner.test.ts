@@ -49,6 +49,18 @@ class FakePrisma {
   }> = [];
   public searchAlgorithms: Array<{ id: string; code: string }> = [];
   public symbols: Array<{ id: string; symbol: string }> = [];
+  public leaderboardEntries: Array<{
+    id: string;
+    strategyVersionId: string;
+    symbolId: string;
+    timeframe: string;
+    strategyType: string;
+    totalReturn: number;
+    winRate: number;
+    overallScore: number;
+    strategyVersion: { name: string };
+    symbol: { symbol: string };
+  }> = [];
   public createdRuns: Array<{ id: string; config: Record<string, unknown>; maxCandidates: number; status: string }> = [];
   public createdCandidates: Array<{ id: string; searchRunId: string; strategyVersionId: string; parameters: Record<string, unknown> }> = [];
 
@@ -187,6 +199,21 @@ class FakePrisma {
       if (where.id) return this.symbols.find((s) => s.id === where.id) ?? null;
       if (where.symbol) return this.symbols.find((s) => s.symbol === where.symbol) ?? null;
       return null;
+    },
+  };
+
+  // ── LeaderboardEntry ─────────────────────────────────────────────────
+  // Minimal stub matching the methods `LoopOrchestratorRunner.getRuntimeState`
+  // calls (a top-1 lookup ordered by overallScore).
+  public leaderboardEntry = {
+    findFirst: async ({
+      orderBy,
+    }: { where?: unknown; orderBy?: { overallScore?: "asc" | "desc" } }) => {
+      if (this.leaderboardEntries.length === 0) return null;
+      const dir = orderBy?.overallScore === "asc" ? 1 : -1;
+      return [...this.leaderboardEntries].sort(
+        (a, b) => dir * (a.overallScore - b.overallScore),
+      )[0]!;
     },
   };
 

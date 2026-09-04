@@ -24,6 +24,11 @@ export interface LoopStatusResponse {
   bestScoreSoFar: number;
   bestStrategyVersionId: string | null;
   bestStrategyType: string | null;
+  bestStrategyName: string | null;
+  bestStrategySymbolCode: string | null;
+  bestStrategyTimeframe: string | null;
+  bestTotalReturn: number | null;
+  bestWinRate: number | null;
   lastIterationSearchRunId: string | null;
   startedAt: string;
   updatedAt: string;

@@ -74,6 +74,16 @@ export interface LoopRuntimeState {
   readonly bestScoreSoFar: number;
   readonly bestStrategyVersionId: string | null;
   readonly bestStrategyType: string | null;
+  /** Human-readable name from the global Top-1 LeaderboardEntry. */
+  readonly bestStrategyName: string | null;
+  /** Symbol code (e.g. "BTCUSDT") for the Top-1 entry, or null. */
+  readonly bestStrategySymbolCode: string | null;
+  /** Timeframe for the Top-1 entry (e.g. "1h"), or null. */
+  readonly bestStrategyTimeframe: string | null;
+  /** Profit / Total Return of the Top-1 entry (decimal, 0.8432 = +84.32%). */
+  readonly bestTotalReturn: number | null;
+  /** Win rate of the Top-1 entry (decimal, 0.684 = 68.40%). */
+  readonly bestWinRate: number | null;
   readonly lastIterationSearchRunId: string | null;
   readonly startedAt: string;
   readonly updatedAt: string;
@@ -470,6 +480,18 @@ export class LoopOrchestratorRunner {
       orderBy: { iterationIndex: "desc" },
     });
 
+    // Resolve the global Top-1 LeaderboardEntry so the UI can display
+    // the strategy name, profit / total return, and win rate associated
+    // with the best score so far. We never re-calculate evaluation
+    // metrics here — we just read what the Leaderboard already stored.
+    const topEntry = await this.prisma.leaderboardEntry.findFirst({
+      orderBy: { overallScore: "desc" },
+      include: {
+        strategyVersion: { select: { name: true } },
+        symbol: { select: { symbol: true } },
+      },
+    });
+
     return {
       loopId: row.loopId,
       status: row.status,
@@ -480,8 +502,13 @@ export class LoopOrchestratorRunner {
       noImprovementCount: row.noImprovementCount,
       noImprovementCap: row.noImprovementCap,
       bestScoreSoFar: Number(row.bestScoreSoFar),
-      bestStrategyVersionId: null, // populated below
-      bestStrategyType: null,
+      bestStrategyVersionId: topEntry?.strategyVersionId ?? null,
+      bestStrategyType: topEntry?.strategyType ?? null,
+      bestStrategyName: topEntry?.strategyVersion?.name ?? null,
+      bestStrategySymbolCode: topEntry?.symbol?.symbol ?? null,
+      bestStrategyTimeframe: topEntry?.timeframe ?? null,
+      bestTotalReturn: topEntry ? Number(topEntry.totalReturn) : null,
+      bestWinRate: topEntry ? Number(topEntry.winRate) : null,
       lastIterationSearchRunId: lastIteration?.searchRunId ?? null,
       startedAt: row.startedAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),

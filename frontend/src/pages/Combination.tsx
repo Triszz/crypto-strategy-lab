@@ -50,6 +50,7 @@ import {
   type SearchAlgorithmItem,
   type SymbolItem,
 } from "../services/searchApi";
+import { startLoop, type LoopStatusResponse } from "../services/loopApi";
 
 // ─── Family Groups (Domain Rules — Module 6 §17.2) ───────────────────────────
 
@@ -417,13 +418,56 @@ export default function CombinationPage() {
         createdBy: "combination-builder",
       });
 
+      // ── Step 4: Auto-start the Continuous Strategy Loop ─────────────
+      // The team has decided that "Run Combination" must automatically
+      // start the Continuous Strategy Loop. The Loop is the source of
+      // truth for next-candidate generation once `NewTopStrategyFound`
+      // fires from the Leaderboard. We pass a deterministic loopId
+      // (derived from the SearchRun id) so multiple concurrent Run
+      // Combination actions can each have their own loop instance and
+      // the Search page can navigate to /loop?loopId=… without guessing.
+      //
+      // If the loop start fails for any reason we log it as a non-fatal
+      // warning — the Search results are still useful on their own.
+      let startedLoop: LoopStatusResponse | null = null;
+      let loopStartError: string | null = null;
+      try {
+        startedLoop = await startLoop({
+          // Use a deterministic loopId derived from the SearchRun so the
+          // same SearchRun always maps to the same Loop, but multiple
+          // concurrent combinations don't collide.
+          loopId: `combo-${result.searchRunId}`,
+          // Tight defaults so a quick demo shows progress; the dedicated
+          // /loop page lets the user override these manually.
+          maxCandidates: Math.max(10, maxCandidates * 5),
+          timeLimitSeconds: 1800,
+          noImprovementCap: 25,
+        });
+      } catch (err) {
+        loopStartError =
+          (err as Error).message ?? "Failed to auto-start Continuous Loop.";
+        // Non-fatal: continue without a Loop so the user can still see
+        // the SearchRun results. The dedicated /loop page will reflect
+        // the missing loop correctly.
+      }
+
       // Navigate to the live search page so the user can watch
-      // candidates populate and run Backtest on each one.
+      // candidates populate and run Backtest on each one. The loopId is
+      // forwarded via router state so Search.tsx can render the
+      // Continuous Loop status card and expose the "View Continuous
+      // Loop" button.
       navigate(`/search/${encodeURIComponent(result.searchRunId)}`, {
         state: {
           startResponse: result,
           combinationId: saved.id,
           combinationName: saved.name,
+          // Persist the real loopId from the backend response (never
+          // invent one in React). Falls back to the deterministic
+          // combo-<searchRunId> derived id so the Search page can still
+          // surface the loop card and "View Continuous Loop" button
+          // even if the backend response was unexpectedly minimal.
+          loopId: startedLoop?.loopId ?? `combo-${result.searchRunId}`,
+          loopStartError,
         },
       });
     } catch (err) {

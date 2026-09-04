@@ -207,14 +207,15 @@ export default function CombinationPage() {
     void loadSearchInputs();
   }, [loadStrategies, loadSearchInputs]);
 
-  // ── Group strategies by family (lowercase compare) ──
+  // ── Group strategies by family (lowercase compare, sentiment → information) ──
   const strategiesByFamily = useMemo(() => {
     const map: Record<string, StrategyListItem[]> = {};
     for (const g of FAMILY_GROUPS) map[g.key] = [];
     for (const s of strategies) {
       const family = (s.family ?? "").toLowerCase();
-      if (map[family]) {
-        map[family]!.push(s);
+      const groupKey = family === "sentiment" ? "information" : family;
+      if (map[groupKey]) {
+        map[groupKey]!.push(s);
       }
     }
     return map;
@@ -377,19 +378,25 @@ export default function CombinationPage() {
       // hard filter, so 2-strategy / 3-strategy combinations are also
       // emitted alongside the 3-strategy and 4-strategy domain-valid ones.
 
+      const selectedFamilies = saved.filledGroups.map((g) =>
+        g.key === "information" ? "SENTIMENT" : g.key.toUpperCase()
+      );
+
       const generatorConfig =
         saved.algorithmCode === "domain_guided"
           ? {
               minComponents: 2,
               maxComponents: Math.max(2, saved.filledGroups.length),
-              requiredFamilies: ["TREND", "MOMENTUM", "STRUCTURE"],
+              requiredFamilies: selectedFamilies,
               domainMode: "GUIDED" as const,
               mode: "EXHAUSTIVE" as const,
               combinationId: saved.id,
               // familyGroups retained for backward-compatible consumers
               familyGroups: saved.filledGroups.map((g) => ({
                 name: g.key,
-                families: [g.key.toUpperCase()],
+                families: [
+                  g.key === "information" ? "SENTIMENT" : g.key.toUpperCase(),
+                ],
               })),
             }
           : {

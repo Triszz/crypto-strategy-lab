@@ -464,16 +464,19 @@ function seedBaseDefinitions(state: MockState): {
   const rsiDefId = u(101);
   const bollDefId = u(102);
   const srDefId = u(103);
+  const sentimentDefId = u(104);
   state.definitions.push(
     { id: maDefId, type: "BASE", family: "TREND", description: null },
     { id: rsiDefId, type: "BASE", family: "MOMENTUM", description: null },
     { id: bollDefId, type: "BASE", family: "VOLATILITY", description: null },
     { id: srDefId, type: "BASE", family: "STRUCTURE", description: null },
+    { id: sentimentDefId, type: "BASE", family: "SENTIMENT", description: null },
   );
   const maVersionId = u(200);
   const rsiVersionId = u(201);
   const bollVersionId = u(202);
   const srVersionId = u(203);
+  const sentimentVersionId = u(204);
   state.versions.push(
     {
       id: maVersionId,
@@ -507,8 +510,16 @@ function seedBaseDefinitions(state: MockState): {
       version: "1.0.0",
       isActive: true,
     },
+    {
+      id: sentimentVersionId,
+      definitionId: sentimentDefId,
+      implementationRef: "strategy.sentiment.news",
+      name: "News Sentiment Strategy",
+      version: "1.0.0",
+      isActive: true,
+    },
   );
-  return { maDefId, rsiDefId, bollDefId, srDefId, maVersionId, rsiVersionId, bollVersionId, srVersionId };
+  return { maDefId, rsiDefId, bollDefId, srDefId, sentimentDefId, maVersionId, rsiVersionId, bollVersionId, srVersionId, sentimentVersionId };
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -960,12 +971,14 @@ describe("syncBuiltInStrategies — canonical upsert", () => {
     expect(upserted.has("strategy.rsi")).toBe(true);
     expect(upserted.has("strategy.bollinger")).toBe(true);
     expect(upserted.has("strategy.support_resistance")).toBe(true);
+    expect(upserted.has("strategy.sentiment.news")).toBe(true);
 
     const allImplRefs = new Set(state.versions.map((v) => v.implementationRef));
     expect(allImplRefs.has("strategy.ma")).toBe(true);
     expect(allImplRefs.has("strategy.rsi")).toBe(true);
     expect(allImplRefs.has("strategy.bollinger")).toBe(true);
     expect(allImplRefs.has("strategy.support_resistance")).toBe(true);
+    expect(allImplRefs.has("strategy.sentiment.news")).toBe(true);
 
     // Each canonical version must have type=BASE on its definition.
     for (const v of state.versions) {

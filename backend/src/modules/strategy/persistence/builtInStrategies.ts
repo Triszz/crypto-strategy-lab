@@ -39,8 +39,8 @@ export interface BuiltInStrategiesSyncReport {
   readonly removedLegacyDefinitions: number;
 }
 
-/** Family values the registry emits — strictly narrower than the Prisma enum. */
-type BuiltInFamily = Exclude<StrategyFamily, "SENTIMENT">;
+/** Family values the registry emits — mirrors the Prisma StrategyFamily enum. */
+type BuiltInFamily = StrategyFamily;
 
 /**
  * Run the synchronisation. Safe to call on every server boot — when the
@@ -412,6 +412,8 @@ function upperFamily(family: Strategy["family"]): BuiltInFamily | null {
       return "STRUCTURE";
     case "VOLATILITY":
       return "VOLATILITY";
+    case "SENTIMENT":
+      return "SENTIMENT";
     default:
       return null;
   }

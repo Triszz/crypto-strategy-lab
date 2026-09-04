@@ -247,9 +247,9 @@ describe("DomainGuidedGenerator", () => {
         freshState(),
       );
 
-      // C(4,2) + C(4,3) + C(4,4) = 6 + 4 + 1 = 11 unique combinations
-      expect(seen.length).toBe(11);
-      expect(result.result.totalQueued).toBe(11);
+      // C(5,2) + C(5,3) + C(5,4) = 10 + 10 + 5 = 25 unique combinations (with 5 built-in strategies)
+      expect(seen.length).toBe(25);
+      expect(result.result.totalQueued).toBe(25);
       expect(result.result.totalGenerated).toBeLessThan(2000);
       for (const c of seen) {
         expect(c.candidateType).toBe("COMPOSITE");
@@ -286,8 +286,8 @@ describe("DomainGuidedGenerator", () => {
         expect(ids).toContain("strategy.support_resistance");
       }
 
-      // Valid: MA + RSI + SR (3-strategy) and MA + RSI + SR + BB (4-strategy) = 2 total
-      expect(seen.length).toBe(2);
+      // Valid: MA + RSI + SR, MA + RSI + SR + BB, MA + RSI + SR + Sentiment = 3 total
+      expect(seen.length).toBe(3);
     });
 
     it("GUIDED mode emits ALL k-subsets and ranks domain-valid ones first", async () => {
@@ -310,8 +310,8 @@ describe("DomainGuidedGenerator", () => {
         freshState(),
       );
 
-      // GUIDED must NOT filter — all 11 k-subsets are emitted (6 + 4 + 1).
-      expect(seen.length).toBe(11);
+      // GUIDED must NOT filter — all 25 k-subsets are emitted (10 + 10 + 5).
+      expect(seen.length).toBe(25);
 
       // Components.length must always be ≥ 2.
       for (const cc of seen) {

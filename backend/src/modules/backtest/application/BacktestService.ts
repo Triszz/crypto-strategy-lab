@@ -241,6 +241,15 @@ export class BacktestService {
     let signalFn: StrategySignalFunction;
     const params = candidate.parameters as Record<string, unknown> ?? {};
 
+    let sentimentScore = 0;
+    try {
+      const { SentimentDataFeed } = await import("../../sentiment/application/sentiment-data-feed");
+      const feed = new SentimentDataFeed();
+      sentimentScore = await feed.getAverageSentimentScore(symbol, 24 * 3600 * 1000);
+    } catch {
+      sentimentScore = 0;
+    }
+
     if (strategyVersion.definition.type === "COMPOSITE") {
       // COMPOSITE: rebuild CombinationConfig from the candidate's stored JSON
       const configRaw = params._config as {
@@ -286,6 +295,7 @@ export class BacktestService {
           candle: hist[hist.length - 1]!,
           history: hist,
           parameters: {},
+          metadata: { sentimentScore },
         };
         return composite.analyze(ctx).side;
       };
@@ -308,6 +318,7 @@ export class BacktestService {
           candle: hist[hist.length - 1]!,
           history: hist,
           parameters: params,
+          metadata: { sentimentScore },
         };
         return strategy.analyze(ctx).side;
       };

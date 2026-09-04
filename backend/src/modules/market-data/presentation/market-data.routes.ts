@@ -1,10 +1,10 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { z } from "zod";
 import type { Logger } from "../../../shared/logger/logger";
-import type { BackfillService } from "../application/BackfillService";
-import type { ChartConfig } from "../domain/ChartConfig";
-import type { CandleRepository } from "../domain/CandleRepository.port";
-import { isSupportedTimeframe, type Timeframe } from "../domain/Timeframe";
+import type { BackfillService } from "../services/BackfillService";
+import type { ChartConfig } from "../core/types";
+import type { CandleRepository } from "../core/ports";
+import { isSupportedTimeframe, type Timeframe } from "../core/types";
 import { loadActiveChartConfigs } from "./chart-config-loader";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
 

@@ -1,17 +1,17 @@
 import { EventEmitter } from "node:events";
 import { setTimeout as wait } from "node:timers/promises";
-import { loadEnv } from "../../../config/env";
-import type { Logger } from "../../../shared/logger/logger";
-import type { Candle } from "../domain/Candle";
-import type { WsConnectionStatus } from "../domain/events";
-import type { Timeframe } from "../domain/Timeframe";
-import { getBinanceStreamName } from "../domain/Timeframe";
+import { loadEnv } from "../../../../config/env";
+import type { Logger } from "../../../../shared/logger/logger";
+import type { Candle } from "../../core/types";
+import type { WsConnectionStatus } from "../../core/events";
+import type { Timeframe } from "../../core/types";
+import { getBinanceStreamName } from "../../core/types";
 import {
   CandleNormalizer,
   type BinanceKlineWSMessage,
-} from "./CandleNormalizer";
+} from "./BinanceNormalizer";
 import { ReconnectStrategy } from "./ReconnectStrategy";
-import { HeartbeatMonitor } from "../realtime/HeartbeatMonitor";
+import { HeartbeatMonitor } from "../../realtime/HeartbeatMonitor";
 
 const HEARTBEAT_TIMEOUT_MS = 30_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
@@ -23,7 +23,7 @@ export interface BinanceWsConfig {
   connectTimeoutMs?: number;
 }
 
-export interface IBinanceWsAdapter {
+export interface IBinanceWsClient {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
   subscribe(symbol: string, timeframe: Timeframe): Promise<void>;
@@ -42,12 +42,12 @@ export interface IBinanceWsAdapter {
  * the same underlying stream — only the first subscriber triggers a
  * SUBSCRIBE, and we only UNSUBSCRIBE when the last one leaves.
  *
- * The adapter is intentionally permissive about connecting: the first
+ * The client is intentionally permissive about connecting: the first
  * `connect()` resolves as soon as the WebSocket opens and the initial
  * subscriptions are flushed. Subsequent reconnects are transparent —
  * consumers keep their event listeners attached.
  */
-export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter {
+export class BinanceWsClient extends EventEmitter implements IBinanceWsClient {
   private ws: WebSocket | null = null;
   private readonly refCount = new Map<string, number>();
   private readonly reconnect: ReconnectStrategy;
@@ -157,9 +157,8 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
       };
       this.handleClose(close.code ?? 1006, close.reason ?? "");
     });
-    ws.addEventListener("error", (event: Event) => {
-      const message = extractErrorMessage(event) ?? "unknown";
-      // this.logger.warn({ message }, "binance.ws.error");
+    ws.addEventListener("error", (_event: Event) => {
+      // WebSocket error - will be handled by close event
     });
 
     await opened;
@@ -262,9 +261,9 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
       } else {
         this.emit("CandleUpdating", candle);
       }
-    } catch (err) {
+    } catch (error) {
       this.logger.error(
-        { err: (err as Error).message },
+        { err: (error as Error).message },
         "binance.ws.parse.failed",
       );
     }
@@ -291,11 +290,8 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     });
     setTimeout(() => {
       if (this.stopped) return;
-      this.connect().catch((err) => {
-        // this.logger.error(
-        //   { err: (err as Error).message, attempt: this.reconnect.attempt },
-        //   "binance.ws.reconnect.failed",
-        // );
+      this.connect().catch(() => {
+        // Reconnect failed, will retry
         this.scheduleReconnect();
       });
     }, delay);

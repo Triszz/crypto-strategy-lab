@@ -1,8 +1,8 @@
 import { getPrismaClient } from "../../../infrastructure/database";
 import { getEventBus } from "../../../shared/event-bus/EventBus";
 import { logger } from "../../../shared/logger/logger";
-import { BinanceRestAdapter } from "../../market-data/infrastructure/BinanceRestAdapter";
-import { isSupportedTimeframe, type Timeframe } from "../../market-data/domain/Timeframe";
+import { BinanceRestClient } from "../../market-data/providers/binance/BinanceRestClient";
+import { isSupportedTimeframe, type Timeframe } from "../../market-data/core/types";
 import { Backtester } from "../domain/Backtester";
 import type {
   BacktestOptions,
@@ -372,7 +372,7 @@ export class BacktestService {
               { symbol, timeframeStr, fromTime, toTime },
               "Auto-backfilling historical candles from Binance REST API for backtest",
             );
-            const restAdapter = new BinanceRestAdapter({ logger });
+            const restAdapter = new BinanceRestClient({ logger });
             const fetched = await restAdapter.fetchKlines({
               symbol: symbol.toUpperCase(),
               timeframe: timeframeStr as Timeframe,

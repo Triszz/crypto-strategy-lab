@@ -1,19 +1,19 @@
 import type { Server as IOServer, Socket } from "socket.io";
 import { getSocketServer } from "../../../infrastructure/websocket/socket";
-import type { Candle } from "../domain/Candle";
+import type { Candle } from "../core/types";
 import {
   type Timeframe,
   isTimeframe,
   getStreamKey,
-} from "../domain/Timeframe";
+} from "../core/types";
 import {
   CANDLE_CLOSED_EVENT_VERSION,
   type CandleClosedEvent,
   type CandleUpdatingEvent,
-} from "../domain/events";
-import { candleKey, candleRoom } from "../domain/Candle";
-import type { BinanceWsAdapter } from "../infrastructure/BinanceWsAdapter";
-import type { MarketDataService } from "../application/MarketDataService";
+} from "../core/events";
+import { candleKey, candleRoom } from "../core/types";
+import type { MarketDataProvider } from "../core/ports";
+import type { MarketDataService } from "../services/MarketDataService";
 
 const MAX_TIMEFRAMES_PER_SUBSCRIBE = 4;
 
@@ -21,15 +21,14 @@ const MAX_TIMEFRAMES_PER_SUBSCRIBE = 4;
  * Owns the Socket.IO surface that fronts the Market Data module.
  *
  *   - Receives `subscribe` / `unsubscribe` from clients and translates
- *     them into ref-counted `wsAdapter.subscribe(...)` calls.
+ *     them into ref-counted `provider.subscribe(...)` calls.
  *   - Joins clients into Socket.IO rooms keyed by stream so updates
  *     only land on interested subscribers.
  *   - Re-broadcasts every `CandleClosed` and `CandleUpdating` from
- *     the WS adapter as the canonical wire events (see
- *     `docs/Market Data Service.md` §8.2 and §11.3).
+ *     the provider as the canonical wire events.
  *
  * Per-event protocol (version "1.0", payload schema shared across
- * both event names — see `CandleClosedEventPayload`):
+ * both event names):
  *
  *   client → server
  *     { type: "subscribe",   symbol: "BTCUSDT", timeframes: ["1m","1h"] }
@@ -41,10 +40,6 @@ const MAX_TIMEFRAMES_PER_SUBSCRIBE = 4;
  *     { type: "CandleClosed",  version, timestamp, payload: {...} }
  *     { type: "CandleUpdating",version, timestamp, payload: {...} }
  *     { type: "error",         code, message }
- *
- * Subscribed clients join Socket.IO rooms keyed by stream
- * (`candles:{symbol-lowercase}@{timeframe}`) so each tick only reaches
- * interested subscribers.
  */
 export class SocketGateway {
   private readonly clientSubs = new Map<string, Set<string>>();
@@ -52,7 +47,7 @@ export class SocketGateway {
   private io: IOServer | null = null;
 
   constructor(
-    private readonly wsAdapter: BinanceWsAdapter,
+    private readonly provider: MarketDataProvider,  // ✅ Now uses provider interface
     private readonly marketData: MarketDataService,
   ) {}
 
@@ -71,8 +66,8 @@ export class SocketGateway {
     const handleUpdating = (candle: Candle): void => {
       this.broadcast(candle, "CandleUpdating");
     };
-    this.wsAdapter.on("CandleClosed", handleClosed);
-    this.wsAdapter.on("CandleUpdating", handleUpdating);
+    this.provider.on("CandleClosed", handleClosed);
+    this.provider.on("CandleUpdating", handleUpdating);
 
     io.on("connection", (socket: Socket) => {
       this.clientSubs.set(socket.id, new Set());
@@ -126,7 +121,7 @@ export class SocketGateway {
       });
 
       socket.on("disconnect", () => {
-        // We intentionally do NOT call wsAdapter.unsubscribe here —
+        // We intentionally do NOT call provider.unsubscribe here —
         // the upstream is ref-counted and other clients may still be
         // subscribed to the same stream.
         this.clientSubs.delete(socket.id);
@@ -134,8 +129,8 @@ export class SocketGateway {
     });
 
     this.detach = (): void => {
-      this.wsAdapter.off("CandleClosed", handleClosed);
-      this.wsAdapter.off("CandleUpdating", handleUpdating);
+      this.provider.off("CandleClosed", handleClosed);
+      this.provider.off("CandleUpdating", handleUpdating);
       this.clientSubs.clear();
     };
   }

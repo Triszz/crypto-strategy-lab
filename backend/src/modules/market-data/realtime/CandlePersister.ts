@@ -2,8 +2,8 @@ import { getEventBus, type EventBus } from "../../../shared/event-bus/EventBus";
 import {
   MARKET_DATA_EVENTS,
   type CandleClosedEventPayload,
-} from "../domain/events";
-import type { CandleRepository } from "../domain/CandleRepository.port";
+} from "../core/events";
+import type { CandleRepository } from "../core/ports";
 
 /**
  * Persists `CandleClosed` events emitted onto the in-process EventBus

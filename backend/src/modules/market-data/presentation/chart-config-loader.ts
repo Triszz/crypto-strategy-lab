@@ -1,7 +1,7 @@
 import type { PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
-import type { ChartConfig } from "../domain/ChartConfig";
-import type { Timeframe } from "../domain/Timeframe";
+import type { ChartConfig } from "../core/types";
+import type { Timeframe } from "../core/types";
 
 type Row = {
   chartIndex: number;

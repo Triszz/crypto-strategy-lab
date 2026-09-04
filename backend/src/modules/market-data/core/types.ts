@@ -1,12 +1,9 @@
 /**
- * Timeframe — domain type for candlestick intervals.
- *
- * Wire format MUST match the values stored in the `timeframes.code` column.
- * Binance interval strings are an identity mapping for every supported
- * timeframe in this project, so the union type is reused as the Binance
- * interval literal.
+ * Core types for Market Data module.
+ * These types are exchange-agnostic and used across all layers.
  */
 
+// ===== Timeframe =====
 export const SUPPORTED_TIMEFRAMES = [
   "1m",
   "3m",
@@ -63,7 +60,7 @@ const TIMEFRAME_TO_MS: Record<Timeframe, number> = {
   "1d": 86_400_000,
   "3d": 259_200_000,
   "1w": 604_800_000,
-  "1M": 2_592_000_000, // 30 days approximation
+  "1M": 2_592_000_000,
 };
 
 const BINANCE_INTERVAL_TO_TIMEFRAME: ReadonlyMap<string, Timeframe> = new Map(
@@ -72,14 +69,6 @@ const BINANCE_INTERVAL_TO_TIMEFRAME: ReadonlyMap<string, Timeframe> = new Map(
   ),
 );
 
-/**
- * Build the canonical stream key used across WebSocket adapters,
- * Socket.IO rooms, and subscription tracking.
- *
- * Examples:
- *   getStreamKey("BTCUSDT", "1h") -> "btcusdt@kline_1h"
- *   getBinanceStreamName("BTCUSDT", "1h") -> "btcusdt@kline_1h"
- */
 export function getStreamKey(symbol: string, timeframe: Timeframe): string {
   return `${symbol.toLowerCase()}@${timeframe}`;
 }
@@ -110,4 +99,59 @@ export function timeframeToMs(timeframe: Timeframe): number {
 
 export function isTimeframe(value: string): value is Timeframe {
   return isSupportedTimeframe(value);
+}
+
+// ===== Candle =====
+/**
+ * Normalized candle representation.
+ * All exchanges must convert their native format into this shape.
+ * 
+ * openTime and closeTime are epoch milliseconds.
+ */
+export interface Candle {
+  symbol: string;
+  timeframe: Timeframe;
+  openTime: number;
+  closeTime: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  quoteVolume: number;
+  trades: number;
+}
+
+/**
+ * Canonical key used for streaming rooms, logs, and socket payloads.
+ * Format: `BTCUSDT@1h@1700000400000`.
+ */
+export function candleKey(c: Pick<Candle, "symbol" | "timeframe" | "openTime">): string {
+  return `${c.symbol}@${c.timeframe}@${c.openTime}`;
+}
+
+/**
+ * Socket.IO room name used by SocketGateway.
+ */
+export function candleRoom(c: Pick<Candle, "symbol" | "timeframe">): string {
+  return `candles:${c.symbol.toLowerCase()}@${c.timeframe}`;
+}
+
+// ===== ChartConfig =====
+/**
+ * Chart configuration from database.
+ */
+export interface ChartConfig {
+  chartIndex: number;
+  symbol: string;
+  timeframe: Timeframe;
+  updatedAt: Date;
+}
+
+export interface ActiveChartConfig {
+  chartIndex: number;
+  symbol: string;
+  timeframe: Timeframe;
+  /** Cached namespaced stream key, e.g. `btcusdt@kline_1h`. */
+  streamKey: ReturnType<typeof getStreamKey>;
 }

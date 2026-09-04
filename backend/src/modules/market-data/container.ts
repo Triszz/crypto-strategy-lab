@@ -2,22 +2,20 @@ import type { Logger } from "../../shared/logger/logger";
 import { logger as rootLogger } from "../../shared/logger/logger";
 import { getPrismaClient } from "../../infrastructure/database/prisma";
 import { loadEnv } from "../../config/env";
-import { BinanceRestAdapter } from "./infrastructure/BinanceRestAdapter";
-import { BinanceWsAdapter } from "./infrastructure/BinanceWsAdapter";
-import { PostgresCandleRepository } from "./infrastructure/PostgresCandleRepository";
-import { BackfillService } from "./application/BackfillService";
-import { DefaultChartSeeder } from "./application/DefaultChartSeeder";
-import { MarketDataService } from "./application/MarketDataService";
-import { ReconciliationService } from "./application/ReconciliationService";
-import { SymbolSyncService } from "./application/SymbolSyncService";
+import { BinanceProvider } from "./providers/binance/BinanceProvider";
+import { PostgresCandleRepository } from "./storage/PostgresCandleRepository";
+import { BackfillService } from "./services/BackfillService";
+import { DefaultChartSeeder } from "./services/DefaultChartSeeder";
+import { MarketDataService } from "./services/MarketDataService";
+import { ReconciliationService } from "./services/ReconciliationService";
+import { SymbolSyncService } from "./services/SymbolSyncService";
 import { SocketGateway } from "./realtime/SocketGateway";
 import { CandlePersister } from "./realtime/CandlePersister";
 import { buildMarketDataRouter } from "./presentation/market-data.routes";
 
 export interface MarketDataContainer {
+  provider: BinanceProvider;
   repo: PostgresCandleRepository;
-  restAdapter: BinanceRestAdapter;
-  wsAdapter: BinanceWsAdapter;
   backfillService: BackfillService;
   symbolSyncService: SymbolSyncService;
   defaultChartSeeder: DefaultChartSeeder;
@@ -38,6 +36,9 @@ export interface MarketDataContainerOverrides {
  * Composition root for the Market Data module. Centralising wiring
  * here keeps `server.ts` free of adapter details and lets tests
  * substitute any layer (e.g. an in-memory repository).
+ * 
+ * Now uses the Provider pattern - services depend on MarketDataProvider
+ * interface instead of concrete Binance adapters.
  */
 export function buildMarketDataContainer(
   overrides: MarketDataContainerOverrides = {},
@@ -46,24 +47,29 @@ export function buildMarketDataContainer(
   const prisma = getPrismaClient();
   const env = loadEnv();
 
+  // ✅ Instantiate provider (unified facade for REST + WebSocket)
+  const provider = new BinanceProvider({ logger: log });
+  
+  // ✅ Repository stays the same
   const repo = new PostgresCandleRepository(prisma, log);
-  const restAdapter = new BinanceRestAdapter({ logger: log });
-  const wsAdapter = new BinanceWsAdapter({ logger: log });
 
+  // ✅ Services now depend on MarketDataProvider interface
   const backfillService = new BackfillService(
-    restAdapter,
+    provider,  // Pass interface
     repo,
     log,
-    env.MAX_CANDLES_PER_CHART, // initialCandles (used on empty-DB fallback)
-    env.MAX_CANDLES_PER_CHART, // retention cap applied after each boot fill
+    env.MAX_CANDLES_PER_CHART,
+    env.MAX_CANDLES_PER_CHART,
   );
-  const symbolSyncService = new SymbolSyncService(prisma, restAdapter, log);
+
+  const symbolSyncService = new SymbolSyncService(prisma, provider, log);
+  
+  // Use existing DefaultChartSeeder from application folder
   const defaultChartSeeder = new DefaultChartSeeder(prisma, log);
 
   const reconciliationService = new ReconciliationService(
-    restAdapter,
+    provider,  // Pass interface
     repo,
-    wsAdapter,
     log,
     {
       intervalMs: overrides.reconcileIntervalMs ?? env.RECONCILE_INTERVAL_MS,
@@ -71,18 +77,21 @@ export function buildMarketDataContainer(
     },
   );
 
+  // ✅ MarketDataService constructor reordered to match new signature
   const service = new MarketDataService(
-    symbolSyncService,
-    defaultChartSeeder,
-    backfillService,
-    wsAdapter,
-    reconciliationService,
-    repo,
-    log,
+    provider,           // 1st - provider interface
+    repo,               // 2nd - repository interface
+    symbolSyncService,  // 3rd
+    defaultChartSeeder, // 4th
+    backfillService,    // 5th
+    reconciliationService, // 6th
+    log,                // 7th
   );
 
   const persister = new CandlePersister(repo);
-  const socketGateway = new SocketGateway(wsAdapter, service);
+  
+  // ✅ SocketGateway now uses provider
+  const socketGateway = new SocketGateway(provider, service);
 
   const router = buildMarketDataRouter({
     repo,
@@ -91,9 +100,8 @@ export function buildMarketDataContainer(
   });
 
   return {
+    provider,
     repo,
-    restAdapter,
-    wsAdapter,
     backfillService,
     symbolSyncService,
     defaultChartSeeder,

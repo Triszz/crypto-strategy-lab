@@ -192,4 +192,29 @@ export class NewsController {
       res.status(500).json(response);
     }
   };
+
+  public getExtractionTemplate = async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const template = {
+        domain: "coindesk.com",
+        version: "v1.4.2",
+        titleSelector: "h1.article-title, h1, .title",
+        summarySelector: "p.summary, .excerpt, p",
+        confidenceScore: 0.92,
+        isActive: true,
+      };
+      res.json({ success: true, data: template });
+    } catch (err) {
+      res.status(500).json({ success: false, error: { code: "TEMPLATE_ERROR", message: (err as Error).message } });
+    }
+  };
+
+  public toggleSelfHealing = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { enabled } = (req.body as { enabled?: boolean }) ?? { enabled: true };
+      res.json({ success: true, data: { selfHealingActive: enabled ?? true } });
+    } catch (err) {
+      res.status(500).json({ success: false, error: { code: "TOGGLE_ERROR", message: (err as Error).message } });
+    }
+  };
 }

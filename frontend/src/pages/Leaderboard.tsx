@@ -18,7 +18,6 @@ import {
   HelpCircle,
   Bell,
   History,
-  Layers,
   SlidersHorizontal,
 } from 'lucide-react';
 import {

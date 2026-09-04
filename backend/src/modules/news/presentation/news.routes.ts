@@ -58,5 +58,9 @@ export function buildNewsRouter(): Router {
     res.json(response);
   });
 
+  // LLM-assisted extraction template & self-healing routes
+  router.get("/templates", controller.getExtractionTemplate);
+  router.post("/self-healing/toggle", controller.toggleSelfHealing);
+
   return router;
 }

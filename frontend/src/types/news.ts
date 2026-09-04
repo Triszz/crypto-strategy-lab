@@ -111,3 +111,13 @@ export function newsCollectedToListItem(event: NewsCollectedEvent): NewsItem {
     coinSymbols: event.coinSymbols,
   };
 }
+
+export interface ExtractionTemplate {
+  domain: string;
+  version: string;
+  titleSelector: string;
+  summarySelector: string;
+  confidenceScore: number;
+  isActive: boolean;
+}
+

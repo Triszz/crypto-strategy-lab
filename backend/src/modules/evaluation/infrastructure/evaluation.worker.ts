@@ -29,6 +29,7 @@ import { getRedisConnectionOptions } from "../../../shared/queue";
 import { EvaluatorEngine, type TradeInput, type EvaluationResultMetrics } from "../domain/evaluator.engine";
 import { getEvaluationQueue, EVALUATION_QUEUE_NAME, type EvaluationJobData, type EvaluationJobResult } from "./evaluation.queue";
 import { getEvaluationConfig } from "./evaluation-settings.repo";
+import { resolveStrategyEvaluatedContext } from "./strategyEvaluatedContext";
 
 // ---------------------------------------------------------------------------
 // Event payload (published after successful evaluation)
@@ -37,6 +38,14 @@ import { getEvaluationConfig } from "./evaluation-settings.repo";
 interface StrategyEvaluatedPayload {
   experimentId: string;
   strategyVersionId: string;
+  /** candidateStrategyId derived from the Experiment. Optional for legacy/manual backtests. */
+  candidateId?: string | null;
+  /** searchRunId derived via experiment → candidate → searchRun. Optional. */
+  searchRunId?: string | null;
+  /** loopId derived via experiment → candidate → searchRun → loopIteration. Optional. */
+  loopId?: string | null;
+  /** Iteration index (1-based) within the loop, when applicable. */
+  iterationIndex?: number | null;
   symbolId: string;
   timeframe: string;
   totalReturn: number;
@@ -261,10 +270,17 @@ export class BullMQEvaluationWorker {
 
       const strategyVersionId = experiment.candidate?.strategyVersionId ?? experimentId;
 
+      // Resolve Loop ownership so the orchestrator can filter counters.
+      const ctx = await resolveStrategyEvaluatedContext(this.prisma, experimentId);
+
       // Still publish StrategyEvaluated so Leaderboard / FE see this entry.
       this.eventBus.publish("StrategyEvaluated", {
         experimentId,
         strategyVersionId,
+        candidateId: ctx.candidateId,
+        searchRunId: ctx.searchRunId,
+        loopId: ctx.loopId,
+        iterationIndex: ctx.iterationIndex,
         symbolId: experiment.symbolId,
         timeframe: experiment.timeframe,
         totalReturn,
@@ -417,9 +433,15 @@ export class BullMQEvaluationWorker {
     );
 
     // ── 7. Publish StrategyEvaluated event for Leaderboard ────────────────
+    // Resolve Loop ownership so the orchestrator can filter counters.
+    const ctx = await resolveStrategyEvaluatedContext(this.prisma, experimentId);
     const payload: StrategyEvaluatedPayload = {
       experimentId,
       strategyVersionId,
+      candidateId: ctx.candidateId,
+      searchRunId: ctx.searchRunId,
+      loopId: ctx.loopId,
+      iterationIndex: ctx.iterationIndex,
       symbolId,
       timeframe,
       totalReturn: metrics.totalReturn,

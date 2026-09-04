@@ -452,7 +452,7 @@ function LoopStatusCard({
   const candidates = status
     ? `${status.totalEvaluated} / ${status.maxCandidates}`
     : "—";
-  const bestScore = status ? status.bestScoreSoFar.toFixed(2) : "—";
+  const bestScore = status ? (status.bestScore ?? 0).toFixed(2) : "—";
 
   return (
     <article

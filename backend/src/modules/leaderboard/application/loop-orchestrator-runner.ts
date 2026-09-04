@@ -1,36 +1,40 @@
 /**
  * leaderboard · application · LoopOrchestratorRunner
  *
- * The Strategy/Search-side consumer of `NewTopStrategyFound`. Closes the
- * Continuous Strategy Loop:
+ * Drives the Continuous Strategy Loop iteration lifecycle.
  *
- *   Leaderboard → publish NewTopStrategyFound
+ * Lifecycle (Phase 3):
+ *
+ *   Iteration #N SearchRun completes (SearchCompleted)
  *       │
- *       ▼
- *   LoopOrchestratorRunner.handleNewTop()
- *       │
- *       │ 1. dedupe via LoopProcessedEvent (idempotency)
- *       │ 2. check the loop is still RUNNING
- *       │ 3. resolve the parent StrategyVersion (BASE or COMPOSITE)
- *       │ 4. build a new SearchRun with LoopMutationGenerator config
- *       │ 5. publish the iteration via SearchService
- *       │ 6. bump iteration counter on LoopRunState
+ *       │  1. determine the iteration's best candidate (from
+ *       │     `LoopIteration.bestScoreInIteration` + BacktestResult)
+ *       │  2. update `LoopRunState.bestScoreSoFar`,
+ *       │     `bestStrategyVersionId`, totals
+ *       │  3. check iteration-level no-improvement counter
+ *       │  4. if `currentIteration >= maxIterations` → STOPPED_MAX_ITERATIONS
+ *       │  5. else: build HybridLoopConfig, create SearchRun #N+1 with
+ *       │     `algorithm = "loop_hybrid"`, generate candidates, persist
+ *       │     `LoopIteration #N+1`
  *
- * The runner NEVER calls BacktestService directly — the existing
- * BullMQ pipeline (StrategyGenerated → BacktestQueue → BacktestWorker
- * → EvaluationWorker → LeaderboardService) handles downstream flow.
+ * Invariants:
  *
- * Architectural invariants respected:
- *   - No new event bus. Reuses `getEventBus()` and the existing event
- *     names: `NewTopStrategyFound`, `LoopStatusChanged`.
- *   - No new Backtest pipeline. Goes through `SearchService.start()`
- *     exactly like a trader-initiated discovery.
- *   - No new CandidateStrategy persistence path. Goes through
- *     `repository.createCandidate` inside SearchService.
- *   - BASE and COMPOSITE parents are both supported.
+ *   - `currentIteration` is bumped EXACTLY ONCE per SearchRun that the
+ *     runner created. We persist `LoopIteration` rows eagerly inside
+ *     `runIteration()` so a backend crash mid-iteration still leaves an
+ *     audit trail.
+ *   - The parent is NOT re-evaluated. It is used as the SEED only.
+ *   - One in-flight SearchRun at a time per loop
+ *     (`in_flight_search_run_id`). While set, the runner ignores
+ *     additional `NewTopStrategyFound` events for the same loop.
  *
- * MUST stay infrastructure-light: the only infra is Prisma for
- * LoopProcessedEvent idempotency and LoopRunState state tracking.
+ * Initial iteration (Phase 3):
+ *
+ *   When `Combination.handleSubmit()` calls `startLoop()` it has
+ *   ALREADY created the initial SearchRun. The runner accepts an
+ *   `initialSearchRunId` and registers it as Iteration #1 WITHOUT
+ *   creating a new SearchRun. This preserves the requirement that
+ *   "Run Combination → Initial Full Search → Iteration #1".
  */
 import { getPrismaClient } from "../../../infrastructure/database/prisma";
 import type { PrismaClient } from "@prisma/client";
@@ -40,11 +44,11 @@ import type { Logger } from "../../../shared/logger/logger";
 import type { PrismaSearchRepository } from "../../search/application/PrismaSearchRepository";
 import type { StrategyVersionMapper } from "../../search/application/StrategyVersionMapper";
 import {
-  LoopMutationGenerator,
-  LOOP_MUTATION_GENERATOR_ID,
+  HybridLoopGenerator,
+  HYBRID_LOOP_GENERATOR_ID,
   type ParentStrategy,
-  LoopMutationConfig,
-} from "../../search/generators/LoopMutationGenerator";
+  type EliteMate,
+} from "../../search/generators/HybridLoopGenerator";
 import { CombinationOperator } from "../../strategy/combination/CombinationConfig";
 import type { CombinationConfig } from "../../strategy/combination/CombinationConfig";
 import { getStrategyRegistry } from "../../strategy/domain/StrategyRegistry";
@@ -60,6 +64,14 @@ export interface NewTopStrategyFoundPayload {
   readonly evaluatedAt: string; // ISO timestamp
 }
 
+export interface SearchCompletedEvent {
+  readonly searchRunId: string;
+  readonly totalGenerated: number;
+  readonly totalQueued: number;
+  readonly totalRejected: number;
+  readonly generationMs: number;
+}
+
 /* ─── LoopRuntimeState DTO returned to callers ───────────────────────── */
 
 export interface LoopRuntimeState {
@@ -68,27 +80,28 @@ export interface LoopRuntimeState {
   readonly currentIteration: number;
   readonly maxIterations: number;
   readonly maxCandidates: number;
+  readonly candidateCountPerIteration: number;
   readonly totalEvaluated: number;
   readonly noImprovementCount: number;
   readonly noImprovementCap: number;
-  readonly bestScoreSoFar: number;
+  readonly bestScore: number;
   readonly bestStrategyVersionId: string | null;
-  readonly bestStrategyType: string | null;
-  /** Human-readable name from the global Top-1 LeaderboardEntry. */
   readonly bestStrategyName: string | null;
-  /** Symbol code (e.g. "BTCUSDT") for the Top-1 entry, or null. */
+  readonly bestStrategyType: string | null;
   readonly bestStrategySymbolCode: string | null;
-  /** Timeframe for the Top-1 entry (e.g. "1h"), or null. */
   readonly bestStrategyTimeframe: string | null;
-  /** Profit / Total Return of the Top-1 entry (decimal, 0.8432 = +84.32%). */
   readonly bestTotalReturn: number | null;
-  /** Win rate of the Top-1 entry (decimal, 0.684 = 68.40%). */
   readonly bestWinRate: number | null;
+  readonly bestMaxDrawdown: number | null;
+  readonly stopReason: string | null;
   readonly lastIterationSearchRunId: string | null;
   readonly startedAt: string;
   readonly updatedAt: string;
   readonly elapsedSeconds: number;
   readonly timeLimitSeconds: number;
+  /** Counters for the in-flight iteration (if any). */
+  readonly currentIterationCandidateCount: number;
+  readonly currentIterationEvaluatedCount: number;
 }
 
 export interface LoopOrchestratorRunnerDeps {
@@ -97,8 +110,6 @@ export interface LoopOrchestratorRunnerDeps {
   readonly prisma?: PrismaClient;
   readonly eventBus?: EventBus;
   readonly logger?: Logger;
-  /** Number of mutated variants per iteration. Defaults to 5. */
-  readonly candidateCount?: number;
 }
 
 /* ─── Runner ─────────────────────────────────────────────────────────── */
@@ -109,10 +120,11 @@ export class LoopOrchestratorRunner {
   private readonly log: Logger;
   private readonly searchRepository: PrismaSearchRepository;
   private readonly mapper: StrategyVersionMapper;
-  private readonly candidateCount: number;
 
-  /** Per-loop iteration counter (loopId → next iteration index). */
+  /** Map<loopId, next iteration index>. Persisted to DB on every increment. */
   private readonly iterationCounter = new Map<string, number>();
+  /** Map<loopId, candidateCountPerIteration> from last start. */
+  private readonly candidateCountCache = new Map<string, number>();
 
   constructor(deps: LoopOrchestratorRunnerDeps) {
     this.prisma = deps.prisma ?? getPrismaClient();
@@ -120,118 +132,263 @@ export class LoopOrchestratorRunner {
     this.log = deps.logger ?? logger;
     this.searchRepository = deps.searchRepository;
     this.mapper = deps.strategyVersionMapper;
-    this.candidateCount = deps.candidateCount ?? 5;
   }
 
-  /**
-   * Subscribe to `NewTopStrategyFound` events. Call once at startup.
-   */
+  /* ─── Subscription ─────────────────────────────────────────────────── */
+
   public startListening(): void {
-    this.eventBus.subscribe<NewTopStrategyFoundPayload>(
-      "NewTopStrategyFound",
+    this.eventBus.subscribe<SearchCompletedEvent>(
+      "SearchCompleted",
       (payload) => {
-        void this.handleNewTop(payload);
+        void this.handleSearchCompleted(payload);
       },
     );
-    this.log.info("LoopOrchestratorRunner subscribed to NewTopStrategyFound");
+    this.log.info("LoopOrchestratorRunner subscribed to SearchCompleted");
   }
 
+  /* ─── Initial iteration registration ───────────────────────────────── */
+
   /**
-   * Programmatic entry point (also used by tests).
+   * Register an EXISTING SearchRun as the initial iteration of the
+   * loop. Called by `Combination.handleSubmit()` AFTER `startSearch()`
+   * has created the SearchRun.
+   *
+   * Persists `LoopIteration #1` immediately so the UI's "Iteration:
+   * 1 / N" counter is correct from the start.
    */
-  public async handleNewTop(payload: NewTopStrategyFoundPayload): Promise<void> {
-    try {
-      // ── 1. Dedupe via LoopProcessedEvent ────────────────────────────────
-      const dedupeKey = `${payload.strategyVersionId}:${payload.overallScore}:${payload.evaluatedAt}`;
-      try {
-        await this.prisma.loopProcessedEvent.create({
-          data: {
-            dedupeKey,
-            strategyVersionId: payload.strategyVersionId,
-            overallScore: payload.overallScore,
-            evaluatedAt: new Date(payload.evaluatedAt),
-          },
-        });
-      } catch (err) {
-        const e = err as { code?: string };
-        if (e?.code === "P2002") {
-          this.log.info(
-            { dedupeKey },
-            "LoopOrchestratorRunner: duplicate NewTopStrategyFound event ignored",
-          );
-          return;
-        }
-        throw err;
-      }
+  public async registerInitialSearchRun(args: {
+    loopId: string;
+    searchRunId: string;
+    parentStrategyVersionId: string;
+    candidateCount: number;
+  }): Promise<void> {
+    const { loopId, searchRunId, parentStrategyVersionId, candidateCount } = args;
+    await this.upsertIteration({
+      loopId,
+      iterationIndex: 1,
+      parentStrategyVersionId,
+      searchRunId,
+      candidateCount,
+      status: "RUNNING",
+      isInitial: true,
+    });
+    await this.prisma.loopRunState.update({
+      where: { loopId },
+      data: {
+        currentIteration: 1,
+        lastIterationSearchRunId: searchRunId,
+        inFlightSearchRunId: searchRunId,
+        initialParentStrategyVersionId: parentStrategyVersionId,
+        bestScoreSoFar: 0,
+        bestStrategyVersionId: null,
+        bestStrategySymbolId: null,
+        bestStrategyTimeframe: null,
+        bestTotalReturn: null,
+        bestWinRate: null,
+        status: "RUNNING",
+      },
+    }).catch(() => undefined);
+    this.iterationCounter.set(loopId, 1);
+    this.candidateCountCache.set(loopId, candidateCount);
+  }
 
-      // ── 2. Find active loops ────────────────────────────────────────────
-      const activeLoops = await this.prisma.loopRunState.findMany({
-        where: { status: "RUNNING" },
-      });
-      if (activeLoops.length === 0) {
-        this.log.info(
-          { strategyVersionId: payload.strategyVersionId },
-          "LoopOrchestratorRunner: NewTopStrategyFound received but no RUNNING loop",
-        );
-        return;
-      }
+  /* ─── SearchRun completion boundary ─────────────────────────────────── */
 
-      // ── 3. Resolve parent strategy ─────────────────────────────────────
-      const parent = await this.resolveParent(payload.strategyVersionId);
-      if (!parent) {
-        this.log.warn(
-          { strategyVersionId: payload.strategyVersionId },
-          "LoopOrchestratorRunner: could not resolve parent StrategyVersion",
-        );
-        return;
-      }
+  private async handleSearchCompleted(payload: SearchCompletedEvent): Promise<void> {
+    if (!payload?.searchRunId) return;
+    const iteration = await this.prisma.loopIteration.findFirst({
+      where: { searchRunId: payload.searchRunId },
+    });
+    if (!iteration) return; // Not a loop-owned SearchRun.
 
-      // ── 4. For each active loop, run a new iteration ──────────────────
-      for (const loop of activeLoops) {
-        await this.runIteration(loop.loopId, payload, parent);
-      }
-    } catch (err) {
-      this.log.error(
-        { err, payload },
-        "LoopOrchestratorRunner.handleNewTop failed",
+    const loopId = iteration.loopId;
+    const loop = await this.prisma.loopRunState.findUnique({ where: { loopId } });
+    if (!loop || loop.status !== "RUNNING") return;
+
+    // Idempotency — if the SearchRun is not the in-flight one, ignore.
+    if (loop.inFlightSearchRunId !== payload.searchRunId) {
+      this.log.debug(
+        { loopId, searchRunId: payload.searchRunId, inFlight: loop.inFlightSearchRunId },
+        "LoopOrchestratorRunner: ignoring SearchCompleted for non-in-flight SearchRun",
       );
+      return;
+    }
+
+    // ── 1. Determine best candidate from this iteration ─────────────────
+    const best = await this.determineIterationBest(payload.searchRunId);
+
+    // ── 2. For an initial iteration, resolve the parent AFTER evaluation ─
+    // The initial iteration was registered BEFORE evaluation. We only know
+    // which StrategyVersion to use as parent AFTER the best candidate is
+    // known. If this is the initial iteration and we have a best
+    // candidate, update the parent.
+    let parentForNextIter = iteration.parentStrategyVersionId;
+    if (iteration.isInitial && best) {
+      await this.prisma.loopIteration.update({
+        where: { id: iteration.id },
+        data: { parentStrategyVersionId: best.strategyVersionId },
+      });
+      parentForNextIter = best.strategyVersionId;
+    }
+
+    // ── 3. Mark iteration done + store best ─────────────────────────────
+    await this.prisma.loopIteration.update({
+      where: { id: iteration.id },
+      data: {
+        status: "DONE",
+        completedAt: new Date(),
+        ...(best
+          ? {
+              bestScoreInIteration: best.overallScore,
+              bestStrategyVersionId: best.strategyVersionId,
+            }
+          : {}),
+      },
+    });
+
+    // ── 3. Update LoopRunState best fields (loop-local, NOT global) ─────
+    const previousBest = Number(loop.bestScoreSoFar);
+    const newBest = best?.overallScore ?? previousBest;
+    const loopBestImproved = newBest > previousBest && newBest > 0;
+
+    const newNoImpCount = loopBestImproved ? 0 : loop.noImprovementCount + 1;
+
+    const baseData: Record<string, unknown> = {
+      bestScoreSoFar: newBest,
+      noImprovementCount: newNoImpCount,
+      inFlightSearchRunId: null,
+      lastIterationSearchRunId: iteration.searchRunId,
+    };
+    if (best && loopBestImproved) {
+      baseData.bestStrategyVersionId = best.strategyVersionId;
+      baseData.bestStrategySymbolId = best.symbolId;
+      baseData.bestStrategyTimeframe = best.timeframe;
+      baseData.bestTotalReturn = best.totalReturn;
+      baseData.bestWinRate = best.winRate;
+    }
+
+    // ── 4. Check stop conditions BEFORE creating next iteration ─────────
+    const nextIterationIndex = (this.iterationCounter.get(loopId) ?? iteration.iterationIndex) + 1;
+    let stopReason: string | null = null;
+    if (loop.totalEvaluated >= loop.maxCandidates) {
+      stopReason = "STOPPED_MAX_CANDIDATES";
+    } else if ((Date.now() - loop.startedAt.getTime()) / 1000 >= loop.timeLimitSeconds) {
+      stopReason = "STOPPED_TIMEOUT";
+    } else if (newNoImpCount >= loop.noImprovementCap) {
+      stopReason = "STOPPED_NO_IMPROVEMENT";
+    } else if (nextIterationIndex > loop.maxIterations) {
+      stopReason = "STOPPED_MAX_ITERATIONS";
+    }
+
+    if (stopReason) {
+      await this.prisma.loopRunState.update({
+        where: { id: loop.id },
+        data: {
+          ...baseData,
+          status: stopReason,
+          stopReason,
+        },
+      });
+      this.eventBus.publish("LoopStatusChanged", { loopId, status: stopReason });
+      this.log.info({ loopId, stopReason, iteration: iteration.iterationIndex }, "Loop stopped");
+      return;
+    }
+
+    // ── 5. Schedule next iteration ─────────────────────────────────────
+    await this.prisma.loopRunState.update({
+      where: { id: loop.id },
+      data: {
+        ...baseData,
+        currentIteration: nextIterationIndex,
+      },
+    });
+    this.iterationCounter.set(loopId, nextIterationIndex);
+
+    const parentVersion = best?.strategyVersionId ?? parentForNextIter;
+    try {
+      await this.runIteration(loopId, nextIterationIndex, parentVersion, {
+        symbolId: best?.symbolId ?? null,
+        timeframe: best?.timeframe ?? null,
+      });
+    } catch (err) {
+      this.log.error({ err, loopId, nextIterationIndex }, "Failed to start next iteration");
     }
   }
 
+  /* ─── Iteration creation ───────────────────────────────────────────── */
+
   /**
-   * Run ONE iteration of the loop: increment counter, build the
-   * LoopMutationGenerator config, create a SearchRun and start it via
-   * SearchService.
+   * Create a NEW SearchRun with the HybridLoopGenerator and persist a
+   * LoopIteration row. Called when the previous iteration completes.
    *
-   * Returns the new SearchRun id (or null if the iteration was skipped).
+   * The candidate count and ratios are read from `LoopRunState`.
    */
   public async runIteration(
     loopId: string,
-    payload: NewTopStrategyFoundPayload,
-    parent: ParentStrategy,
+    nextIter: number,
+    parentStrategyVersionId: string,
+    context: { symbolId: string | null; timeframe: string | null },
   ): Promise<string | null> {
-    const nextIter = (this.iterationCounter.get(loopId) ?? 0) + 1;
-    this.iterationCounter.set(loopId, nextIter);
+    const loop = await this.prisma.loopRunState.findUnique({ where: { loopId } });
+    if (!loop) return null;
+
+    const candidateCount = loop.candidateCountPerIteration;
+    const eligiblePoolSize = loop.elitePoolSize;
+
+    const parent = await this.resolveParent(parentStrategyVersionId);
+    if (!parent) {
+      this.log.warn(
+        { loopId, parentStrategyVersionId },
+        "LoopOrchestratorRunner: could not resolve parent",
+      );
+      return null;
+    }
+
+    // Pull an elite mate from the leaderboard (excluding the parent)
+    // for crossover + exploration seeding.
+    const elites = await this.fetchElites(parentStrategyVersionId, eligiblePoolSize);
+    const eliteMate: EliteMate = elites.length > 0 ? elites[0]! : undefined;
 
     const seed = hashString(`${loopId}:${nextIter}`);
-
-    const generatorConfig: LoopMutationConfig = {
+    const generatorConfig = {
       parent,
-      candidateCount: this.candidateCount,
+      candidateCount,
+      mutationRatio: Number(loop.mutationRatio),
+      crossoverRatio: Number(loop.crossoverRatio),
+      explorationRatio: Number(loop.explorationRatio),
       weightPerturbationRatio: 0.1,
+      ...(eliteMate ? { eliteMate } : {}),
+      ...(elites.length > 0 ? { elitePool: elites } : {}),
       randomSeed: seed,
     };
 
-    // Persist generator config inside SearchRun.config so a future
-    // investigator can answer "why was this candidate generated".
+    // Resolve symbol/timeframe from context, last iteration's SearchRun, or
+    // fallback to "BTCUSDT / 1h".
+    const lastIter = await this.prisma.loopIteration.findFirst({
+      where: { loopId },
+      orderBy: { iterationIndex: "desc" },
+    });
+
+    const symbolId = context.symbolId ?? lastIter?.searchRunId
+      ? (await this.resolveSymbolFromSearchRun(lastIter!.searchRunId!)).id
+      : null;
+    const timeframe =
+      context.timeframe ??
+      (lastIter?.searchRunId
+        ? await this.resolveTimeframeFromSearchRun(lastIter!.searchRunId)
+        : null) ??
+      "1h";
+
+    if (!symbolId) {
+      this.log.warn({ loopId, nextIter }, "LoopOrchestratorRunner: cannot resolve symbolId for next iteration");
+      return null;
+    }
+
     const persistedConfig: Record<string, unknown> = {
-      generatorId: LOOP_MUTATION_GENERATOR_ID,
+      generatorId: HYBRID_LOOP_GENERATOR_ID,
       loopId,
       iteration: nextIter,
-      parentStrategyVersionId: payload.strategyVersionId,
-      parentStrategyType: payload.strategyType,
-      parentOverallScore: payload.overallScore,
-      evaluatedAt: payload.evaluatedAt,
+      parentStrategyVersionId,
       generatorConfig,
     };
 
@@ -239,8 +396,11 @@ export class LoopOrchestratorRunner {
       {
         loopId,
         iteration: nextIter,
-        parentStrategyVersionId: payload.strategyVersionId,
-        candidateCount: this.candidateCount,
+        parentStrategyVersionId,
+        candidateCount,
+        mutationRatio: Number(loop.mutationRatio),
+        crossoverRatio: Number(loop.crossoverRatio),
+        explorationRatio: Number(loop.explorationRatio),
       },
       "LoopOrchestratorRunner.runIteration.start",
     );
@@ -248,26 +408,44 @@ export class LoopOrchestratorRunner {
     let searchRunId: string | null = null;
     try {
       const created = await this.searchRepository.createSearchRun({
-        algorithmId: await this.ensureLoopAlgorithmId("loop_mutation"),
-        symbolId: await this.resolveSymbolId(payload.symbolId),
-        timeframe: payload.timeframe,
-        maxCandidates: this.candidateCount,
+        algorithmId: await this.ensureLoopAlgorithmId("loop_hybrid"),
+        symbolId: await this.resolveSymbolId(symbolId),
+        timeframe,
+        maxCandidates: candidateCount,
         createdBy: "loop-orchestrator",
         config: persistedConfig,
       });
       searchRunId = created.id;
 
       await this.searchRepository.updateSearchRunStatus(searchRunId, "RUNNING", new Date());
+      await this.prisma.loopRunState.update({
+        where: { loopId },
+        data: { inFlightSearchRunId: searchRunId },
+      }).catch(() => undefined);
 
-      // Run the generator inline. The generator's onCandidate handler
-      // is SearchService's normal persistence + event-publish path, so
-      // candidates land in the existing BullMQ backtest queue.
-      const generator = new LoopMutationGenerator();
+      await this.upsertIteration({
+        loopId,
+        iterationIndex: nextIter,
+        parentStrategyVersionId,
+        searchRunId,
+        candidateCount,
+        status: "RUNNING",
+      });
+
+      const generator = new HybridLoopGenerator();
       generator.setRegistry(getStrategyRegistry());
-      generator.applyConfig(generatorConfig);
+      generator.applyConfig({
+        parent,
+        candidateCount,
+        mutationRatio: Number(loop.mutationRatio),
+        crossoverRatio: Number(loop.crossoverRatio),
+        explorationRatio: Number(loop.explorationRatio),
+        ...(eliteMate ? { eliteMate } : {}),
+        ...(elites.length > 0 ? { elitePool: elites } : {}),
+        weightPerturbationRatio: 0.1,
+        randomSeed: seed,
+      });
 
-      // Wire the generator's onCandidate to the same code path that
-      // a manual SearchRun uses: persist + publish StrategyGenerated.
       const result = await generator.generate(
         async (candidate) => {
           const versionInfo =
@@ -317,7 +495,14 @@ export class LoopOrchestratorRunner {
         { generatedCount: 0, queuedCount: 0, rejectedCount: 0, elapsedMs: 0 },
       );
 
-      const finalStatus = result.done && result.result.stoppedByBackPressure ? "STOPPED" : "DONE";
+      // The generator runs synchronously and finishes producing all
+      // candidate rows in-memory before we mark DONE. The actual
+      // evaluation (Backtest/Evaluation/Leaderboard) happens
+      // asynchronously via the existing pipeline and triggers
+      // `SearchCompleted` once each candidate is processed. We mark
+      // SearchRun as DONE only after candidates are queued so
+      // downstream observers don't see a half-built run.
+      const finalStatus = "DONE";
       await this.searchRepository.updateSearchRunStatus(
         searchRunId,
         finalStatus,
@@ -325,44 +510,17 @@ export class LoopOrchestratorRunner {
         new Date(),
       );
 
-      // Persist the iteration metadata so the API can return it.
-      await this.prisma.loopIteration.create({
-        data: {
-          loopId,
-          iterationIndex: nextIter,
-          parentStrategyVersionId: payload.strategyVersionId,
-          searchRunId,
-          candidateCount: result.done ? result.result.totalQueued : 0,
-          status: finalStatus,
-        },
+      // Publish SearchCompleted so this runner can handle the next iteration
+      // via handleSearchCompleted(). This fires after the synchronous
+      // candidate-generation phase, which is the correct boundary: all
+      // candidates have been queued, the search-space exploration is complete.
+      this.eventBus.publish("SearchCompleted", {
+        searchRunId,
+        totalGenerated: result.done ? result.result.totalGenerated : 0,
+        totalQueued: result.done ? result.result.totalQueued : 0,
+        totalRejected: result.done ? result.result.totalRejected : 0,
+        generationMs: result.done ? result.result.generationMs : 0,
       });
-
-      // Bump LoopRunState's `currentIteration` and remember the latest
-      // searchRunId. Best-effort: stopLoop may have already moved the
-      // row to a STOPPED status; we still want to record the iteration
-      // so the UI can show it.
-      const loopRow = await this.findLoopIdRow(loopId);
-      if (loopRow) {
-        await this.prisma.loopRunState.update({
-          where: { id: loopRow.id },
-          data: {
-            currentIteration: nextIter,
-            lastIterationSearchRunId: searchRunId,
-          },
-        }).catch((err) => {
-          this.log.warn({ err, loopId }, "could not bump currentIteration");
-        });
-      }
-
-      this.log.info(
-        {
-          loopId,
-          iteration: nextIter,
-          searchRunId,
-          totalQueued: result.done ? result.result.totalQueued : 0,
-        },
-        "LoopOrchestratorRunner.runIteration.done",
-      );
 
       return searchRunId;
     } catch (err) {
@@ -371,12 +529,141 @@ export class LoopOrchestratorRunner {
         await this.searchRepository
           .updateSearchRunStatus(searchRunId, "FAILED", undefined, new Date())
           .catch(() => undefined);
+        await this.prisma.loopRunState.update({
+          where: { loopId },
+          data: { inFlightSearchRunId: null },
+        }).catch(() => undefined);
       }
       return null;
     }
   }
 
-  /* ─── Internals ─────────────────────────────────────────────────────── */
+  /* ─── Iteration helpers ────────────────────────────────────────────── */
+
+  private async upsertIteration(args: {
+    loopId: string;
+    iterationIndex: number;
+    parentStrategyVersionId: string;
+    searchRunId: string | null;
+    candidateCount: number;
+    status: string;
+    isInitial?: boolean;
+  }): Promise<void> {
+    const existing = await this.prisma.loopIteration.findFirst({
+      where: {
+        loopId: args.loopId,
+        iterationIndex: args.iterationIndex,
+      },
+    });
+    if (existing) {
+      await this.prisma.loopIteration.update({
+        where: { id: existing.id },
+        data: {
+          searchRunId: args.searchRunId ?? existing.searchRunId,
+          candidateCount: args.candidateCount,
+          status: args.status,
+          parentStrategyVersionId: args.parentStrategyVersionId,
+          ...(args.isInitial !== undefined ? { isInitial: args.isInitial } : {}),
+        },
+      });
+      return;
+    }
+    await this.prisma.loopIteration.create({
+      data: {
+        loopId: args.loopId,
+        iterationIndex: args.iterationIndex,
+        parentStrategyVersionId: args.parentStrategyVersionId,
+        searchRunId: args.searchRunId,
+        candidateCount: args.candidateCount,
+        status: args.status,
+        isInitial: args.isInitial ?? false,
+      },
+    });
+  }
+
+  private async determineIterationBest(
+    searchRunId: string,
+  ): Promise<{
+    strategyVersionId: string;
+    overallScore: number;
+    totalReturn: number;
+    winRate: number;
+    maxDrawdown: number;
+    symbolId: string;
+    timeframe: string;
+  } | null> {
+    const candidates = await this.prisma.candidateStrategy.findMany({
+      where: { searchRunId },
+      select: { id: true },
+    });
+    if (candidates.length === 0) return null;
+
+    const results = await this.prisma.backtestResult.findMany({
+      where: { experiment: { candidateId: { in: candidates.map((c) => c.id) } } },
+      orderBy: { overallScore: "desc" },
+      include: { experiment: { include: { candidate: true } } },
+    });
+    if (results.length === 0) return null;
+
+    const top = results[0]!;
+    return {
+      strategyVersionId: top.experiment.candidate.strategyVersionId,
+      overallScore: Number(top.overallScore),
+      totalReturn: Number(top.totalReturn),
+      winRate: Number(top.winRate),
+      maxDrawdown: Number(top.maxDrawdown),
+      symbolId: top.symbolId,
+      timeframe: top.timeframe,
+    };
+  }
+
+  private async fetchElites(
+    excludeStrategyVersionId: string,
+    limit: number,
+  ): Promise<ParentStrategy[]> {
+    const rows = await this.prisma.leaderboardEntry.findMany({
+      where: {
+        strategyVersionId: { not: excludeStrategyVersionId },
+      },
+      orderBy: { overallScore: "desc" },
+      take: Math.max(1, limit),
+      include: { strategyVersion: { include: { definition: true } } },
+    });
+    const elites: ParentStrategy[] = [];
+    for (const row of rows) {
+      const version = row.strategyVersion;
+      if (version.definition.type === "BASE") {
+        elites.push({
+          type: "BASE",
+          strategyId: version.implementationRef,
+          parameters: (version.parameters as Record<string, unknown>) ?? {},
+        });
+      } else {
+        const components = await this.prisma.compositeComponent.findMany({
+          where: { compositeVersionId: version.id },
+          orderBy: { position: "asc" },
+          include: { componentVersion: true },
+        });
+        if (components.length === 0) continue;
+        const config: CombinationConfig = {
+          id: version.implementationRef,
+          name: version.name,
+          operator: CombinationOperator.WEIGHTED,
+          components: components.map((c) => ({
+            strategyId: c.componentVersion.implementationRef,
+            weight: Number(c.weight),
+            position: c.position,
+            ...(c.componentVersion.parameters &&
+            Object.keys(c.componentVersion.parameters as object).length > 0
+              ? { parameters: c.componentVersion.parameters as Record<string, unknown> }
+              : {}),
+          })),
+        };
+        elites.push({ type: "COMPOSITE", config });
+      }
+    }
+    return elites;
+  }
 
   private async resolveParent(
     strategyVersionId: string,
@@ -395,8 +682,6 @@ export class LoopOrchestratorRunner {
         parameters: params,
       };
     }
-
-    // COMPOSITE: rebuild CombinationConfig from CompositeComponent rows.
     const components = await this.prisma.compositeComponent.findMany({
       where: { compositeVersionId: version.id },
       orderBy: { position: "asc" },
@@ -407,7 +692,6 @@ export class LoopOrchestratorRunner {
       },
     });
     if (components.length === 0) return null;
-
     const configComponents = components.map((c) => ({
       strategyId: c.componentVersion.implementationRef,
       weight: Number(c.weight),
@@ -417,7 +701,6 @@ export class LoopOrchestratorRunner {
         ? { parameters: c.componentVersion.parameters as Record<string, unknown> }
         : {}),
     }));
-
     const config: CombinationConfig = {
       id: version.implementationRef,
       name: version.name,
@@ -427,10 +710,6 @@ export class LoopOrchestratorRunner {
     return { type: "COMPOSITE", config };
   }
 
-  /**
-   * Resolve the search algorithm id for the loop_mutation algorithm,
-   * creating the row on demand if it doesn't exist.
-   */
   private async ensureLoopAlgorithmId(code: string): Promise<string> {
     const existing = await this.prisma.searchAlgorithm.findFirst({
       where: { code },
@@ -439,18 +718,13 @@ export class LoopOrchestratorRunner {
     const created = await this.prisma.searchAlgorithm.create({
       data: {
         code,
-        name: "Loop Mutation (Continuous Strategy Loop)",
-        implementationRef: "search.generator.loop_mutation",
+        name: "Loop Hybrid (Continuous Strategy Loop)",
+        implementationRef: "search.generator.loop_hybrid",
       },
     });
     return created.id;
   }
 
-  /**
-   * Accept either a UUID (symbol id) or a symbol string (e.g. "BTCUSDT").
-   * Tries `id` first (cheap O(1) lookup when callers pass a UUID),
-   * then falls back to the human-readable `symbol` code.
-   */
   private async resolveSymbolId(symbolOrId: string): Promise<string> {
     const byId = await this.prisma.symbol.findUnique({ where: { id: symbolOrId } });
     if (byId) return byId.id;
@@ -463,57 +737,108 @@ export class LoopOrchestratorRunner {
     return byCode.id;
   }
 
-  private async findLoopIdRow(loopId: string) {
-    return this.prisma.loopRunState.findUnique({ where: { loopId } });
+  private async resolveSymbolFromSearchRun(searchRunId: string) {
+    const sr = await this.prisma.searchRun.findUnique({
+      where: { id: searchRunId },
+      include: { symbol: true },
+    });
+    if (!sr) throw new Error(`SearchRun ${searchRunId} not found`);
+    return sr.symbol;
   }
 
+  private async resolveTimeframeFromSearchRun(searchRunId: string): Promise<string | null> {
+    const sr = await this.prisma.searchRun.findUnique({
+      where: { id: searchRunId },
+    });
+    return sr?.timeframe ?? null;
+  }
+
+  /* ─── Runtime state ───────────────────────────────────────────────── */
+
   /**
-   * Compute the current loop runtime state for the GET /api/loop/status
-   * and GET /api/loop/progress endpoints.
+   * Compute the loop runtime state. Loop-local best metrics only;
+   * never read the global leaderboard Top-1.
    */
   public async getRuntimeState(loopId: string): Promise<LoopRuntimeState | null> {
     const row = await this.prisma.loopRunState.findUnique({ where: { loopId } });
     if (!row) return null;
 
-    const lastIteration = await this.prisma.loopIteration.findFirst({
-      where: { loopId },
+    // Loop-local best strategy + metrics from LoopRunState.
+    let bestStrategyName: string | null = null;
+    let bestStrategyType: string | null = null;
+    let bestStrategySymbolCode: string | null = null;
+    let bestMaxDrawdown: number | null = null;
+    if (row.bestStrategyVersionId) {
+      const ver = await this.prisma.strategyVersion.findUnique({
+        where: { id: row.bestStrategyVersionId },
+        include: { definition: true },
+      });
+      bestStrategyName = ver?.name ?? null;
+      bestStrategyType = ver?.definition.type ?? null;
+    }
+    if (row.bestStrategySymbolId) {
+      const sym = await this.prisma.symbol.findUnique({
+        where: { id: row.bestStrategySymbolId },
+      });
+      bestStrategySymbolCode = sym?.symbol ?? null;
+    }
+    if (row.bestStrategyVersionId && row.bestStrategySymbolId && row.bestStrategyTimeframe) {
+      const br = await this.prisma.backtestResult.findFirst({
+        where: {
+          experiment: { candidate: { strategyVersionId: row.bestStrategyVersionId } },
+          symbolId: row.bestStrategySymbolId,
+          timeframe: row.bestStrategyTimeframe,
+        },
+        orderBy: { overallScore: "desc" },
+      });
+      bestMaxDrawdown = br ? Number(br.maxDrawdown) : null;
+    }
+
+    // Per-iteration live counters.
+    let currentIterationCandidateCount = 0;
+    let currentIterationEvaluatedCount = 0;
+    const liveIter = await this.prisma.loopIteration.findFirst({
+      where: { loopId, status: "RUNNING" },
       orderBy: { iterationIndex: "desc" },
     });
-
-    // Resolve the global Top-1 LeaderboardEntry so the UI can display
-    // the strategy name, profit / total return, and win rate associated
-    // with the best score so far. We never re-calculate evaluation
-    // metrics here — we just read what the Leaderboard already stored.
-    const topEntry = await this.prisma.leaderboardEntry.findFirst({
-      orderBy: { overallScore: "desc" },
-      include: {
-        strategyVersion: { select: { name: true } },
-        symbol: { select: { symbol: true } },
-      },
-    });
+    if (liveIter) {
+      currentIterationCandidateCount = liveIter.candidateCount;
+      currentIterationEvaluatedCount = liveIter.evaluatedCount;
+      if (liveIter.searchRunId) {
+        const realCount = await this.prisma.candidateStrategy.count({
+          where: { searchRunId: liveIter.searchRunId },
+        });
+        currentIterationCandidateCount = realCount;
+      }
+    }
 
     return {
       loopId: row.loopId,
       status: row.status,
       currentIteration: row.currentIteration,
-      maxIterations: row.maxCandidates, // legacy: loop uses maxCandidates as the iteration cap proxy
+      maxIterations: row.maxIterations,
       maxCandidates: row.maxCandidates,
+      candidateCountPerIteration: row.candidateCountPerIteration,
       totalEvaluated: row.totalEvaluated,
       noImprovementCount: row.noImprovementCount,
       noImprovementCap: row.noImprovementCap,
-      bestScoreSoFar: Number(row.bestScoreSoFar),
-      bestStrategyVersionId: topEntry?.strategyVersionId ?? null,
-      bestStrategyType: topEntry?.strategyType ?? null,
-      bestStrategyName: topEntry?.strategyVersion?.name ?? null,
-      bestStrategySymbolCode: topEntry?.symbol?.symbol ?? null,
-      bestStrategyTimeframe: topEntry?.timeframe ?? null,
-      bestTotalReturn: topEntry ? Number(topEntry.totalReturn) : null,
-      bestWinRate: topEntry ? Number(topEntry.winRate) : null,
-      lastIterationSearchRunId: lastIteration?.searchRunId ?? null,
+      bestScore: Number(row.bestScoreSoFar),
+      bestStrategyVersionId: row.bestStrategyVersionId,
+      bestStrategyName,
+      bestStrategyType,
+      bestStrategySymbolCode,
+      bestStrategyTimeframe: row.bestStrategyTimeframe,
+      bestTotalReturn: row.bestTotalReturn ? Number(row.bestTotalReturn) : null,
+      bestWinRate: row.bestWinRate ? Number(row.bestWinRate) : null,
+      bestMaxDrawdown,
+      stopReason: row.stopReason,
+      lastIterationSearchRunId: row.lastIterationSearchRunId,
       startedAt: row.startedAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
       elapsedSeconds: Math.floor((Date.now() - row.startedAt.getTime()) / 1000),
       timeLimitSeconds: row.timeLimitSeconds,
+      currentIterationCandidateCount,
+      currentIterationEvaluatedCount,
     };
   }
 }

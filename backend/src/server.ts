@@ -84,7 +84,6 @@ async function main(): Promise<void> {
   const loopRunner = new LoopOrchestratorRunner({
     searchRepository: search.repository,
     strategyVersionMapper: search.strategyVersionMapper,
-    candidateCount: 5,
   });
   loopRunner.startListening();
   mountLoop({ orchestrator: loopOrchestrator, runner: loopRunner });

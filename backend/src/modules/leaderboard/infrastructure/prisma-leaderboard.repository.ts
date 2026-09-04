@@ -61,7 +61,44 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
     });
   }
 
+  private recalculateChain: Promise<any> = Promise.resolve();
+
   public async recalculateRanks(symbolId?: string, timeframe?: string): Promise<LeaderboardItem[]> {
+    return new Promise((resolve, reject) => {
+      this.recalculateChain = this.recalculateChain
+        .then(async () => {
+          try {
+            const res = await this.executeRecalculateRanksWithRetry(symbolId, timeframe);
+            resolve(res);
+          } catch (err) {
+            reject(err);
+          }
+        })
+        .catch(() => {});
+    });
+  }
+
+  private async executeRecalculateRanksWithRetry(
+    symbolId?: string,
+    timeframe?: string,
+    retries = 3
+  ): Promise<LeaderboardItem[]> {
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        return await this.executeRecalculateRanks(symbolId, timeframe);
+      } catch (err: any) {
+        const isDeadlock = err?.code === "40P01" || err?.message?.includes("deadlock detected");
+        if (isDeadlock && attempt < retries) {
+          await new Promise((r) => setTimeout(r, Math.random() * 100 + 50 * attempt));
+          continue;
+        }
+        throw err;
+      }
+    }
+    return [];
+  }
+
+  private async executeRecalculateRanks(symbolId?: string, timeframe?: string): Promise<LeaderboardItem[]> {
     const whereClause: Record<string, unknown> = {};
     if (symbolId) whereClause.symbolId = symbolId;
     if (timeframe) whereClause.timeframe = timeframe;
@@ -77,48 +114,46 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
 
     const updatedItems: LeaderboardItem[] = [];
 
-    await this.prisma.$transaction(async (tx) => {
-      for (let i = 0; i < entries.length; i++) {
-        const newRank = i + 1;
-        const entry = entries[i]!;
+    for (let i = 0; i < entries.length; i++) {
+      const newRank = i + 1;
+      const entry = entries[i]!;
 
-        if (entry.rank !== newRank) {
-          await tx.leaderboardEntry.update({
-            where: { id: entry.id },
-            data: { rank: newRank },
-          });
-        }
-
-        await tx.rankingHistory.create({
-          data: {
-            strategyVersionId: entry.strategyVersionId,
-            rank: newRank,
-            overallScore: entry.overallScore,
-          },
-        });
-
-        updatedItems.push({
-          id: entry.id,
-          strategyVersionId: entry.strategyVersionId,
-          strategyName: entry.strategyVersion?.name || "Strategy",
-          strategyVersion: entry.strategyVersion?.version || "1.0.0",
-          strategyType: entry.strategyType || "BASE",
-          symbolId: entry.symbolId,
-          symbolCode: entry.symbol?.symbol || "BTCUSDT",
-          timeframe: entry.timeframe,
-          totalReturn: Number(entry.totalReturn),
-          winRate: Number(entry.winRate),
-          maxDrawdown: Number(entry.maxDrawdown),
-          sharpeRatio: entry.sharpeRatio ? Number(entry.sharpeRatio) : undefined,
-          sortinoRatio: entry.sortinoRatio ? Number(entry.sortinoRatio) : undefined,
-          calmarRatio: entry.calmarRatio ? Number(entry.calmarRatio) : undefined,
-          numTrades: entry.numTrades,
-          overallScore: Number(entry.overallScore),
-          rank: newRank,
-          lastEvaluatedAt: entry.lastEvaluatedAt,
+      if (entry.rank !== newRank) {
+        await this.prisma.leaderboardEntry.update({
+          where: { id: entry.id },
+          data: { rank: newRank },
         });
       }
-    });
+
+      await this.prisma.rankingHistory.create({
+        data: {
+          strategyVersionId: entry.strategyVersionId,
+          rank: newRank,
+          overallScore: entry.overallScore,
+        },
+      });
+
+      updatedItems.push({
+        id: entry.id,
+        strategyVersionId: entry.strategyVersionId,
+        strategyName: entry.strategyVersion?.name || "Strategy",
+        strategyVersion: entry.strategyVersion?.version || "1.0.0",
+        strategyType: entry.strategyType || "BASE",
+        symbolId: entry.symbolId,
+        symbolCode: entry.symbol?.symbol || "BTCUSDT",
+        timeframe: entry.timeframe,
+        totalReturn: Number(entry.totalReturn),
+        winRate: Number(entry.winRate),
+        maxDrawdown: Number(entry.maxDrawdown),
+        sharpeRatio: entry.sharpeRatio ? Number(entry.sharpeRatio) : undefined,
+        sortinoRatio: entry.sortinoRatio ? Number(entry.sortinoRatio) : undefined,
+        calmarRatio: entry.calmarRatio ? Number(entry.calmarRatio) : undefined,
+        numTrades: entry.numTrades,
+        overallScore: Number(entry.overallScore),
+        rank: newRank,
+        lastEvaluatedAt: entry.lastEvaluatedAt,
+      });
+    }
 
     return updatedItems;
   }

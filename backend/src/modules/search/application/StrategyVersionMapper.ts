@@ -201,8 +201,18 @@ export class StrategyVersionMapper {
           );
         }
 
-        await tx.compositeComponent.create({
-          data: {
+        await tx.compositeComponent.upsert({
+          where: {
+            compositeVersionId_componentVersionId: {
+              compositeVersionId,
+              componentVersionId: componentVersion.id,
+            },
+          },
+          update: {
+            weight: component.weight,
+            position: component.position,
+          },
+          create: {
             compositeVersionId,
             componentVersionId: componentVersion.id,
             weight: component.weight,

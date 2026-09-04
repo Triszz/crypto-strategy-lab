@@ -130,7 +130,7 @@ export class BullMQBacktestWorker {
       });
 
       if (params.candidateId) {
-        await prisma.candidateStrategy.update({
+        await prisma.candidateStrategy.updateMany({
           where: { id: params.candidateId },
           data: { status: "RUNNING" },
         });
@@ -173,7 +173,7 @@ export class BullMQBacktestWorker {
         });
 
         if (params.candidateId) {
-          await prisma.candidateStrategy.update({
+          await prisma.candidateStrategy.updateMany({
             where: { id: params.candidateId },
             data: { status: "DONE" },
           });
@@ -246,7 +246,7 @@ export class BullMQBacktestWorker {
         });
 
         if (params.candidateId) {
-          await prisma.candidateStrategy.update({
+          await prisma.candidateStrategy.updateMany({
             where: { id: params.candidateId },
             data: {
               status: "FAILED",

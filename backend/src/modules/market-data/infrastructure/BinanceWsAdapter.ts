@@ -102,7 +102,13 @@ export class BinanceWsAdapter extends EventEmitter implements IBinanceWsAdapter 
     this.connectingPromise = this.openConnection();
     try {
       await this.connectingPromise;
-    } finally {
+    }  catch (err) {
+      if (!this.stopped) {
+          this.scheduleReconnect();
+      }
+
+      throw err;
+  }finally {
       this.connectingPromise = null;
     }
   }

@@ -250,9 +250,6 @@ Event catalog định nghĩa trong `domain/events.ts`:
 
 - `MARKET_DATA_EVENTS.CANDLE_CLOSED` — `"market-data.candle.closed"`.
 - `MARKET_DATA_EVENTS.CANDLE_UPDATING` — `"market-data.candle.updating"`.
-- `MARKET_DATA_EVENTS.WS_STATUS` — `"market-data.ws.status"`.
-- `MARKET_DATA_EVENTS.BACKFILL_PROGRESS` — `"market-data.backfill.progress"`.
-- `MARKET_DATA_EVENTS.SYMBOLS_SYNCED` — `"market-data.symbols.synced"`.
 
 Mỗi event có payload schema cố định + version field. Hiện tại `CANDLE_CLOSED_EVENT_VERSION = "1.0"` — bất kỳ thay đổi breaking nào phải bump version, không được silent.
 
@@ -407,17 +404,91 @@ Class chỉ có static method, không có state:
 
 ### 7.3 BinanceWsAdapter
 
+**Architecture:** `BinanceWsAdapter extends EventEmitter` — sử dụng **Node.js EventEmitter** để publish events internal, **KHÔNG dùng EventBus** (EventBus dùng ở layer khác).
+
 Endpoint:
 
 `wss://stream.binance.com:9443/stream?streams=btcusdt@kline_1m/btcusdt@kline_1h/btcusdt@kline_4h/btcusdt@kline_1d`
 
 Dùng combined multi-stream format (Node `WebSocket` built-in từ undici).
 
+#### Event System — EventEmitter vs EventBus
+
+**BinanceWsAdapter → MarketDataService:** dùng **EventEmitter** (Node.js built-in).
+
+```typescript
+// BinanceWsAdapter extends EventEmitter
+export class BinanceWsAdapter extends EventEmitter {
+  private handleClose(code: number, reason: string): void {
+    this.emit("status", { state: "closed", reason: reasonStr });
+    // ↑ EventEmitter.emit() — gọi tất cả listeners sync
+  }
+}
+
+// MarketDataService subscribe
+this.wsAdapter.on("status", onStatus);
+this.wsAdapter.on("CandleClosed", onClosed);
+this.wsAdapter.on("CandleUpdating", onUpdating);
+```
+
+**MarketDataService → Modules khác (Strategy, Backtest, Search, Frontend):** dùng **EventBus** (custom wrapper, publish domain events).
+
+```typescript
+// MarketDataService publish ra EventBus
+const onClosed = (candle: Candle): void => {
+  this.eventBus.publish(MARKET_DATA_EVENTS.CANDLE_CLOSED, candle);
+  // ↑ EventBus.publish() — broadcast ra toàn app
+};
+
+this.wsAdapter.on("CandleClosed", onClosed);
+```
+
+**Lý do tách 2 layer:**
+- **EventEmitter** = Internal communication giữa adapter và service (tight coupling, cùng module).
+- **EventBus** = Domain events broadcast ra ngoài module (loose coupling, contract ổn định).
+
 #### Lifecycle
 
 - **`connect()`** — resolve khi WS open + initial subscriptions flush. Nếu đang connecting → trả promise cũ (idempotent).
 - **`disconnect()`** — set `stopped = true`, gửi close frame 1000, drain tối đa 1s, emit status `closed`.
 - **Reconnect** — `scheduleReconnect()` sau `handleClose()`. Nếu connect fail → recursive với attempt tăng dần.
+
+#### WebSocket Event Handling
+
+**3 listeners chính:**
+
+```typescript
+ws.addEventListener("message", (event) => {
+  void this.handleMessage(event.data);
+  // Parse → emit CandleClosed / CandleUpdating
+});
+
+ws.addEventListener("close", (event) => {
+  this.handleClose(code, reason);
+  // ← Được gọi SAU error event (nếu có lỗi)
+  //   Xử lý reconnect ở đây
+});
+
+ws.addEventListener("error", (event) => {
+  // ← Được gọi TRƯỚC close event
+  //   Chỉ log, KHÔNG reconnect (vì close sẽ lo)
+  const message = extractErrorMessage(event) ?? "unknown";
+});
+```
+
+**Flow khi có lỗi:**
+
+```
+Error xảy ra (network timeout / server close / ...)
+  ↓
+1. Fire "error" event  ← Log error, không xử lý reconnect
+  ↓
+2. Runtime close socket
+  ↓
+3. Fire "close" event  ← handleClose() → scheduleReconnect()
+```
+
+**Kết luận:** Chỉ cần xử lý reconnect ở **close event** — error event luôn theo sau bởi close event.
 
 #### Ref-count
 
@@ -436,12 +507,17 @@ Ref-count **persist qua reconnect** — không bị clear khi WS disconnect. Khi
 
 Xem chi tiết hơn ở §15.
 
-#### Events emit
+#### Events emit (qua EventEmitter)
 
-- `CandleClosed` — `k.x === true`.
-- `CandleUpdating` — `k.x === false` (fire ~1 lần/giây cho stream đang active).
-- `status` — connection lifecycle.
+- `CandleClosed` — `k.x === true` (candle đã đóng).
+- `CandleUpdating` — `k.x === false` (candle đang hình thành, fire ~1 lần/giây).
+- `status` — connection lifecycle (`{ state: "connected" | "closed" | "reconnecting", ... }`).
 - `ready` — first open sau connect.
+
+**Semantics:**
+
+- `CandleUpdating` → pure in-memory, **KHÔNG persist** vào DB (chỉ broadcast).
+- `CandleClosed` → persist vào DB (fire-and-forget trong `MarketDataService.onClosedPersist`) + publish ra EventBus.
 
 #### ReconnectStrategy
 
@@ -537,27 +613,105 @@ Tất cả endpoint validate input qua `zod` schema → reject 400 nếu invalid
 
 ## 10. Event Bus — chi tiết
 
-### 10.1 Wiring
+### 10.1 Wiring — Hai layer event riêng biệt
+
+**Layer 1: BinanceWsAdapter → MarketDataService (EventEmitter)**
+
+```typescript
+// BinanceWsAdapter extends EventEmitter
+export class BinanceWsAdapter extends EventEmitter {
+  private handleMessage(data: string) {
+    const candle = CandleNormalizer.fromWsKline(kmsg);
+    if (kmsg.k.x) {
+      this.emit("CandleClosed", candle);  // ← EventEmitter.emit()
+    } else {
+      this.emit("CandleUpdating", candle);
+    }
+  }
+  
+  private handleClose(code: number, reason: string) {
+    this.emit("status", { state: "closed", reason });
+  }
+}
+```
+
+**Layer 2: MarketDataService → Modules khác (EventBus)**
 
 `MarketDataService.wireWsToEventBus()` đăng ký **3 listener** trên `BinanceWsAdapter`:
 
-1. **`CandleClosed` → publish `MARKET_DATA_EVENTS.CANDLE_CLOSED`** — payload là candle đã close.
-2. **`CandleUpdating` → publish `MARKET_DATA_EVENTS.CANDLE_UPDATING`** — payload là candle đang hình thành.
-3. **`CandleClosed` → `repo.upsert(candle)` (fire-and-forget)** — persist ngay trong adapter, không qua EventBus (latency-sensitive).
+```typescript
+// 1. CandleClosed → publish ra EventBus (cho Strategy, Backtest, Search)
+const onClosed = (candle: Candle): void => {
+  this.eventBus.publish(MARKET_DATA_EVENTS.CANDLE_CLOSED, candle);
+};
+this.wsAdapter.on("CandleClosed", onClosed);  // ← EventEmitter.on()
 
-Lý do tách 2 đường cho `CandleClosed`: EventBus publish là cho các consumer khác (Strategy, Backtest); còn persist là concern của Market Data nên làm thẳng trong adapter để giảm hop.
+// 2. CandleUpdating → publish ra EventBus (cho Strategy live tick)
+const onUpdating = (candle: Candle): void => {
+  this.eventBus.publish(MARKET_DATA_EVENTS.CANDLE_UPDATING, candle);
+};
+this.wsAdapter.on("CandleUpdating", onUpdating);
 
-### 10.2 Event catalog
+// 3. CandleClosed → persist vào DB (fire-and-forget, latency-sensitive)
+const onClosedPersist = (candle: Candle): void => {
+  void this.repo.upsert(candle);
+};
+this.wsAdapter.on("CandleClosed", onClosedPersist);
+```
+
+**Lý do tách 2 listener cho `CandleClosed`:**
+
+- **EventBus publish** — cho các consumer khác (Strategy, Backtest, Search, SocketGateway).
+- **Direct persist** — concern của Market Data, làm thẳng trong adapter để giảm hop (không qua EventBus vì latency-sensitive).
+
+**Reconnect status wiring:**
+
+```typescript
+// MarketDataService.wireReconnectReconciliation()
+const onStatus = (status: WsConnectionStatus): void => {
+  if (status.state === "reconnecting") {
+    this.reconnecting = true;
+  }
+  if (status.state === "connected" && this.reconnecting) {
+    // Edge: reconnecting → connected → trigger gap-fill
+    this.reconnecting = false;
+    void this.reconciliation.reconcileAll("reconnect");
+  }
+};
+this.wsAdapter.on("status", onStatus);
+```
+
+### 10.2 EventEmitter vs EventBus — So sánh
+
+| Aspect | EventEmitter (Node.js) | EventBus (custom) |
+|--------|------------------------|-------------------|
+| **Scope** | Internal communication (adapter ↔ service) | Domain events (service → modules) |
+| **Usage** | `this.emit()` / `on()` / `off()` | `eventBus.publish()` / `subscribe()` |
+| **Coupling** | Tight (cùng module) | Loose (cross-module contract) |
+| **Implementation** | `import { EventEmitter } from "node:events"` | Wrapper around EventEmitter + error isolation |
+| **Versioning** | Không có (internal) | Có version field (`CANDLE_CLOSED_EVENT_VERSION = "1.0"`) |
+| **Error handling** | Throw nếu listener fail | Catch + log (NFR-018: event failure isolation) |
+
+### 10.3 Event catalog
 
 | Event name | Publisher | Channel | Subscribers |
 |---|---|---|---|
-| `market-data.candle.closed` | BinanceWsAdapter | In-process EventBus | CandlePersister, Strategy, Backtest, Search, SocketGateway |
-| `market-data.candle.updating` | BinanceWsAdapter | In-process EventBus | Strategy, Search (live tick) |
-| `market-data.ws.status` | BinanceWsAdapter | In-process EventBus | Logger |
+| `market-data.candle.closed` | MarketDataService (via EventBus) | In-process EventBus | Strategy, Backtest, Search, SocketGateway |
+| `market-data.candle.updating` | MarketDataService (via EventBus) | In-process EventBus | Strategy, Search (live tick) |
+| `market-data.ws.status` | BinanceWsAdapter (via EventEmitter) | EventEmitter internal | MarketDataService (reconnect reconciliation) |
 | `market-data.backfill.progress` | BackfillService | In-process EventBus | Logger |
 | `market-data.symbols.synced` | SymbolSyncService | In-process EventBus | Logger |
 
-### 10.3 Payload schema — `CandleClosedEvent` / `CandleUpdatingEvent`
+**Internal events (EventEmitter, không qua EventBus):**
+
+| Event | Emitter | Listener | Purpose |
+|-------|---------|----------|---------|
+| `CandleClosed` | BinanceWsAdapter | MarketDataService | Trigger EventBus publish + persist |
+| `CandleUpdating` | BinanceWsAdapter | MarketDataService | Trigger EventBus publish |
+| `status` | BinanceWsAdapter | MarketDataService | Reconnect reconciliation trigger |
+| `ready` | BinanceWsAdapter | MarketDataService | First connect ack |
+
+### 10.4 Payload schema — `CandleClosedEvent` / `CandleUpdatingEvent`
 
 Cả hai event wire shape giống nhau, version `"1.0"`:
 
@@ -572,6 +726,41 @@ Semantics phân biệt qua `event` name và nguồn gốc:
 
 - `CandleUpdating` — Binance WS flag `k.x === false`, fire ~mỗi giây khi nến đang hình thành. **Pure in-memory**, không bao giờ đi xuống DB (chỉ `CandleClosed` mới persist).
 - `CandleClosed` — Binance WS flag `k.x === true`, fire đúng 1 lần khi nến vừa đóng. Được persist qua `MarketDataService.onClosedPersist` (fire-and-forget).
+
+### 10.5 Flow đầy đủ — từ Binance đến Consumer
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Binance WS stream                                       │
+│ → JSON message (k.x = true/false)                       │
+└──────────────────┬──────────────────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│ BinanceWsAdapter.handleMessage()                        │
+│  ├─ Parse → CandleNormalizer.fromWsKline()              │
+│  ├─ if (k.x === true):                                  │
+│  │    this.emit("CandleClosed", candle)  ← EventEmitter │
+│  └─ else:                                               │
+│       this.emit("CandleUpdating", candle)               │
+└──────────────────┬──────────────────────────────────────┘
+                   │ (EventEmitter internal)
+                   ▼
+┌─────────────────────────────────────────────────────────┐
+│ MarketDataService (3 listeners)                         │
+│                                                         │
+│ 1. on("CandleClosed") → EventBus.publish(...)          │
+│    ├─ Publish MARKET_DATA_EVENTS.CANDLE_CLOSED         │
+│    └─ Consumer: Strategy, Backtest, Search, Socket     │
+│                                                         │
+│ 2. on("CandleUpdating") → EventBus.publish(...)        │
+│    ├─ Publish MARKET_DATA_EVENTS.CANDLE_UPDATING       │
+│    └─ Consumer: Strategy (live signal), SocketGateway  │
+│                                                         │
+│ 3. on("CandleClosed") → repo.upsert(candle)            │
+│    └─ Fire-and-forget persist (không qua EventBus)     │
+└─────────────────────────────────────────────────────────┘
+```
 
 ---
 

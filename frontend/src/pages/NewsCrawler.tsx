@@ -25,10 +25,10 @@ import {
   Inbox,
 } from 'lucide-react';
 
-import { fetchNews, triggerCrawl } from '../lib/newsApi';
+import { fetchNews, triggerCrawl, fetchExtractionTemplate, toggleSelfHealing } from '../lib/newsApi';
 import { fetchSentimentSummary, type SentimentSummary } from '../lib/sentimentApi';
 import { onNewsCollected, onSentimentAnalyzed, connect } from '../lib/socket';
-import { newsCollectedToListItem, type NewsItem } from '../types/news';
+import { newsCollectedToListItem, type NewsItem, type ExtractionTemplate } from '../types/news';
 import { HttpError } from '../lib/http';
 
 type SymbolFilter = 'ALL' | 'BTC' | 'ETH' | 'SOL';
@@ -84,6 +84,11 @@ export default function NewsCrawler() {
   const [isCrawling, setIsCrawling] = useState(false);
   const [lastCrawlMessage, setLastCrawlMessage] = useState<string | null>(null);
 
+  // Dynamic state for LLM extraction template & self-healing
+  const [template, setTemplate] = useState<ExtractionTemplate | null>(null);
+  const [selfHealingActive, setSelfHealingActive] = useState(true);
+  const [isTogglingSelfHealing, setIsTogglingSelfHealing] = useState(false);
+
   // Real sentiment summary state from backend Sentiment API
   const [sentimentSummary, setSentimentSummary] = useState<SentimentSummary>({
     symbol: 'ALL',
@@ -95,7 +100,6 @@ export default function NewsCrawler() {
   });
 
   const [sources] = useState<string[]>(['Website']);
-  const [selfHealingActive, setSelfHealingActive] = useState(true);
   const [refreshInterval] = useState('1m');
 
   const inflightRef = useRef(0);
@@ -109,15 +113,17 @@ export default function NewsCrawler() {
     void (async () => {
       try {
         const symbolParam = symbolFilter === 'ALL' ? undefined : symbolFilter;
-        const [newsResult, summaryResult] = await Promise.all([
+        const [newsResult, summaryResult, templateResult] = await Promise.all([
           fetchNews({ symbol: symbolParam, pageSize: 20 }),
           fetchSentimentSummary(symbolParam),
+          fetchExtractionTemplate().catch(() => null),
         ]);
 
         if (requestId !== inflightRef.current) return;
         setNews(newsResult.items);
         setTotalNews(newsResult.total);
         setSentimentSummary(summaryResult);
+        if (templateResult) setTemplate(templateResult);
       } catch (err) {
         if (requestId !== inflightRef.current) return;
         const msg =
@@ -132,6 +138,7 @@ export default function NewsCrawler() {
       }
     })();
   }, [symbolFilter]);
+
 
   // ── WebSocket subscription ────────────────────────────────────────────
   useEffect(() => {
@@ -216,6 +223,18 @@ export default function NewsCrawler() {
   };
 
   const toggleSource = (_src: string): void => {};
+
+  const handleToggleSelfHealing = async (): Promise<void> => {
+    setIsTogglingSelfHealing(true);
+    try {
+      const res = await toggleSelfHealing(!selfHealingActive);
+      setSelfHealingActive(res.selfHealingActive);
+    } catch (err) {
+      console.error("Failed to toggle self-healing", err);
+    } finally {
+      setIsTogglingSelfHealing(false);
+    }
+  };
 
   // Calculate percentages for sentiment gauge
   const totalSentimentCount = Math.max(1, sentimentSummary.totalNews);
@@ -489,7 +508,7 @@ export default function NewsCrawler() {
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-extrabold text-slate-800">LLM-assisted Extraction</h3>
               <span className="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-100 text-emerald-600 font-bold text-[10px]">
-                Template: v1.4.2
+                Template: {template?.version ?? 'v1.4.2'}
               </span>
             </div>
 
@@ -516,14 +535,14 @@ export default function NewsCrawler() {
 
               <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-200/50 text-xs font-bold text-slate-700">
                 <div className="bg-white p-3 rounded-lg border border-slate-200/50 text-left">
-                  <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Nhận diện vùng:</span>
-                  <div className="flex flex-col gap-0.5 font-mono text-[9px] text-slate-600">
-                    <div>title &rarr; <span className="text-blue-600">h1.article-title</span></div>
-                    <div>summary &rarr; <span className="text-blue-600">p.summary</span></div>
+                  <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Nhận diện vùng ({template?.domain ?? 'coindesk.com'}):</span>
+                  <div className="flex flex-col gap-0.5 font-mono text-[9px] text-slate-600 overflow-x-auto">
+                    <div>title &rarr; <span className="text-blue-600">{template?.titleSelector ?? 'h1.article-title'}</span></div>
+                    <div>summary &rarr; <span className="text-blue-600">{template?.summarySelector ?? 'p.summary'}</span></div>
                     <div>source &rarr; <span className="text-blue-600">span.source</span></div>
                   </div>
                   <div className="text-[9px] text-emerald-600 mt-2.5 font-bold flex items-center gap-1">
-                    <Check className="w-3 h-3" /> Độ tin cậy: 0.92
+                    <Check className="w-3 h-3" /> Độ tin cậy: {template?.confidenceScore ?? 0.92}
                   </div>
                 </div>
 
@@ -532,18 +551,18 @@ export default function NewsCrawler() {
                     <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Các phiên bản:</span>
                     <div className="flex flex-col gap-1.5 mt-1.5 text-[9.5px]">
                       <div className="flex justify-between items-center font-semibold text-slate-700">
-                        <span className="text-blue-600">v1.4.2 (Hiện tại)</span>
-                        <span className="text-slate-400 font-medium">10:32 • 18/05/2025</span>
+                        <span className="text-blue-600">{template?.version ?? 'v1.4.2'} (Hiện tại)</span>
+                        <span className="text-slate-400 font-medium">Active</span>
                       </div>
                       <div className="flex justify-between items-center font-semibold text-slate-400">
                         <span>v1.4.1</span>
-                        <span>09:10 • 17/05/2025</span>
+                        <span>Archived</span>
                       </div>
                     </div>
                   </div>
                   <div className="flex justify-between items-center text-[9px] text-slate-400 font-bold mt-2 pt-1 border-t border-slate-100">
-                    <span>Fields: 5 | Score: 0.92</span>
-                    <button className="text-blue-600">Xem tất cả</button>
+                    <span>Fields: 3 | Score: {template?.confidenceScore ?? 0.92}</span>
+                    <span className="text-emerald-600 text-[8px] uppercase">API Ready</span>
                   </div>
                 </div>
               </div>
@@ -556,8 +575,9 @@ export default function NewsCrawler() {
               <div className="flex items-center gap-2">
                 <span className="text-[10px] font-bold text-slate-400">Tự động bật</span>
                 <button
-                  onClick={() => setSelfHealingActive((v) => !v)}
-                  className={`w-9 h-5 rounded-full transition-colors relative flex items-center ${
+                  onClick={() => void handleToggleSelfHealing()}
+                  disabled={isTogglingSelfHealing}
+                  className={`w-9 h-5 rounded-full transition-colors relative flex items-center cursor-pointer ${
                     selfHealingActive ? 'bg-blue-600' : 'bg-slate-300'
                   }`}
                 >
@@ -569,6 +589,7 @@ export default function NewsCrawler() {
                 </button>
               </div>
             </div>
+
 
             <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex flex-col gap-4">
               <div className="flex justify-between items-start text-center">

@@ -17,6 +17,7 @@ import { http } from "./http";
 import type {
   CrawlJobProgress,
   CrawlTriggerResponse,
+  ExtractionTemplate,
   FetchNewsParams,
   NewsItem,
   NewsListResponse,
@@ -87,3 +88,14 @@ export async function fetchCrawlJobStatus(
     throw err;
   }
 }
+
+/** Fetch current active LLM extraction template from backend */
+export async function fetchExtractionTemplate(): Promise<ExtractionTemplate> {
+  return http.get<ExtractionTemplate>("/api/news/templates");
+}
+
+/** Toggle self-healing mode on/off in backend */
+export async function toggleSelfHealing(enabled: boolean): Promise<{ selfHealingActive: boolean }> {
+  return http.post<{ selfHealingActive: boolean }>("/api/news/self-healing/toggle", { enabled });
+}
+

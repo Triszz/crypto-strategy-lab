@@ -59,15 +59,17 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
       return;
     }
     try {
+      // Use a single computed loopId so the response and the DB row
+      // refer to the same instance — even when the body omits loopId.
+      const effectiveLoopId =
+        parsed.data.loopId ?? `loop-${Date.now()}`;
       await deps.orchestrator.startLoop({
-        loopId: parsed.data.loopId ?? `loop-${Date.now()}`,
+        loopId: effectiveLoopId,
         maxCandidates: parsed.data.maxCandidates,
         timeLimitSeconds: parsed.data.timeLimitSeconds,
         noImprovementCap: parsed.data.noImprovementCap,
       });
-      const state = await deps.runner?.getRuntimeState(
-        parsed.data.loopId ?? `loop-${Date.now()}`,
-      );
+      const state = await deps.runner?.getRuntimeState(effectiveLoopId);
       res.json({ success: true as const, data: state ?? { status: "RUNNING" } });
     } catch (err) {
       log.error({ err }, "loop.api.start.error");

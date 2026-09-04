@@ -24,13 +24,16 @@ import {
 import {
   SUPPORT_RESISTANCE_STRATEGY_ID,
 } from "../../src/modules/strategy/strategies/SupportResistanceStrategy";
+import {
+  NEWS_SENTIMENT_STRATEGY_ID,
+} from "../../src/modules/strategy/strategies/NewsSentimentStrategy";
 
 describe("bootstrap", () => {
   beforeEach(() => {
     resetStrategyRegistry();
   });
 
-  it("BUILT_IN_STRATEGIES contains all four MVP strategies", () => {
+  it("BUILT_IN_STRATEGIES contains all built-in strategies", () => {
     const ids = BUILT_IN_STRATEGIES.map((s) => s.id).sort();
     expect(ids).toEqual(
       [
@@ -38,25 +41,27 @@ describe("bootstrap", () => {
         MA_STRATEGY_ID,
         RSI_STRATEGY_ID,
         SUPPORT_RESISTANCE_STRATEGY_ID,
+        NEWS_SENTIMENT_STRATEGY_ID,
       ].sort(),
     );
   });
 
-  it("bootstrapStrategies registers all four in the runtime registry", () => {
+  it("bootstrapStrategies registers all built-in strategies in the runtime registry", () => {
     bootstrapStrategies();
     const r = getStrategyRegistry();
     expect(r.has(MA_STRATEGY_ID)).toBe(true);
     expect(r.has(RSI_STRATEGY_ID)).toBe(true);
     expect(r.has(BOLLINGER_STRATEGY_ID)).toBe(true);
     expect(r.has(SUPPORT_RESISTANCE_STRATEGY_ID)).toBe(true);
-    expect(r.list()).toHaveLength(4);
+    expect(r.has(NEWS_SENTIMENT_STRATEGY_ID)).toBe(true);
+    expect(r.list()).toHaveLength(5);
   });
 
   it("bootstrapStrategies is idempotent (calling twice does not throw)", () => {
     bootstrapStrategies();
     expect(() => bootstrapStrategies()).not.toThrow();
     const r = getStrategyRegistry();
-    expect(r.list()).toHaveLength(4);
+    expect(r.list()).toHaveLength(5);
   });
 
   it("resolved strategies return a usable analyze() function", () => {

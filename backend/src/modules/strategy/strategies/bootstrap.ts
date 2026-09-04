@@ -27,6 +27,7 @@ import { BollingerBandsStrategy } from "./BollingerBandsStrategy";
 import { MovingAverageStrategy } from "./MovingAverageStrategy";
 import { RsiStrategy } from "./RsiStrategy";
 import { SupportResistanceStrategy } from "./SupportResistanceStrategy";
+import { NewsSentimentStrategy } from "./NewsSentimentStrategy";
 
 /** The list of built-in BASE strategies shipped with this build. */
 export const BUILT_IN_STRATEGIES: ReadonlyArray<Strategy> = [
@@ -34,6 +35,7 @@ export const BUILT_IN_STRATEGIES: ReadonlyArray<Strategy> = [
   new RsiStrategy(),
   new BollingerBandsStrategy(),
   new SupportResistanceStrategy(),
+  new NewsSentimentStrategy(),
 ];
 
 /**

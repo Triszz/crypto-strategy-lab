@@ -4,6 +4,8 @@
  * - Initial load:  `fetchNews({ symbol })` & `fetchSentimentSummary(symbol)`
  * - Realtime:      `onNewsCollected` & `onSentimentAnalyzed`
  * - Manual crawl:  `triggerCrawl(symbol)`
+ * - Control Panel: Source filters (Website, RSS, HTML), Asset filter (ALL, BTC, ETH, SOL),
+ *                  Auto refresh cron interval timer (Off, 1m, 2m, 3m, 4m, 5m).
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -23,6 +25,7 @@ import {
   AlertCircle,
   ChevronDown,
   Inbox,
+  Clock,
 } from 'lucide-react';
 
 import { fetchNews, triggerCrawl, fetchExtractionTemplate, toggleSelfHealing } from '../lib/newsApi';
@@ -32,8 +35,43 @@ import { newsCollectedToListItem, type NewsItem, type ExtractionTemplate } from 
 import { HttpError } from '../lib/http';
 
 type SymbolFilter = 'ALL' | 'BTC' | 'ETH' | 'SOL';
+type SourceCategory = 'Website' | 'RSS' | 'HTML';
+type RefreshIntervalOption = 'off' | '1m' | '2m' | '3m' | '4m' | '5m';
 
 const SYMBOL_FILTERS: SymbolFilter[] = ['ALL', 'BTC', 'ETH', 'SOL'];
+
+const INTERVAL_SECS: Record<RefreshIntervalOption, number> = {
+  off: 0,
+  '1m': 60,
+  '2m': 120,
+  '3m': 180,
+  '4m': 240,
+  '5m': 300,
+};
+
+const INTERVAL_LABELS: { value: RefreshIntervalOption; label: string }[] = [
+  { value: 'off', label: 'Tắt' },
+  { value: '1m', label: '1 phút' },
+  { value: '2m', label: '2 phút' },
+  { value: '3m', label: '3 phút' },
+  { value: '4m', label: '4 phút' },
+  { value: '5m', label: '5 phút' },
+];
+
+function matchesSourceCategory(itemSource: string, activeSources: SourceCategory[]): boolean {
+  if (activeSources.length === 3) return true; // All active
+  const s = (itemSource || '').toLowerCase();
+
+  const isHtml = s.includes('html') || s.includes('scraper') || s.includes('cheerio') || s.includes('extract');
+  const isExplicitRss = s.includes('rss') || s === 'coindesk' || s === 'cointelegraph' || s === 'bitcoin magazine' || s === 'btcmagazine';
+  const isWebsite = s.includes('newsdata') || s.includes('cryptopanic') || s.includes('cryptocompare') || s.includes('api') || (!isHtml && !isExplicitRss);
+
+  if (activeSources.includes('HTML') && isHtml) return true;
+  if (activeSources.includes('Website') && isWebsite) return true;
+  if (activeSources.includes('RSS') && isExplicitRss && !isWebsite) return true;
+
+  return false;
+}
 
 function assetIcon(asset: string): string {
   if (asset === 'BTC') return '₿';
@@ -74,7 +112,9 @@ function inferSentiment(item: NewsItem): 'positive' | 'neutral' | 'negative' {
 export default function NewsCrawler() {
   const navigate = useNavigate();
 
-  const [symbolFilter, setSymbolFilter] = useState<SymbolFilter>('ALL');
+  const [symbolFilter, setSymbolFilter] = useState<SymbolFilter>(() => {
+    return (localStorage.getItem('news_symbol_filter') as SymbolFilter) || 'ALL';
+  });
 
   const [news, setNews] = useState<NewsItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -99,10 +139,19 @@ export default function NewsCrawler() {
     negativeCount: 0,
   });
 
-  const [sources] = useState<string[]>(['Website']);
-  const [refreshInterval] = useState('1m');
+  // Source filters: Website, RSS, HTML
+  const [activeSources, setActiveSources] = useState<SourceCategory[]>(['Website', 'RSS', 'HTML']);
+
+  // Auto Refresh Cron (Intervals: off, 1m, 2m, 3m, 4m, 5m)
+  const [refreshInterval, setRefreshInterval] = useState<RefreshIntervalOption>('1m');
+  const [countdown, setCountdown] = useState<number | null>(60);
 
   const inflightRef = useRef(0);
+
+  // ── Save symbol preference ──────────────────────────────────────────
+  useEffect(() => {
+    localStorage.setItem('news_symbol_filter', symbolFilter);
+  }, [symbolFilter]);
 
   // ── Initial fetch + refetch on filter change ──────────────────────────
   useEffect(() => {
@@ -114,7 +163,7 @@ export default function NewsCrawler() {
       try {
         const symbolParam = symbolFilter === 'ALL' ? undefined : symbolFilter;
         const [newsResult, summaryResult, templateResult] = await Promise.all([
-          fetchNews({ symbol: symbolParam, pageSize: 20 }),
+          fetchNews({ symbol: symbolParam, pageSize: 25 }),
           fetchSentimentSummary(symbolParam),
           fetchExtractionTemplate().catch(() => null),
         ]);
@@ -139,6 +188,42 @@ export default function NewsCrawler() {
     })();
   }, [symbolFilter]);
 
+  // ── Auto Refresh Cron Timer ───────────────────────────────────────────
+  useEffect(() => {
+    if (refreshInterval === 'off') {
+      setCountdown(null);
+      return;
+    }
+
+    const totalSecs = INTERVAL_SECS[refreshInterval];
+    setCountdown(totalSecs);
+
+    const timer = setInterval(() => {
+      setCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          // Trigger silent refetch
+          void (async () => {
+            try {
+              const symbolParam = symbolFilter === 'ALL' ? undefined : symbolFilter;
+              const [newsResult, summaryResult] = await Promise.all([
+                fetchNews({ symbol: symbolParam, pageSize: 25 }),
+                fetchSentimentSummary(symbolParam),
+              ]);
+              setNews(newsResult.items);
+              setTotalNews(newsResult.total);
+              setSentimentSummary(summaryResult);
+            } catch (err) {
+              console.error('Auto refresh fetch error:', err);
+            }
+          })();
+          return totalSecs;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [refreshInterval, symbolFilter]);
 
   // ── WebSocket subscription ────────────────────────────────────────────
   useEffect(() => {
@@ -155,7 +240,7 @@ export default function NewsCrawler() {
 
       setNews((prev) => {
         if (prev.some((p) => p.id === newItem.id)) return prev;
-        return [newItem, ...prev].slice(0, 20);
+        return [newItem, ...prev].slice(0, 25);
       });
       setTotalNews((t) => t + 1);
     });
@@ -205,7 +290,7 @@ export default function NewsCrawler() {
       );
 
       const [list, summary] = await Promise.all([
-        fetchNews({ symbol: symbolParam, pageSize: 20 }),
+        fetchNews({ symbol: symbolParam, pageSize: 25 }),
         fetchSentimentSummary(symbolParam),
       ]);
       setNews(list.items);
@@ -222,7 +307,16 @@ export default function NewsCrawler() {
     }
   };
 
-  const toggleSource = (_src: string): void => {};
+  // ── Source toggle handler ────────────────────────────────────────────
+  const toggleSource = (src: SourceCategory): void => {
+    setActiveSources((prev) => {
+      if (prev.includes(src)) {
+        if (prev.length === 1) return prev; // keep at least 1 source
+        return prev.filter((s) => s !== src);
+      }
+      return [...prev, src];
+    });
+  };
 
   const handleToggleSelfHealing = async (): Promise<void> => {
     setIsTogglingSelfHealing(true);
@@ -236,6 +330,9 @@ export default function NewsCrawler() {
     }
   };
 
+  // Filter news based on active sources
+  const filteredNews = news.filter((item) => matchesSourceCategory(item.source, activeSources));
+
   // Calculate percentages for sentiment gauge
   const totalSentimentCount = Math.max(1, sentimentSummary.totalNews);
   const posPct = Math.round((sentimentSummary.positiveCount / totalSentimentCount) * 100);
@@ -243,9 +340,9 @@ export default function NewsCrawler() {
   const neuPct = Math.max(0, 100 - posPct - negPct);
 
   return (
-    <div className="p-6 flex flex-col gap-6 max-w-[1600px] mx-auto">
+    <div className="p-4 md:p-6 flex flex-col gap-6 w-full">
       {/* Top Header */}
-      <header className="flex justify-between items-center bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+      <header className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-4 md:p-5 rounded-2xl border border-slate-100 shadow-xs">
         <div>
           <h2 className="text-xl font-extrabold text-slate-900 tracking-tight">
             News Crawler & Phân tích thị trường
@@ -254,110 +351,140 @@ export default function NewsCrawler() {
             Thu nhập tin tức, trích xuất dữ liệu và phân tích Sentiment tích hợp WebSocket
           </p>
         </div>
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2 bg-green-50 text-green-700 border border-green-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
-            <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+        <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+          <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 border border-emerald-200/50 px-3.5 py-1.5 rounded-full text-xs font-semibold">
+            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
             <span>BE + WebSocket · Sentiment Module Realtime</span>
           </div>
-          <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors">
-            <HelpCircle className="w-5 h-5" />
-          </button>
-          <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors relative">
-            <Bell className="w-5 h-5" />
-            <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors">
+              <HelpCircle className="w-5 h-5" />
+            </button>
+            <button className="p-2 rounded-xl hover:bg-slate-50 border border-slate-100 text-slate-500 hover:text-slate-950 transition-colors relative">
+              <Bell className="w-5 h-5" />
+              <span className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-red-500" />
+            </button>
+          </div>
         </div>
       </header>
 
       {/* Crawl Control Panel */}
-      <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-wrap gap-6 items-end justify-between">
-        <div className="flex flex-wrap gap-6">
-          <div className="flex flex-col gap-2">
+      <section className="bg-white p-4 md:p-5 rounded-2xl border border-slate-100 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-5">
+        <div className="flex flex-wrap items-center gap-5">
+          {/* Nguồn Filter */}
+          <div className="flex flex-col gap-1.5">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-              Nguồn
+              Nguồn cào tin
             </label>
-            <div className="flex gap-2">
-              {(['Website', 'RSS', 'HTML'] as const).map((src) => (
-                <button
-                  key={src}
-                  onClick={() => toggleSource(src)}
-                  className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all ${
-                    sources.includes(src)
-                      ? 'border-blue-600 bg-blue-50 text-blue-600'
-                      : 'border-slate-200 text-slate-500 hover:bg-slate-50'
-                  }`}
-                >
-                  {src === 'Website' && <Globe className="w-3.5 h-3.5" />}
-                  {src === 'RSS' && <Rss className="w-3.5 h-3.5" />}
-                  {src === 'HTML' && <Code className="w-3.5 h-3.5" />}
-                  <span>{src === 'HTML' ? '</> HTML' : src}</span>
-                </button>
-              ))}
+            <div className="flex flex-wrap gap-2">
+              {(['Website', 'RSS', 'HTML'] as const).map((src) => {
+                const isActive = activeSources.includes(src);
+                return (
+                  <button
+                    key={src}
+                    onClick={() => toggleSource(src)}
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold transition-all cursor-pointer ${
+                      isActive
+                        ? 'border-blue-600 bg-blue-50 text-blue-600 shadow-xs'
+                        : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                    }`}
+                  >
+                    {src === 'Website' && <Globe className="w-3.5 h-3.5" />}
+                    {src === 'RSS' && <Rss className="w-3.5 h-3.5" />}
+                    {src === 'HTML' && <Code className="w-3.5 h-3.5" />}
+                    <span>{src === 'HTML' ? '</> HTML' : src}</span>
+                    {isActive && <Check className="w-3 h-3 text-blue-600 stroke-[3]" />}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
+          {/* Asset Filter */}
+          <div className="flex flex-col gap-1.5">
             <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-              Asset
+              Asset (Tiền mã hóa)
             </label>
             <div className="relative">
               <select
                 value={symbolFilter}
                 onChange={(e) => setSymbolFilter(e.target.value as SymbolFilter)}
-                className="appearance-none flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-50 border border-slate-200 text-xs font-bold text-slate-700 min-w-[140px] pr-8 cursor-pointer"
+                className="appearance-none flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-slate-50 border border-slate-200 text-xs font-extrabold text-slate-700 min-w-[140px] pr-8 cursor-pointer hover:border-blue-300 transition-colors"
               >
                 {SYMBOL_FILTERS.map((s) => (
                   <option key={s} value={s}>
-                    {s === 'ALL' ? 'Tất cả' : s}
+                    {s === 'ALL' ? '⚡ Tất cả' : `${assetIcon(s)} ${s}`}
                   </option>
                 ))}
               </select>
-              <ChevronDown className="w-4 h-4 text-slate-500 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-              Auto refresh (cron)
-            </label>
-            <div className="flex p-0.75 bg-slate-50 rounded-xl border border-slate-200/80">
-              {['1 phút', '2 phút', '3 phút', '4 phút', '5 phút'].map((int) => (
-                <button
-                  key={int}
-                  disabled
-                  className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all ${
-                    refreshInterval === int
-                      ? 'bg-blue-600 text-white shadow-sm'
-                      : 'text-slate-500 hover:text-slate-900 disabled:opacity-60 disabled:cursor-not-allowed'
-                  }`}
-                >
-                  {int}
-                </button>
-              ))}
+          {/* Auto Refresh Cron */}
+          <div className="flex flex-col gap-1.5">
+            <div className="flex items-center justify-between gap-2">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                Auto refresh (cron)
+              </label>
+              {refreshInterval !== 'off' && countdown !== null && (
+                <span className="text-[10px] font-extrabold text-blue-600 flex items-center gap-1">
+                  <Clock className="w-3 h-3 animate-spin" /> {countdown}s
+                </span>
+              )}
             </div>
-            <span className="text-[9px] text-slate-400 italic">
-              Cron chạy theo biến môi trường NEWS_CRAWL_INTERVAL_MS.
-            </span>
+            <div className="flex p-1 bg-slate-50 rounded-xl border border-slate-200/80">
+              {INTERVAL_LABELS.map((item) => {
+                const isSelected = refreshInterval === item.value;
+                return (
+                  <button
+                    key={item.value}
+                    onClick={() => setRefreshInterval(item.value)}
+                    className={`px-2.5 py-1 rounded-lg text-[10px] font-extrabold transition-all cursor-pointer ${
+                      isSelected
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-500 hover:text-slate-900 hover:bg-slate-200/50'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </div>
 
-        <div className="flex gap-3">
+        {/* Action Buttons */}
+        <div className="flex items-center gap-3 justify-end pt-2 lg:pt-0">
           <button
             className="p-2.5 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-800 transition-colors"
             aria-label="Settings"
+            title="Cấu hình crawler"
           >
             <Settings className="w-4 h-4" />
           </button>
           <button
             onClick={() => void handleStartCrawl()}
             disabled={isCrawling}
-            className="flex items-center gap-2 py-2.5 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-md shadow-blue-200 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60"
+            className="flex items-center gap-2 py-2.5 px-6 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-sm shadow-blue-200 transition-all hover:scale-[1.01] active:scale-[0.99] disabled:opacity-60 cursor-pointer"
           >
             <Play className={`w-4 h-4 fill-white ${isCrawling ? 'animate-spin' : ''}`} />
             <span>{isCrawling ? 'Đang crawl...' : 'Bắt đầu crawl'}</span>
           </button>
         </div>
       </section>
+
+      {/* Countdown progress bar if auto refresh active */}
+      {refreshInterval !== 'off' && countdown !== null && (
+        <div className="w-full bg-slate-100 rounded-full h-1 overflow-hidden -mt-3">
+          <div
+            className="bg-blue-600 h-full transition-all duration-1000 ease-linear"
+            style={{
+              width: `${(countdown / INTERVAL_SECS[refreshInterval]) * 100}%`,
+            }}
+          />
+        </div>
+      )}
 
       {(lastCrawlMessage || error) && (
         <div
@@ -375,45 +502,51 @@ export default function NewsCrawler() {
               setError(null);
               setLastCrawlMessage(null);
             }}
-            className="text-[10px] uppercase tracking-wider opacity-70 hover:opacity-100"
+            className="text-[10px] uppercase tracking-wider opacity-70 hover:opacity-100 cursor-pointer"
           >
             đóng
           </button>
         </div>
       )}
 
-      {/* Main Grid Panels */}
-      <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+      {/* Main Grid Panels - Spread across 100% width with 3 equal columns on large screens */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 w-full">
         {/* Left column — News feed */}
-        <div className="xl:col-span-1.5">
-          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
+        <div className="flex flex-col">
+          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex flex-col gap-4 flex-1">
             <div className="flex justify-between items-center">
-              <h3 className="text-sm font-extrabold text-slate-800">
-                Tin tức {symbolFilter !== 'ALL' && (
-                  <span className="text-blue-600 ml-1">({symbolFilter})</span>
+              <h3 className="text-sm font-extrabold text-slate-800 flex items-center gap-2">
+                <span>Tin tức</span>
+                {symbolFilter !== 'ALL' && (
+                  <span className="text-blue-600 text-xs">({symbolFilter})</span>
+                )}
+                {activeSources.length < 3 && (
+                  <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[9px] font-bold">
+                    {activeSources.join(', ')}
+                  </span>
                 )}
               </h3>
               <span className="flex items-center gap-1.5 text-[10px] text-slate-400 font-bold">
                 <RefreshCw className={`w-3 h-3 ${isLoading ? 'animate-spin' : ''}`} />
                 {isLoading
                   ? 'Đang tải...'
-                  : `${totalNews.toLocaleString('en-US')} tin · ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
+                  : `${filteredNews.length}/${totalNews.toLocaleString('en-US')} tin · ${new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`}
               </span>
             </div>
 
-            <div className="flex flex-col gap-3 max-h-[750px] overflow-y-auto pr-1">
-              {!isLoading && news.length === 0 && !error && (
-                <div className="flex flex-col items-center justify-center gap-2 py-10 text-slate-400">
-                  <Inbox className="w-10 h-10" />
-                  <span className="text-xs font-semibold">
+            <div className="flex flex-col gap-3 max-h-[720px] overflow-y-auto pr-1 custom-scrollbar">
+              {!isLoading && filteredNews.length === 0 && !error && (
+                <div className="flex flex-col items-center justify-center gap-2 py-12 text-slate-400">
+                  <Inbox className="w-10 h-10 stroke-[1.5]" />
+                  <span className="text-xs font-semibold text-center">
                     {symbolFilter === 'ALL'
-                      ? 'Chưa có tin tức nào. Hãy bấm "Bắt đầu crawl".'
-                      : `Chưa có tin nào cho ${symbolFilter}. Thử chọn "Tất cả" hoặc crawl.`}
+                      ? 'Không tìm thấy tin tức nào khớp với nguồn đã chọn.'
+                      : `Chưa có tin phù hợp cho ${symbolFilter}. Thử chọn thêm nguồn hoặc crawl.`}
                   </span>
                 </div>
               )}
 
-              {isLoading && news.length === 0 && (
+              {isLoading && filteredNews.length === 0 && (
                 <div className="flex flex-col gap-3">
                   {Array.from({ length: 4 }).map((_, i) => (
                     <div
@@ -431,7 +564,7 @@ export default function NewsCrawler() {
                 </div>
               )}
 
-              {news.map((item) => {
+              {filteredNews.map((item) => {
                 const headAsset = item.coinSymbols[0] ?? '?';
                 const sentiment = inferSentiment(item);
                 return (
@@ -440,7 +573,7 @@ export default function NewsCrawler() {
                     href={item.url}
                     target="_blank"
                     rel="noreferrer noopener"
-                    className="p-4 rounded-xl border border-slate-100 hover:border-slate-200 hover:shadow-xs bg-slate-50/40 hover:bg-white transition-all flex gap-3.5 items-start text-left group"
+                    className="p-4 rounded-xl border border-slate-100 hover:border-blue-200 hover:shadow-xs bg-slate-50/40 hover:bg-white transition-all flex gap-3.5 items-start text-left group"
                   >
                     <span
                       className={`w-9 h-9 rounded-lg font-black text-xs flex items-center justify-center border shrink-0 ${assetColor(headAsset)}`}
@@ -455,11 +588,11 @@ export default function NewsCrawler() {
                         </h4>
                       </div>
 
-                      <div className="flex items-center gap-2.5 text-[9.5px] font-bold text-slate-400">
-                        <span>{item.source}</span>
-                        <span className="w-1 h-1 rounded-full bg-slate-200" />
+                      <div className="flex items-center gap-2 text-[9.5px] font-bold text-slate-400 flex-wrap">
+                        <span className="text-slate-600 font-extrabold">{item.source}</span>
+                        <span className="w-1 h-1 rounded-full bg-slate-300" />
                         <span>{formatTime(item.publishedAt)}</span>
-                        <span className="w-1 h-1 rounded-full bg-slate-200" />
+                        <span className="w-1 h-1 rounded-full bg-slate-300" />
                         <span
                           className={`px-1.5 py-0.25 rounded text-[8px] font-black ${
                             sentiment === 'positive'
@@ -473,8 +606,8 @@ export default function NewsCrawler() {
                         </span>
                         {item.coinSymbols.length > 1 && (
                           <>
-                            <span className="w-1 h-1 rounded-full bg-slate-200" />
-                            <span className="text-blue-500">
+                            <span className="w-1 h-1 rounded-full bg-slate-300" />
+                            <span className="text-blue-600">
                               +{item.coinSymbols.length - 1}
                             </span>
                           </>
@@ -494,7 +627,7 @@ export default function NewsCrawler() {
 
             <button
               onClick={() => navigate('/realtime')}
-              className="w-full py-2.5 border-t border-slate-100 text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors flex items-center justify-center gap-1 mt-1"
+              className="w-full py-2.5 border-t border-slate-100 text-[11px] font-bold text-blue-600 hover:text-blue-700 transition-colors flex items-center justify-center gap-1 mt-auto pt-3 cursor-pointer"
             >
               <span>Xem tất cả tin tức</span>
               <ArrowRight className="w-3.5 h-3.5" />
@@ -503,8 +636,8 @@ export default function NewsCrawler() {
         </div>
 
         {/* Middle column — LLM-assisted Extraction + Self-healing */}
-        <div className="xl:col-span-1.5 flex flex-col gap-6">
-          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
+        <div className="flex flex-col gap-6">
+          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex flex-col gap-4">
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-extrabold text-slate-800">LLM-assisted Extraction</h3>
               <span className="px-2 py-0.5 rounded-md bg-emerald-50 border border-emerald-100 text-emerald-600 font-bold text-[10px]">
@@ -516,13 +649,13 @@ export default function NewsCrawler() {
               <div className="flex justify-between items-start text-center">
                 {[
                   { n: 1, t: 'HTML thô', d: 'Thu thập nội dung HTML từ nguồn', cls: 'bg-blue-50 text-blue-600 border-blue-100' },
-                  { n: 2, t: 'LLM hiểu tag HTML', d: 'Đọc & hiểu, nhận diện vùng', cls: 'bg-purple-50 text-purple-600 border-purple-100' },
-                  { n: 3, t: 'Sinh template', d: 'Tạo template trích xuất đề xuất', cls: 'bg-emerald-50 text-emerald-600 border-emerald-100' },
-                  { n: 4, t: 'Lưu template', d: 'Quản lý phiên bản lưu trữ', cls: 'bg-amber-50 text-amber-600 border-amber-100' },
+                  { n: 2, t: 'LLM nhận diện', d: 'Đọc & hiểu tag HTML', cls: 'bg-purple-50 text-purple-600 border-purple-100' },
+                  { n: 3, t: 'Sinh template', d: 'Tạo template trích xuất', cls: 'bg-emerald-50 text-emerald-600 border-emerald-100' },
+                  { n: 4, t: 'Lưu template', d: 'Quản lý phiên bản', cls: 'bg-amber-50 text-amber-600 border-amber-100' },
                 ].map((step, idx, arr) => (
                   <div key={step.n} className="contents">
                     <div className="flex flex-col items-center flex-1">
-                      <span className={`w-8 h-8 rounded-lg font-bold text-xs flex items-center justify-center border shadow-sm ${step.cls}`}>
+                      <span className={`w-8 h-8 rounded-lg font-bold text-xs flex items-center justify-center border shadow-xs ${step.cls}`}>
                         {step.n}
                       </span>
                       <span className="text-[9px] font-bold text-slate-700 mt-2">{step.t}</span>
@@ -533,7 +666,7 @@ export default function NewsCrawler() {
                 ))}
               </div>
 
-              <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-200/50 text-xs font-bold text-slate-700">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-200/50 text-xs font-bold text-slate-700">
                 <div className="bg-white p-3 rounded-lg border border-slate-200/50 text-left">
                   <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Nhận diện vùng ({template?.domain ?? 'coindesk.com'}):</span>
                   <div className="flex flex-col gap-0.5 font-mono text-[9px] text-slate-600 overflow-x-auto">
@@ -569,7 +702,7 @@ export default function NewsCrawler() {
             </div>
           </article>
 
-          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4">
+          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex flex-col gap-4">
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-extrabold text-slate-800">Self-healing extraction</h3>
               <div className="flex items-center gap-2">
@@ -582,7 +715,7 @@ export default function NewsCrawler() {
                   }`}
                 >
                   <span
-                    className={`w-3.5 h-3.5 bg-white rounded-full absolute shadow-sm transition-transform ${
+                    className={`w-3.5 h-3.5 bg-white rounded-full absolute shadow-xs transition-transform ${
                       selfHealingActive ? 'translate-x-4.5' : 'translate-x-1'
                     }`}
                   />
@@ -590,35 +723,34 @@ export default function NewsCrawler() {
               </div>
             </div>
 
-
             <div className="bg-slate-50 p-4 rounded-xl border border-slate-100 flex flex-col gap-4">
               <div className="flex justify-between items-start text-center">
                 <div className="flex flex-col items-center flex-1">
-                  <span className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 font-bold text-xs flex items-center justify-center border border-blue-100 shadow-sm">1</span>
+                  <span className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 font-bold text-xs flex items-center justify-center border border-blue-100 shadow-xs">1</span>
                   <span className="text-[9px] font-bold text-slate-700 mt-2">Validate kết quả</span>
-                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">Kiểm tra chất lượng kết quả trích xuất</span>
+                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">Kiểm tra chất lượng kết quả</span>
                 </div>
                 <span className="text-slate-300 text-xs font-bold mt-2">&rarr;</span>
                 <div className="flex flex-col items-center flex-1">
-                  <span className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 font-bold text-xs flex items-center justify-center border border-rose-100 shadow-sm border-dashed">?</span>
-                  <span className="text-[9px] font-bold text-slate-700 mt-2">Lỗi cao? (vd &gt; 10%)</span>
-                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">Nếu Yes &rarr; Kích hoạt LLM sửa</span>
+                  <span className="w-8 h-8 rounded-lg bg-rose-50 text-rose-600 font-bold text-xs flex items-center justify-center border border-rose-100 shadow-xs border-dashed">?</span>
+                  <span className="text-[9px] font-bold text-slate-700 mt-2">Lỗi cao? (&gt;10%)</span>
+                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">Trigger LLM sửa</span>
                 </div>
                 <span className="text-slate-300 text-xs font-bold mt-2">&rarr;</span>
                 <div className="flex flex-col items-center flex-1">
-                  <span className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 font-bold text-xs flex items-center justify-center border border-purple-100 shadow-sm">3</span>
+                  <span className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 font-bold text-xs flex items-center justify-center border border-purple-100 shadow-xs">3</span>
                   <span className="text-[9px] font-bold text-slate-700 mt-2">LLM sửa template</span>
-                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">LLM phân tích lỗi & đề xuất sửa đổi</span>
+                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">Phân tích & đề xuất sửa</span>
                 </div>
                 <span className="text-slate-300 text-xs font-bold mt-2">&rarr;</span>
                 <div className="flex flex-col items-center flex-1">
-                  <span className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-100 shadow-sm">4</span>
-                  <span className="text-[9px] font-bold text-slate-700 mt-2">Lưu version mới</span>
-                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">Tự động cập nhật bản chạy mới</span>
+                  <span className="w-8 h-8 rounded-lg bg-emerald-50 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-100 shadow-xs">4</span>
+                  <span className="text-[9px] font-bold text-slate-700 mt-2">Lưu version</span>
+                  <span className="text-[8px] text-slate-400 font-semibold leading-tight mt-0.5 max-w-[80px]">Tự động cập nhật</span>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3 pt-3 border-t border-slate-200/50 text-xs font-bold text-slate-700">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-slate-200/50 text-xs font-bold text-slate-700">
                 <div className="bg-white p-3 rounded-lg border border-slate-200/50 text-left flex flex-col justify-between">
                   <div>
                     <span className="text-[9px] text-slate-400 font-bold uppercase block mb-1">Chỉ số hiện tại:</span>
@@ -646,8 +778,8 @@ export default function NewsCrawler() {
                     </div>
                   </div>
                   <div className="flex justify-between items-center mt-3 pt-1 border-t border-slate-100">
-                    <button className="text-[9px] text-blue-600">Xem diff</button>
-                    <button className="px-2 py-0.75 bg-blue-600 text-white rounded text-[8px] font-black">Áp dụng ngay</button>
+                    <button className="text-[9px] text-blue-600 cursor-pointer">Xem diff</button>
+                    <button className="px-2 py-0.75 bg-blue-600 text-white rounded text-[8px] font-black cursor-pointer">Áp dụng ngay</button>
                   </div>
                 </div>
               </div>
@@ -657,7 +789,7 @@ export default function NewsCrawler() {
 
         {/* Right column — Real Analysis Output from Backend Sentiment API */}
         <div className="flex flex-col gap-6">
-          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 text-left">
+          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex flex-col gap-4 text-left">
             <div className="flex justify-between items-center">
               <h3 className="text-sm font-extrabold text-slate-800">
                 Đầu ra phân tích Sentiment {symbolFilter !== 'ALL' && <span className="text-blue-600">({symbolFilter})</span>}
@@ -715,14 +847,14 @@ export default function NewsCrawler() {
                   <td className="py-2.5 text-slate-400">Analyzer Active</td>
                   <td className="py-2.5 text-right text-slate-800 flex items-center justify-end gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                    <span>{sentimentSummary.analyzerCode || 'LEXICON_V1'}</span>
+                    <span>{sentimentSummary.analyzerCode || 'GEMINI_V1'}</span>
                   </td>
                 </tr>
               </tbody>
             </table>
           </article>
 
-          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 text-left">
+          <article className="bg-white p-5 rounded-2xl border border-slate-100 shadow-xs flex flex-col gap-4 text-left">
             <h3 className="text-sm font-extrabold text-slate-800">Tích hợp với Strategy</h3>
             <p className="text-[10px] text-slate-400 font-semibold leading-relaxed">
               News Sentiment được sử dụng trực tiếp trong Strategy Engine làm bộ lọc tin tức.
@@ -748,7 +880,7 @@ export default function NewsCrawler() {
                   <span>&darr;</span> <span className="text-[8px] font-medium">Hoặc sử dụng trực tiếp</span>
                 </div>
 
-                <div className="bg-blue-50 border border-blue-200 p-2.5 rounded-xl text-[10px] font-extrabold text-blue-700 w-full flex flex-col items-center gap-1 shadow-sm">
+                <div className="bg-blue-50 border border-blue-200 p-2.5 rounded-xl text-[10px] font-extrabold text-blue-700 w-full flex flex-col items-center gap-1 shadow-xs">
                   <span>NewsSentimentStrategy</span>
                   <span className="text-[8px] text-blue-500 font-semibold">Chiến lược mẫu</span>
                 </div>
@@ -760,3 +892,4 @@ export default function NewsCrawler() {
     </div>
   );
 }
+

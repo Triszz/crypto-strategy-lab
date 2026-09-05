@@ -18,6 +18,7 @@ const RawEnvSchema = z.object({
   BINANCE_WS_BASE_URL: z.string().default("wss://stream.binance.com:9443"),
 
   CRYPTOPANIC_API_KEY: z.string().optional().default(""),
+  NEWSDATA_API_KEY: z.string().optional().default(""),
   GEMINI_API_KEY: z.string().optional().default(""),
   SENTIMENT_ANALYZER: z.string().optional().default("lexicon"),
 

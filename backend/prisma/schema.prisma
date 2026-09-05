@@ -35,7 +35,7 @@ model Symbol {
   newsCoins          NewsCoin[]
   searchRuns         SearchRun[]
   trades             Trade[]
-  loopsAsBest        LoopRunState[]      @relation("LoopBestSymbol")
+  loopsAsBest        LoopRunState[]     @relation("LoopBestSymbol")
 
   @@map("symbols")
 }
@@ -115,7 +115,7 @@ model StrategyVersion {
   compositeParent    CompositeComponent[] @relation("CompositeParent")
   leaderboardEntries LeaderboardEntry[]
   rankingHistory     RankingHistory[]
-  loopsAsBest        LoopRunState[]      @relation("LoopBestStrategy")
+  loopsAsBest        LoopRunState[]       @relation("LoopBestStrategy")
   definition         StrategyDefinition   @relation(fields: [definitionId], references: [id], onDelete: Cascade)
   indicatorType      IndicatorType?       @relation(fields: [indicatorTypeId], references: [id])
 
@@ -308,78 +308,102 @@ model LeaderboardEntry {
 }
 
 model LoopRunState {
-  id                    String   @id @default(uuid()) @db.Uuid
-  loopId                String   @unique @map("loop_id") @db.VarChar(64)
-  status                String   @default("RUNNING") @db.VarChar(32)
+  id                             String               @id @default(uuid()) @db.Uuid
+  loopId                         String               @unique @map("loop_id") @db.VarChar(64)
+  status                         String               @default("RUNNING") @db.VarChar(32)
   // Maximum cumulative candidates across the entire loop.
-  maxCandidates         Int      @default(100) @map("max_candidates")
+  maxCandidates                  Int                  @default(100) @map("max_candidates")
   // Maximum number of loop iterations (independent from maxCandidates).
-  maxIterations         Int      @default(20) @map("max_iterations")
+  maxIterations                  Int                  @default(20) @map("max_iterations")
   // Number of NEW candidates to request per loop iteration.
-  candidateCountPerIteration Int @default(5) @map("candidate_count_per_iteration")
+  candidateCountPerIteration     Int                  @default(5) @map("candidate_count_per_iteration")
   // Hybrid generation ratios (sum should be 1.0; engine normalises).
-  mutationRatio         Decimal  @default(0.4) @map("mutation_ratio") @db.Decimal(4, 3)
-  crossoverRatio        Decimal  @default(0.2) @map("crossover_ratio") @db.Decimal(4, 3)
-  explorationRatio      Decimal  @default(0.4) @map("exploration_ratio") @db.Decimal(4, 3)
+  mutationRatio                  Decimal              @default(0.4) @map("mutation_ratio") @db.Decimal(4, 3)
+  crossoverRatio                 Decimal              @default(0.2) @map("crossover_ratio") @db.Decimal(4, 3)
+  explorationRatio               Decimal              @default(0.4) @map("exploration_ratio") @db.Decimal(4, 3)
   // Exploration: how many top-1 leaderboard entries (excluding the parent)
   // are eligible as crossover mates / exploration seeds.
-  elitePoolSize         Int      @default(3) @map("elite_pool_size")
-  timeLimitSeconds      Int      @default(3600) @map("time_limit_seconds")
-  noImprovementCap      Int      @default(50) @map("no_improvement_cap")
-  totalEvaluated        Int      @default(0) @map("total_evaluated")
-  noImprovementCount    Int      @default(0) @map("no_improvement_count")
-  bestScoreSoFar        Decimal  @default(0) @map("best_score_so_far") @db.Decimal(10, 4)
+  elitePoolSize                  Int                  @default(3) @map("elite_pool_size")
+  timeLimitSeconds               Int                  @default(3600) @map("time_limit_seconds")
+  noImprovementCap               Int                  @default(50) @map("no_improvement_cap")
+  totalEvaluated                 Int                  @default(0) @map("total_evaluated")
+  noImprovementCount             Int                  @default(0) @map("no_improvement_count")
+  bestScoreSoFar                 Decimal              @default(0) @map("best_score_so_far") @db.Decimal(10, 4)
   // Loop-local best strategy (NOT the global leaderboard Top-1). This is
   // updated at SearchRun completion boundary, not on every StrategyEvaluated.
-  bestStrategyVersionId String?  @map("best_strategy_version_id") @db.Uuid
-  bestStrategySymbolId  String?  @map("best_strategy_symbol_id") @db.Uuid
-  bestStrategyTimeframe String?  @map("best_strategy_timeframe") @db.VarChar(8)
-  bestTotalReturn       Decimal? @map("best_total_return") @db.Decimal(10, 4)
-  bestWinRate           Decimal? @map("best_win_rate") @db.Decimal(6, 4)
+  bestStrategyVersionId          String?              @map("best_strategy_version_id") @db.Uuid
+  bestStrategySymbolId           String?              @map("best_strategy_symbol_id") @db.Uuid
+  bestStrategyTimeframe          String?              @map("best_strategy_timeframe") @db.VarChar(8)
+  bestTotalReturn                Decimal?             @map("best_total_return") @db.Decimal(10, 4)
+  bestWinRate                    Decimal?             @map("best_win_rate") @db.Decimal(6, 4)
+  // Phase 3.3: persisted alongside the other best-* metrics so the UI
+  // sees score/return/winRate/maxDrawdown from the SAME authoritative
+  // BacktestResult row, instead of independently re-querying for
+  // maxDrawdown and risking a different row.
+  bestMaxDrawdown                Decimal?             @map("best_max_drawdown") @db.Decimal(10, 4)
   // Last stop reason emitted (e.g. STOPPED_MAX_CANDIDATES). Persisted so
   // historical loops still surface the reason after status flipped.
-  stopReason            String?  @map("stop_reason") @db.VarChar(64)
+  stopReason                     String?              @map("stop_reason") @db.VarChar(64)
   // Parent strategy for iteration #1 (the initial Run Combination parent).
   // Used so the loop can build iteration #2 without re-running the initial
   // SearchRun.
-  initialParentStrategyVersionId String? @map("initial_parent_strategy_version_id") @db.Uuid
-  currentIteration      Int      @default(0) @map("current_iteration")
-  lastIterationSearchRunId String? @map("last_iteration_search_run_id") @db.Uuid
+  initialParentStrategyVersionId String?              @map("initial_parent_strategy_version_id") @db.Uuid
+  currentIteration               Int                  @default(0) @map("current_iteration")
+  lastIterationSearchRunId       String?              @map("last_iteration_search_run_id") @db.Uuid
   // Tracks the latest SearchRun that has not yet completed, so we can
   // ignore multiple NewTopStrategyFound events for the same SearchRun.
-  inFlightSearchRunId   String?  @map("in_flight_search_run_id") @db.Uuid
-  startedAt             DateTime @default(now()) @map("started_at") @db.Timestamptz(3)
-  updatedAt             DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  inFlightSearchRunId            String?              @map("in_flight_search_run_id") @db.Uuid
+  startedAt                      DateTime             @default(now()) @map("started_at") @db.Timestamptz(3)
+  updatedAt                      DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+  iterations                     LoopIteration[]
+  processedEvents                LoopProcessedEvent[]
+  bestStrategyVersion            StrategyVersion?     @relation("LoopBestStrategy", fields: [bestStrategyVersionId], references: [id], onDelete: SetNull)
+  bestStrategySymbol             Symbol?              @relation("LoopBestSymbol", fields: [bestStrategySymbolId], references: [id], onDelete: SetNull)
+
   @@index([status, updatedAt(sort: Desc)])
-  iterations            LoopIteration[]
-  processedEvents       LoopProcessedEvent[]
-  bestStrategyVersion   StrategyVersion? @relation("LoopBestStrategy", fields: [bestStrategyVersionId], references: [id], onDelete: SetNull)
-  bestStrategySymbol    Symbol?           @relation("LoopBestSymbol", fields: [bestStrategySymbolId], references: [id], onDelete: SetNull)
   @@map("loop_run_states")
 }
 
+/// Phase 3.3: explicit "active/followed loop" reference.
+///
+/// At most one row in this table at any time. It records the
+/// loopId the user is currently following. Set by `POST /api/loop/start`
+/// (or `POST /api/loop/active`) and cleared when the user navigates to
+/// a different loop URL.
+///
+/// Used by `GET /api/loop/active` so the Loop page can auto-restore
+/// the same loop after navigation / refresh, instead of arbitrarily
+/// picking a random RUNNING loop.
+model LoopActivePointer {
+  id        Int      @id @default(1)
+  loopId    String   @map("loop_id") @db.VarChar(64)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("loop_active_pointer")
+}
+
 model LoopIteration {
-  id                    String   @id @default(uuid()) @db.Uuid
-  loopId                String   @map("loop_id") @db.VarChar(64)
+  id                      String       @id @default(uuid()) @db.Uuid
+  loopId                  String       @map("loop_id") @db.VarChar(64)
   // 1-based iteration index exposed in the API. Internally stored as int.
-  iterationIndex        Int      @map("iteration_index")
+  iterationIndex          Int          @map("iteration_index")
   // The parent StrategyVersion that produced this iteration's candidates.
-  parentStrategyVersionId String  @map("parent_strategy_version_id") @db.Uuid
-  searchRunId           String?  @map("search_run_id") @db.Uuid
-  candidateCount        Int      @default(0) @map("candidate_count")
+  parentStrategyVersionId String       @map("parent_strategy_version_id") @db.Uuid
+  searchRunId             String?      @map("search_run_id") @db.Uuid
+  candidateCount          Int          @default(0) @map("candidate_count")
   // Number of candidates whose StrategyEvaluated event has been observed.
-  evaluatedCount        Int      @default(0) @map("evaluated_count")
+  evaluatedCount          Int          @default(0) @map("evaluated_count")
   // Loop-local best score for THIS iteration's candidates.
-  bestScoreInIteration  Decimal  @default(0) @map("best_score_in_iteration") @db.Decimal(10, 4)
+  bestScoreInIteration    Decimal      @default(0) @map("best_score_in_iteration") @db.Decimal(10, 4)
   // Best StrategyVersion for THIS iteration (set when iteration completes).
-  bestStrategyVersionId String?  @map("best_strategy_version_id") @db.Uuid
-  status                String   @default("RUNNING") @db.VarChar(32)
+  bestStrategyVersionId   String?      @map("best_strategy_version_id") @db.Uuid
+  status                  String       @default("RUNNING") @db.VarChar(32)
   // true for the initial Run Combination SearchRun — the runner uses this
   // to determine the iteration-1 parent AFTER evaluation completes.
-  isInitial             Boolean  @default(false) @map("is_initial")
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  completedAt           DateTime? @map("completed_at") @db.Timestamptz(3)
-  loop                  LoopRunState @relation(fields: [loopId], references: [loopId], onDelete: Cascade)
+  isInitial               Boolean      @default(false) @map("is_initial")
+  createdAt               DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  completedAt             DateTime?    @map("completed_at") @db.Timestamptz(3)
+  loop                    LoopRunState @relation(fields: [loopId], references: [loopId], onDelete: Cascade)
 
   @@index([loopId, iterationIndex(sort: Desc)])
   @@index([searchRunId])
@@ -387,14 +411,14 @@ model LoopIteration {
 }
 
 model LoopProcessedEvent {
-  id                    String   @id @default(uuid()) @db.Uuid
-  dedupeKey             String   @unique @map("dedupe_key") @db.VarChar(255)
-  strategyVersionId     String   @map("strategy_version_id") @db.Uuid
-  overallScore          Decimal  @map("overall_score") @db.Decimal(10, 4)
-  evaluatedAt           DateTime @map("evaluated_at") @db.Timestamptz(3)
-  loopId                String?  @map("loop_id") @db.VarChar(64)
-  createdAt             DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-  loop                  LoopRunState? @relation(fields: [loopId], references: [loopId], onDelete: SetNull)
+  id                String        @id @default(uuid()) @db.Uuid
+  dedupeKey         String        @unique @map("dedupe_key") @db.VarChar(255)
+  strategyVersionId String        @map("strategy_version_id") @db.Uuid
+  overallScore      Decimal       @map("overall_score") @db.Decimal(10, 4)
+  evaluatedAt       DateTime      @map("evaluated_at") @db.Timestamptz(3)
+  loopId            String?       @map("loop_id") @db.VarChar(64)
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  loop              LoopRunState? @relation(fields: [loopId], references: [loopId], onDelete: SetNull)
 
   @@index([loopId, createdAt(sort: Desc)])
   @@map("loop_processed_events")
@@ -554,7 +578,7 @@ model SavedStrategy {
   version     String         @default("1.0.0") @db.VarChar(32)
   description String?        @db.VarChar(1000)
   // Self-contained strategy JSON following the BASE strategy domain schema.
-  jsonDef          Json
+  jsonDef     Json
   // How this strategy was created: USER_PROMPT | WEB_IMPORT
   source      StrategySource
   tags        String[]       @default([])
@@ -576,15 +600,15 @@ enum CombinationOperator {
 }
 
 model SavedCombination {
-  id          String               @id @default(uuid()) @db.Uuid
-  name        String               @db.VarChar(255)
-  description String?              @db.VarChar(1000)
-  operator    CombinationOperator   @default(WEIGHTED)
+  id          String              @id @default(uuid()) @db.Uuid
+  name        String              @db.VarChar(255)
+  description String?             @db.VarChar(1000)
+  operator    CombinationOperator @default(WEIGHTED)
   // JSON array of CombinationComponent objects:
   //   { strategyId: string, weight: number, position: number, parameters?: Record<string,unknown> }
   components  Json                @default("[]")
-  tags        String[]             @default([])
-  ownerId     String?              @map("owner_id") @db.VarChar(64)
+  tags        String[]            @default([])
+  ownerId     String?             @map("owner_id") @db.VarChar(64)
   createdAt   DateTime            @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime            @default(now()) @map("updated_at") @db.Timestamptz(3)
 

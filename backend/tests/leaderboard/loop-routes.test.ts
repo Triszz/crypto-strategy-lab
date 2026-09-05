@@ -171,6 +171,49 @@ class FakePrisma {
     },
   };
 
+  // Phase 3.3: stub for the explicit active-loop pointer. Single-row
+  // table — `id` is always 1. Used by /api/loop/active and /api/loop/start.
+  loopActivePointer = {
+    findUnique: async ({ where }: { where: { id: number } }) => {
+      return (this as unknown as { loopActivePointers: Map<number, { id: number; loopId: string; updatedAt: Date }> })
+        .loopActivePointers?.get(where.id) ?? null;
+    },
+    upsert: async ({
+      where,
+      update,
+      create,
+    }: {
+      where: { id: number };
+      update: { loopId: string };
+      create: { id: number; loopId: string };
+    }) => {
+      const m = (this as unknown as {
+        loopActivePointers: Map<number, { id: number; loopId: string; updatedAt: Date }>;
+      }).loopActivePointers ??= new Map();
+      const existing = m.get(where.id);
+      if (existing) {
+        Object.assign(existing, update, { updatedAt: new Date() });
+        return existing;
+      }
+      const row = {
+        id: create.id,
+        loopId: create.loopId,
+        updatedAt: new Date(),
+      };
+      m.set(where.id, row);
+      return row;
+    },
+    deleteMany: async ({ where }: { where: { id: number } }) => {
+      const m = (this as unknown as {
+        loopActivePointers: Map<number, { id: number; loopId: string }>;
+      }).loopActivePointers;
+      if (!m) return { count: 0 };
+      const had = m.has(where.id);
+      m.delete(where.id);
+      return { count: had ? 1 : 0 };
+    },
+  };
+
   leaderboardEntry = {
     findFirst: async ({ where: _where, orderBy }: { where?: unknown; orderBy?: { overallScore?: "asc" | "desc" } }) => {
       const rows = [...this.leaderboardEntries].sort((a, b) => {

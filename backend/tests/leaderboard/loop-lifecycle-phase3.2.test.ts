@@ -78,6 +78,7 @@ interface FakeExperimentRow {
   id: string;
   candidateId: string;
   status: string;
+  createdAt: Date;
 }
 
 interface FakeStrategyVersionRow {
@@ -148,6 +149,58 @@ class FakePrisma {
         (e) => e.loopId !== where.loopId,
       );
       return { count: before - this.processedEvents.length };
+    },
+    // Phase 3.3: orchestrator's authoritative-experiment resolution
+    // reads these in `resolveAuthoritativeExperimentsForCandidates`.
+    findMany: async ({
+      where,
+      orderBy,
+      select,
+    }: {
+      where: { loopId?: string };
+      orderBy?: { evaluatedAt?: "asc" | "desc" };
+      select?: { dedupeKey?: boolean; evaluatedAt?: boolean };
+    }) => {
+      let rows = this.processedEvents.filter(
+        (e) => !where?.loopId || e.loopId === where.loopId,
+      );
+      const ord = orderBy?.evaluatedAt;
+      if (ord === "desc")
+        rows = rows.sort(
+          (a, b) => b.evaluatedAt.getTime() - a.evaluatedAt.getTime(),
+        );
+      else if (ord === "asc")
+        rows = rows.sort(
+          (a, b) => a.evaluatedAt.getTime() - b.evaluatedAt.getTime(),
+        );
+      return rows.map((r) => {
+        const out: Record<string, unknown> = { ...r };
+        if (select) {
+          for (const k of Object.keys(out)) {
+            if (!(k in select)) delete out[k];
+          }
+        }
+        return out;
+      });
+    },
+    findFirst: async ({
+      where,
+      orderBy,
+    }: {
+      where: { loopId?: string; dedupeKey?: string };
+      orderBy?: { evaluatedAt?: "asc" | "desc" };
+    }) => {
+      let rows = this.processedEvents.filter(
+        (e) =>
+          (!where?.loopId || e.loopId === where.loopId) &&
+          (!where?.dedupeKey || e.dedupeKey === where.dedupeKey),
+      );
+      const ord = orderBy?.evaluatedAt;
+      if (ord === "desc")
+        rows = rows.sort(
+          (a, b) => b.evaluatedAt.getTime() - a.evaluatedAt.getTime(),
+        );
+      return rows[0] ?? null;
     },
   };
 
@@ -417,14 +470,27 @@ class FakePrisma {
     findMany: async ({
       where,
     }: {
-      where: { candidateId?: { in?: string[] }; status?: string };
+      where: {
+        candidateId?: { in?: string[] };
+        candidateIdIs?: string;
+        status?: string;
+      };
     }) => {
       return [...this.experiments.values()].filter((e) => {
         if (where.candidateId?.in && !where.candidateId.in.includes(e.candidateId))
           return false;
+        if (
+          typeof (where as { candidateIdIs?: string }).candidateIdIs === "string" &&
+          e.candidateId !== (where as { candidateIdIs: string }).candidateIdIs
+        )
+          return false;
         if (where.status && e.status !== where.status) return false;
         return true;
       });
+    },
+    // Phase 3.3: needed by recomputeLoopBest to map top experiment → candidate.
+    findUnique: async ({ where }: { where: { id: string } }) => {
+      return this.experiments.get(where.id) ?? null;
     },
   };
 
@@ -439,7 +505,11 @@ class FakePrisma {
       include?: any;
     }) => {
       let rows = this.backtestResults.filter((br) => {
-        // New shape: where.experiment.candidateId.in = [...]
+        // New shape (Phase 3.3): where.experimentId.in = [...]
+        if (where?.experimentId && Array.isArray(where.experimentId.in)) {
+          return where.experimentId.in.includes(br.experimentId);
+        }
+        // Shape used in some tests: where.experiment.candidateId.in = [...]
         if (
           where?.experiment?.candidateId &&
           Array.isArray(where.experiment.candidateId.in)
@@ -568,6 +638,22 @@ function seedCandidate(
     searchRunId: string;
     strategyVersionId: string;
     overallScore: number;
+    loopId?: string;
+    evaluatedAt?: Date;
+    totalReturn?: number;
+    winRate?: number;
+    maxDrawdown?: number;
+    /** Phase 3.3: allow callers to set the experimentId explicitly
+     * so the dedupeKey aligns with the event payload's experimentId. */
+    experimentId?: string;
+    /**
+     * Phase 3.3: when true, also seed a LoopProcessedEvent with the
+     * same dedupeKey as the event payload. Most tests want the event
+     * to BE the orchestrator's source of truth, so default is false.
+     * Tests that exercise `recomputeLoopBest` directly (without
+     * publishing a StrategyEvaluated event) should set this to true.
+     */
+    seedProcessedEvent?: boolean;
   },
 ) {
   prisma.candidates.set(arg.candidateId, {
@@ -576,25 +662,38 @@ function seedCandidate(
     strategyVersionId: arg.strategyVersionId,
     status: "DONE",
   });
-  prisma.experiments.set(`exp-for-${arg.candidateId}`, {
-    id: `exp-for-${arg.candidateId}`,
+  const expId = arg.experimentId ?? `exp-for-${arg.candidateId}`;
+  prisma.experiments.set(expId, {
+    id: expId,
     candidateId: arg.candidateId,
     name: "e2e-fake",
     status: "DONE",
     fromTime: BigInt(0),
     toTime: BigInt(Date.now()),
+    createdAt: arg.evaluatedAt ?? new Date(),
   } as FakeExperimentRow);
   prisma.backtestResults.push({
-    experimentId: `exp-for-${arg.candidateId}`,
+    experimentId: expId,
     candidateId: arg.candidateId,
     searchRunId: arg.searchRunId,
     overallScore: arg.overallScore,
-    totalReturn: 0,
-    winRate: 0,
-    maxDrawdown: 0,
+    totalReturn: arg.totalReturn ?? 0,
+    winRate: arg.winRate ?? 0,
+    maxDrawdown: arg.maxDrawdown ?? 0,
     timeframe: "1h",
-    createdAt: new Date(),
+    symbolId: "sym-btc",
+    createdAt: arg.evaluatedAt ?? new Date(),
   } as FakeBacktestResultRow);
+  if (arg.seedProcessedEvent && arg.loopId) {
+    prisma.processedEvents.push({
+      id: `pe-for-${arg.candidateId}`,
+      dedupeKey: `${arg.loopId}:${expId}`,
+      strategyVersionId: arg.strategyVersionId,
+      overallScore: arg.overallScore,
+      loopId: arg.loopId,
+      evaluatedAt: arg.evaluatedAt ?? new Date(),
+    });
+  }
 }
 
 function seedIteration(
@@ -694,6 +793,8 @@ describe("Phase 3.2 — Loop lifecycle single-writer", () => {
         searchRunId: "sr-2",
         strategyVersionId: "ver-1",
         overallScore: 50 + i * 5,
+        loopId: "L2",
+        experimentId: `exp-${i}`,
       });
       bus.publish("StrategyEvaluated", {
         strategyVersionId: "ver-1",
@@ -738,6 +839,8 @@ describe("Phase 3.2 — Loop lifecycle single-writer", () => {
       searchRunId: "sr-3",
       strategyVersionId: "ver-A",
       overallScore: 8.78,
+      loopId: "L3",
+      experimentId: "exp-A",
     });
     bus.publish("StrategyEvaluated", {
       strategyVersionId: "ver-A",
@@ -754,6 +857,8 @@ describe("Phase 3.2 — Loop lifecycle single-writer", () => {
       searchRunId: "sr-3",
       strategyVersionId: "ver-B",
       overallScore: 8.78,
+      loopId: "L3",
+      experimentId: "exp-B",
     });
     bus.publish("StrategyEvaluated", {
       strategyVersionId: "ver-B",
@@ -770,6 +875,8 @@ describe("Phase 3.2 — Loop lifecycle single-writer", () => {
       searchRunId: "sr-3",
       strategyVersionId: "ver-C",
       overallScore: 8.38,
+      loopId: "L3",
+      experimentId: "exp-C",
     });
     bus.publish("StrategyEvaluated", {
       strategyVersionId: "ver-C",
@@ -839,6 +946,8 @@ describe("Phase 3.2 — Loop lifecycle single-writer", () => {
         searchRunId: "sr-5",
         strategyVersionId: "ver-1",
         overallScore: score,
+        loopId: "L5",
+        experimentId: `exp-${i}`,
       });
       bus.publish("StrategyEvaluated", {
         strategyVersionId: "ver-1",
@@ -1053,5 +1162,124 @@ describe("Phase 3.2 — Loop lifecycle single-writer", () => {
     const iter = prisma.iterations.get("iter-10")!;
     // Iter stays STOPPED.
     expect(iter.status).toBe("STOPPED");
+  });
+
+  // ── Phase 3.3 regression — multiple experiments per candidate ────────────
+  // Reproduces the observed runtime issue where a candidate has more than
+  // one Experiment+BacktestResult row (retries, duplicate events). The
+  // orchestrator must pick the experiment whose LoopProcessedEvent is the
+  // LATEST for this loop, not the MAX-score row. Otherwise stale inflated
+  // scores can flicker as the loop's "best" before being replaced by the
+  // correct final value.
+  it("11) Multiple experiments per candidate: best uses LATEST processed event, not MAX score", async () => {
+    const { prisma, bus } = setupResult;
+    await setupResult.orchestrator.startLoop({
+      loopId: "L11",
+      maxCandidates: 100,
+      maxIterations: 5,
+      candidateCountPerIteration: 5,
+      noImprovementCap: 1000,
+    });
+    seedIteration(prisma, {
+      loopId: "L11",
+      iterationIndex: 1,
+      searchRunId: "sr-11",
+      parentStrategyVersionId: "ver-root",
+    });
+
+    // Candidate cand-X has TWO experiments:
+    //   - exp-X-old → scored 46.04 (stale inflated retry)
+    //   - exp-X-new → scored 8.79 (the correct final result)
+    // The orchestrator must pick the experiment whose
+    // LoopProcessedEvent was processed LATEST. With the test below,
+    // exp-X-new's event is published second → it must win.
+    const oldExpId = "exp-X-old";
+    const newExpId = "exp-X-new";
+
+    // Seed the candidate row (single row, both experiments link to it).
+    prisma.candidates.set("cand-X", {
+      id: "cand-X",
+      searchRunId: "sr-11",
+      strategyVersionId: "ver-X",
+      status: "DONE",
+    });
+    // Both experiments for the same candidate.
+    prisma.experiments.set(oldExpId, {
+      id: oldExpId,
+      candidateId: "cand-X",
+      name: "old",
+      status: "DONE",
+      fromTime: BigInt(0),
+      toTime: BigInt(Date.now()),
+      createdAt: new Date(Date.now() - 60_000),
+    } as FakeExperimentRow);
+    prisma.experiments.set(newExpId, {
+      id: newExpId,
+      candidateId: "cand-X",
+      name: "new",
+      status: "DONE",
+      fromTime: BigInt(0),
+      toTime: BigInt(Date.now()),
+      createdAt: new Date(),
+    } as FakeExperimentRow);
+    // Two backtest rows for the same candidate, very different scores.
+    prisma.backtestResults.push({
+      experimentId: oldExpId,
+      candidateId: "cand-X",
+      searchRunId: "sr-11",
+      symbolId: "sym-btc",
+      timeframe: "1h",
+      overallScore: 46.04,
+      totalReturn: 15.11,
+      winRate: 0.9999,
+      maxDrawdown: 0.05,
+      createdAt: new Date(Date.now() - 60_000),
+    } as FakeBacktestResultRow);
+    prisma.backtestResults.push({
+      experimentId: newExpId,
+      candidateId: "cand-X",
+      searchRunId: "sr-11",
+      symbolId: "sym-btc",
+      timeframe: "1h",
+      overallScore: 8.79,
+      totalReturn: 0.42,
+      winRate: 0.55,
+      maxDrawdown: 0.12,
+      createdAt: new Date(),
+    } as FakeBacktestResultRow);
+
+    // Fire the STALE event first (orchestrator stores in LoopProcessedEvent).
+    bus.publish("StrategyEvaluated", {
+      strategyVersionId: "ver-X",
+      overallScore: 46.04,
+      loopId: "L11",
+      candidateId: "cand-X",
+      searchRunId: "sr-11",
+      iterationIndex: 1,
+      experimentId: oldExpId,
+    });
+    await wait(20);
+    // Then the FINAL event. This must be the one whose score the loop
+    // reports, since the orchestrator's authoritative resolution uses
+    // the LATEST LoopProcessedEvent per candidate.
+    bus.publish("StrategyEvaluated", {
+      strategyVersionId: "ver-X",
+      overallScore: 8.79,
+      loopId: "L11",
+      candidateId: "cand-X",
+      searchRunId: "sr-11",
+      iterationIndex: 1,
+      experimentId: newExpId,
+    });
+    await wait(50);
+
+    const row = prisma.loops.get("L11")!;
+    // The correct final result must win. Score = 8.79 (NOT 46.04).
+    expect(row.bestScoreSoFar).toBe(8.79);
+    // All metrics must come from the SAME authoritative BacktestResult row.
+    expect(Number(row.bestTotalReturn)).toBeCloseTo(0.42, 4);
+    expect(Number(row.bestWinRate)).toBeCloseTo(0.55, 4);
+    // totalEvaluated counts BOTH events (they are distinct experimentIds).
+    expect(row.totalEvaluated).toBe(2);
   });
 });

@@ -47,6 +47,7 @@ import {
 import { CombinationOperator } from "../../strategy/combination/CombinationConfig";
 import type { CombinationConfig } from "../../strategy/combination/CombinationConfig";
 import { getStrategyRegistry } from "../../strategy/domain/StrategyRegistry";
+import type { LoopOrchestratorService } from "./loop-orchestrator.service";
 
 /* ─── Event payload mirrors LeaderboardService ────────────────────────── */
 
@@ -114,6 +115,15 @@ export class LoopOrchestratorRunner {
   private readonly log: Logger;
   private readonly searchRepository: PrismaSearchRepository;
   private readonly mapper: StrategyVersionMapper;
+  /**
+   * Phase 3.3 — back-reference to the orchestrator service. The
+   * runner uses this in `getRuntimeState` to consult the
+   * orchestrator's read-side authoritative-best helper (so a stale
+   * `LoopRunState.bestScoreSoFar` cannot be exposed as the loop's
+   * "best"). Set after construction to break the circular dependency
+   * between orchestrator and runner.
+   */
+  private orchestratorRef: LoopOrchestratorService | null = null;
 
   constructor(deps: LoopOrchestratorRunnerDeps) {
     this.prisma = deps.prisma ?? getPrismaClient();
@@ -121,6 +131,20 @@ export class LoopOrchestratorRunner {
     this.log = deps.logger ?? logger;
     this.searchRepository = deps.searchRepository;
     this.mapper = deps.strategyVersionMapper;
+  }
+
+  /**
+   * Phase 3.3 — wire the runner back to its orchestrator. Called from
+   * the composition root after both objects are constructed. Optional;
+   * `getRuntimeState` falls back to persisted LoopRunState values when
+   * the back-reference is missing (e.g. in unit tests).
+   */
+  public setOrchestrator(orchestrator: LoopOrchestratorService): void {
+    this.orchestratorRef = orchestrator;
+  }
+
+  private get orchestrator(): LoopOrchestratorService | null {
+    return this.orchestratorRef;
   }
 
   /* ─── Subscription ─────────────────────────────────────────────────── */
@@ -601,11 +625,19 @@ export class LoopOrchestratorRunner {
 
       const result = await generator.generate(
         async (candidate) => {
+          // Phase 3.3: prefer the StrategyRegistry's `name` (e.g.
+          // "Bollinger Bands") over the implementationRef ("strategy.bollinger")
+          // so the UI shows meaningful labels instead of bare refs.
+          const baseDisplayName =
+            candidate.candidateType === "BASE"
+              ? getStrategyRegistry().resolve(candidate.strategyId)?.name ??
+                candidate.strategyId
+              : null;
           const versionInfo =
             candidate.candidateType === "BASE"
               ? await this.mapper.resolveBaseStrategy(
                   candidate.strategyId,
-                  candidate.strategyId,
+                  baseDisplayName ?? candidate.strategyId,
                 )
               : await this.mapper.resolveCompositeStrategy(
                   candidate.config,
@@ -865,7 +897,6 @@ export class LoopOrchestratorRunner {
     let bestStrategyName: string | null = null;
     let bestStrategyType: string | null = null;
     let bestStrategySymbolCode: string | null = null;
-    let bestMaxDrawdown: number | null = null;
     if (row.bestStrategyVersionId) {
       const ver = await this.prisma.strategyVersion.findUnique({
         where: { id: row.bestStrategyVersionId },
@@ -880,23 +911,61 @@ export class LoopOrchestratorRunner {
       });
       bestStrategySymbolCode = sym?.symbol ?? null;
     }
-    if (row.bestStrategyVersionId && row.bestStrategySymbolId && row.bestStrategyTimeframe) {
-      // Phase 3.2 fix: avoid chained relation. Find candidate first.
-      const cand = await this.prisma.candidateStrategy.findFirst({
-        where: { strategyVersionId: row.bestStrategyVersionId },
-        select: { id: true },
-      });
-      const br = cand
-        ? await this.prisma.backtestResult.findFirst({
-            where: {
-              experiment: { candidateId: cand.id },
-              symbolId: row.bestStrategySymbolId,
-              timeframe: row.bestStrategyTimeframe,
-            },
-            orderBy: { overallScore: "desc" },
-          })
-        : null;
-      bestMaxDrawdown = br ? Number(br.maxDrawdown) : null;
+
+    // Phase 3.3: bestMaxDrawdown is now persisted alongside the other
+    // best-* metrics on LoopRunState (set by recomputeLoopBest from the
+    // SAME authoritative BacktestResult row), so the runtime state
+    // reads it directly. This guarantees bestScore / bestTotalReturn /
+    // bestWinRate / bestMaxDrawdown all come from the same experiment.
+
+    // Phase 3.3 — read-time authoritative override. If the persisted
+    // `bestScoreSoFar` is stale (e.g. the BacktestResult it referred
+    // to was deleted, or an older buggy orchestrator wrote an inflated
+    // value), derive the authoritative best from the current
+    // BacktestResult rows. This guarantees the UI never shows a
+    // transient/stale "best" candidate. The orchestrator's helper
+    // self-heals the persisted row in the same call, so subsequent
+    // reads converge without further work.
+    let authoritativeScore = row.bestScoreSoFar
+      ? Number(row.bestScoreSoFar)
+      : null;
+    let authoritativeTotalReturn = row.bestTotalReturn
+      ? Number(row.bestTotalReturn)
+      : null;
+    let authoritativeWinRate = row.bestWinRate
+      ? Number(row.bestWinRate)
+      : null;
+    let authoritativeMaxDrawdown = row.bestMaxDrawdown
+      ? Number(row.bestMaxDrawdown)
+      : null;
+    let authoritativeStrategyVersionId = row.bestStrategyVersionId;
+    try {
+      const orch = this.orchestrator;
+      if (orch) {
+        const auth = await orch.getAuthoritativeBest(loopId);
+        if (auth) {
+          authoritativeScore = auth.overallScore;
+          authoritativeTotalReturn = auth.totalReturn;
+          authoritativeWinRate = auth.winRate;
+          authoritativeMaxDrawdown = auth.maxDrawdown;
+          authoritativeStrategyVersionId = auth.strategyVersionId;
+          // Re-resolve display name/type/symbolCode off the authoritative
+          // strategy version. If authoritativeStrategyVersionId changed,
+          // the previous lookups above may have been against a stale id,
+          // so refresh them here.
+          if (auth.strategyVersionId !== row.bestStrategyVersionId) {
+            const ver = await this.prisma.strategyVersion.findUnique({
+              where: { id: auth.strategyVersionId },
+              include: { definition: true },
+            });
+            bestStrategyName = ver?.name ?? null;
+            bestStrategyType = ver?.definition.type ?? null;
+          }
+        }
+      }
+    } catch (err) {
+      // Non-fatal: fall back to persisted LoopRunState row.
+      void err;
     }
 
     let currentIterationCandidateCount = 0;
@@ -939,15 +1008,15 @@ export class LoopOrchestratorRunner {
       totalEvaluated: row.totalEvaluated,
       noImprovementCount: row.noImprovementCount,
       noImprovementCap: row.noImprovementCap,
-      bestScore: Number(row.bestScoreSoFar),
-      bestStrategyVersionId: row.bestStrategyVersionId,
+      bestScore: authoritativeScore ?? 0,
+      bestStrategyVersionId: authoritativeStrategyVersionId,
       bestStrategyName,
       bestStrategyType,
       bestStrategySymbolCode,
       bestStrategyTimeframe: row.bestStrategyTimeframe,
-      bestTotalReturn: row.bestTotalReturn ? Number(row.bestTotalReturn) : null,
-      bestWinRate: row.bestWinRate ? Number(row.bestWinRate) : null,
-      bestMaxDrawdown,
+      bestTotalReturn: authoritativeTotalReturn,
+      bestWinRate: authoritativeWinRate,
+      bestMaxDrawdown: authoritativeMaxDrawdown,
       stopReason: row.stopReason,
       lastIterationSearchRunId: row.lastIterationSearchRunId,
       startedAt: row.startedAt.toISOString(),

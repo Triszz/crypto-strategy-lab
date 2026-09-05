@@ -444,14 +444,31 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
         Math.min(200, Number(req.query["limit"] ?? 50) || 50),
       );
 
+      // Phase 3.4: optional tzOffsetMinutes controls the "today"
+      // calendar-day boundary. The client sends
+      //   tzOffsetMinutes = -new Date().getTimezoneOffset()
+      // so a Vietnam/Bangkok user (UTC+7) sends +420 and gets the
+      // UTC+7 local-day boundary. Default = 0 (UTC) for backward
+      // compatibility — existing callers see no change.
       let startOfDay: Date | null = null;
       if (todayOnly) {
-        // UTC midnight boundary for "today". Documented so frontend
-        // doesn't silently mix local-time filtering with UTC display.
+        const rawOffset = Number(req.query["tzOffsetMinutes"]);
+        const tzOffsetMinutes =
+          Number.isFinite(rawOffset) && Math.abs(rawOffset) <= 14 * 60
+            ? Math.trunc(rawOffset)
+            : 0;
+        // Local midnight in the requested tz = UTC midnight - tzOffset.
         const now = new Date();
-        startOfDay = new Date(
-          Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0),
+        const utcMidnight = Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate(),
+          0,
+          0,
+          0,
+          0,
         );
+        startOfDay = new Date(utcMidnight - tzOffsetMinutes * 60_000);
       }
 
       const rows = await prisma.loopRunState.findMany({

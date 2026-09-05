@@ -195,9 +195,40 @@ export class LoopOrchestratorRunner {
         candidateCount: realCount,
         queued: payload.totalQueued,
         evaluatedCount: iteration.evaluatedCount,
+        generated: payload.totalGenerated,
+        rejected: payload.totalRejected,
       },
       "[ContinuousLoop] SearchCompleted reconciled",
     );
+
+    // Phase 3.4: minimal observability for "Iterations 4–6 only
+    // persisted 2 candidates" — record the generated/rejected/
+    // persisted counts at SearchCompleted time. Does NOT alter
+    // control flow, retry, validation, or stop conditions.
+    try {
+      await this.prisma.systemLog.create({
+        data: {
+          level: "INFO",
+          sourceModule: "loop-orchestrator-runner",
+          eventCode: "ITERATION_GENERATION_SUMMARY",
+          message: `[ContinuousLoop] iter=${iteration.iterationIndex} loop=${iteration.loopId} generated=${payload.totalGenerated} rejected=${payload.totalRejected} persisted=${realCount}`,
+          context: {
+            loopId: iteration.loopId,
+            iterationIndex: iteration.iterationIndex,
+            searchRunId: payload.searchRunId,
+            generated: payload.totalGenerated,
+            rejected: payload.totalRejected,
+            persisted: realCount,
+            queued: payload.totalQueued,
+          },
+        },
+      });
+    } catch (logErr) {
+      this.log.warn(
+        { logErr },
+        "[ContinuousLoop] failed to persist iteration summary log",
+      );
+    }
 
     // Safety net — completion is driven by
     // `maybeCompleteIteration` from the orchestrator, but if for any
@@ -699,10 +730,41 @@ export class LoopOrchestratorRunner {
 
       return searchRunId;
     } catch (err) {
+      // Phase 3.4: persist enough context to diagnose a FAILED
+      // iteration (e.g. "Iteration 7 FAILED with 0 candidates") from
+      // the SystemLog table. The catch behavior is otherwise
+      // UNCHANGED: we still mark the SearchRun FAILED, clear
+      // inFlightSearchRunId, and return null. No retry, no
+      // compensation, no lifecycle mutation beyond what was already
+      // here.
+      const errMessage = err instanceof Error ? err.message : String(err);
+      const errStack = err instanceof Error ? err.stack : undefined;
       this.log.error(
-        { err, loopId, iteration: nextIter },
+        { err, loopId, iteration: nextIter, searchRunId, errMessage },
         "[ContinuousLoop] runIteration failed",
       );
+      try {
+        await this.prisma.systemLog.create({
+          data: {
+            level: "ERROR",
+            sourceModule: "loop-orchestrator-runner",
+            eventCode: "RUN_ITERATION_FAILED",
+            message: `[ContinuousLoop] runIteration failed for loop=${loopId} iteration=${nextIter} searchRunId=${searchRunId ?? "<none>"}: ${errMessage}`,
+            context: {
+              loopId,
+              iteration: nextIter,
+              searchRunId: searchRunId ?? null,
+              errorMessage: errMessage,
+              errorStack: errStack ?? null,
+              errorName: err instanceof Error ? err.name : typeof err,
+            },
+          },
+        });
+      } catch (logErr) {
+        // Logging must never mask the original error or change the
+        // catch behavior. Fall through.
+        this.log.warn({ logErr }, "[ContinuousLoop] failed to persist runIteration failure log");
+      }
       if (searchRunId) {
         await this.searchRepository
           .updateSearchRunStatus(searchRunId, "FAILED", undefined, new Date())

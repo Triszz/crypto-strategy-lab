@@ -13,6 +13,7 @@
  * Socket.IO, no Binance SDK.
  */
 import type { StrategyParameters } from "../domain/StrategyContext";
+import { getStrategyRegistry } from "../domain/StrategyRegistry";
 
 /**
  * Combination operator — determines how child strategy signals are aggregated.
@@ -168,4 +169,54 @@ export function validateCombinationConfig(
   }
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
+}
+
+/**
+ * Phase 3.4 — canonical, non-recursive display name for a composite.
+ *
+ * The previous contract let the generator pass a "human-readable" name
+ * that was itself built from the parent's display name. Each iteration
+ * prefixed the previous persisted name, producing strings like:
+ *   "Domain-guided bollinger + rsi → Bollinger Bands + RSI (Wilder) →
+ *    Bollinger Bands + RSI (Wilder) → Bollinger Bands + RSI (Wilder)"
+ *
+ * The fix: derive the display name strictly from the canonical
+ * composite components (the `strategyId` of each component, mapped
+ * through `StrategyRegistry.resolve(id)?.name` for human-readable
+ * labels). Two `CombinationConfig`s with the same components yield
+ * the same canonical name, regardless of how the original name was
+ * built.
+ *
+ * Why this is safe:
+ *   - The executable definition lives in `composite_components`,
+ *     `parameters`, `weights`, `operator`, and `implementationRef`.
+ *     The display name is purely a label.
+ *   - The helper uses the live `StrategyRegistry` so it picks up
+ *     human-readable strategy names ("Bollinger Bands") when present
+ *     and falls back to a stripped `implementationRef` otherwise
+ *     (so legacy strategies not yet registered still resolve).
+ *   - Infra-free: no Prisma, no Express. Safe to call from anywhere
+ *     that already imports `CombinationConfig`.
+ *
+ * @param config  The composite config to derive a display name for.
+ * @returns       A stable, recursive-free human-readable label.
+ */
+export function getCanonicalCompositeDisplayName(config: CombinationConfig): string {
+  if (!config || !Array.isArray(config.components) || config.components.length === 0) {
+    return "Composite";
+  }
+  const registry = getStrategyRegistry();
+  // Order by position so the label is deterministic.
+  const ordered = [...config.components].sort(
+    (a, b) => (a.position ?? 0) - (b.position ?? 0),
+  );
+  const labels = ordered.map((c) => {
+    const registered = registry.resolve(c.strategyId);
+    if (registered && typeof registered.name === "string" && registered.name.length > 0) {
+      return registered.name;
+    }
+    // Fallback: strip the "strategy." prefix to surface a clean label.
+    return c.strategyId.replace(/^strategy\./, "");
+  });
+  return `Composite · ${labels.join(" + ")}`;
 }

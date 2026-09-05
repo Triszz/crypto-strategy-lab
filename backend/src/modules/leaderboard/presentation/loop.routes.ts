@@ -93,16 +93,32 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
       // Register the initial SearchRun as LoopIteration #1 if provided.
       // This is called by Combination.handleSubmit() after startSearch() has
       // created the initial full-search SearchRun.
+      //
+      // Phase 3.2: the runner's registerIteration is the single
+      // idempotent path for persisting any iteration, including #1. It
+      // counts `candidateCount` from the actual DB rows and re-computes
+      // `evaluatedCount` from existing experiments (handles the "search
+      // already evaluated before loop registered" race).
       if (
         parsed.data.initialSearchRunId &&
         parsed.data.parentStrategyVersionId &&
         deps.runner
       ) {
-        await deps.runner.registerInitialSearchRun({
+        const initialCandidatesCount = await prisma.candidateStrategy.count({
+          where: { searchRunId: parsed.data.initialSearchRunId },
+        }).catch(() => 0);
+        const effectiveCandidateCount =
+          initialCandidatesCount > 0
+            ? initialCandidatesCount
+            : (parsed.data.candidateCountPerIteration ?? 5);
+
+        await deps.runner.registerIteration({
           loopId: effectiveLoopId,
-          searchRunId: parsed.data.initialSearchRunId,
+          iterationIndex: 1,
           parentStrategyVersionId: parsed.data.parentStrategyVersionId,
-          candidateCount: parsed.data.candidateCountPerIteration ?? 5,
+          searchRunId: parsed.data.initialSearchRunId,
+          candidateCount: effectiveCandidateCount,
+          isInitial: true,
         });
       }
 
@@ -237,18 +253,19 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
 
       const iterationsWithCandidates = await Promise.all(
         iterations.map(async (iter) => {
+          const base = {
+            iterationIndex: iter.iterationIndex,
+            status: iter.status,
+            parentStrategyVersionId: iter.parentStrategyVersionId,
+            searchRunId: iter.searchRunId,
+            candidateCount: iter.candidateCount,
+            evaluatedCount: iter.evaluatedCount,
+            bestScoreInIteration: Number(iter.bestScoreInIteration),
+            bestStrategyVersionId: iter.bestStrategyVersionId,
+            completedAt: iter.completedAt?.toISOString() ?? null,
+          };
           if (!iter.searchRunId) {
-            return {
-              iterationIndex: iter.iterationIndex,
-              status: iter.status,
-              parentStrategyVersionId: iter.parentStrategyVersionId,
-              candidateCount: iter.candidateCount,
-              evaluatedCount: iter.evaluatedCount,
-              bestScoreInIteration: Number(iter.bestScoreInIteration),
-              bestStrategyVersionId: iter.bestStrategyVersionId,
-              completedAt: iter.completedAt?.toISOString() ?? null,
-              candidates: [],
-            };
+            return { ...base, candidates: [] };
           }
           const candidates = await prisma.candidateStrategy.findMany({
             where: { searchRunId: iter.searchRunId },
@@ -280,17 +297,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
               };
             }),
           );
-          return {
-            iterationIndex: iter.iterationIndex,
-            status: iter.status,
-            parentStrategyVersionId: iter.parentStrategyVersionId,
-            candidateCount: iter.candidateCount,
-            evaluatedCount: iter.evaluatedCount,
-            bestScoreInIteration: Number(iter.bestScoreInIteration),
-            bestStrategyVersionId: iter.bestStrategyVersionId,
-            completedAt: iter.completedAt?.toISOString() ?? null,
-            candidates: withMetrics,
-          };
+          return { ...base, candidates: withMetrics };
         }),
       );
 

@@ -81,10 +81,17 @@ async function main(): Promise<void> {
   // each Top-1 into a new SearchRun via LoopMutationGenerator. The
   // runner reuses `search.repository` + `search.strategyVersionMapper`
   // so no second pipeline is created.
+  //
+  // Phase 3.1: wire the runner into the orchestrator so the
+  // orchestrator can call `runner.maybeCompleteIteration(loopId,
+  // iterationIndex)` after every StrategyEvaluated event. This is the
+  // closed loop that makes Iteration 1 → Iteration 2 happen
+  // automatically.
   const loopRunner = new LoopOrchestratorRunner({
     searchRepository: search.repository,
     strategyVersionMapper: search.strategyVersionMapper,
   });
+  loopOrchestrator.setRunner(loopRunner);
   loopRunner.startListening();
   mountLoop({ orchestrator: loopOrchestrator, runner: loopRunner });
 

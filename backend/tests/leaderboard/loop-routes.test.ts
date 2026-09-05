@@ -204,24 +204,29 @@ class FakeRunner {
       loopId: row.loopId,
       status: row.status,
       currentIteration: row.currentIteration,
-      maxIterations: row.maxCandidates,
+      maxIterations: row.maxIterations ?? 20,
       maxCandidates: row.maxCandidates,
+      candidateCountPerIteration: 5,
       totalEvaluated: row.totalEvaluated,
       noImprovementCount: row.noImprovementCount,
       noImprovementCap: row.noImprovementCap,
-      bestScoreSoFar: Number(row.bestScoreSoFar),
+      bestScore: Number(row.bestScoreSoFar ?? 0),
       bestStrategyVersionId: topEntry?.strategyVersionId ?? null,
       bestStrategyType: topEntry?.strategyType ?? null,
       bestStrategyName: topEntry?.strategyVersion.name ?? null,
       bestStrategySymbolCode: topEntry?.symbol.symbol ?? null,
       bestStrategyTimeframe: topEntry?.timeframe ?? null,
+      bestMaxDrawdown: null,
       bestTotalReturn: topEntry ? topEntry.totalReturn : null,
       bestWinRate: topEntry ? topEntry.winRate : null,
+      stopReason: null,
       lastIterationSearchRunId: lastIter?.searchRunId ?? null,
       startedAt: row.startedAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
       elapsedSeconds: Math.floor((Date.now() - row.startedAt.getTime()) / 1000),
       timeLimitSeconds: row.timeLimitSeconds,
+      currentIterationCandidateCount: 0,
+      currentIterationEvaluatedCount: 0,
     };
   }
 }
@@ -426,14 +431,18 @@ describe("loop.routes", () => {
     expect(res.status).toBe(200);
     const body = res.body as {
       success: boolean;
-      data: LoopRuntimeState & {
-        leaderboardTopScore: number | null;
-        bestStrategyName: string | null;
-      };
+      data: LoopRuntimeState;
     };
     expect(body.success).toBe(true);
-    expect(body.data.leaderboardTopScore).toBe(84.5);
-    expect(body.data.bestStrategyName).toBe("Moving Average Crossover");
+    // Phase 3.1 — loop-local best is read from LoopRunState, NOT the
+    // global leaderboard. The previous Phase 2 test asserted the
+    // global leaderboard's top score; that field was intentionally
+    // removed because it leaked cross-loop data. We now assert the
+    // event-shape: progress returns a LoopRuntimeState with a numeric
+    // best score (currently 0 because no evaluation has happened).
+    expect(typeof body.data.bestScore).toBe("number");
+    expect(body.data.status).toBe("RUNNING");
+    expect(body.data.currentIteration).toBe(0);
   });
 
   it("POST /pause sets status=PAUSED", async () => {

@@ -1,0 +1,32 @@
+﻿{
+    "success":  true,
+    "data":  {
+                 "loopId":  "combo-383b0f2e-e34d-476b-b4d4-6c89b5b4b905",
+                 "status":  "STOPPED_NO_IMPROVEMENT",
+                 "currentIteration":  3,
+                 "maxIterations":  20,
+                 "maxCandidates":  100,
+                 "candidateCountPerIteration":  5,
+                 "totalEvaluated":  25,
+                 "noImprovementCount":  25,
+                 "noImprovementCap":  25,
+                 "bestScore":  0,
+                 "bestStrategyVersionId":  null,
+                 "bestStrategyName":  null,
+                 "bestStrategyType":  null,
+                 "bestStrategySymbolCode":  null,
+                 "bestStrategyTimeframe":  null,
+                 "bestTotalReturn":  null,
+                 "bestWinRate":  null,
+                 "bestMaxDrawdown":  null,
+                 "stopReason":  "STOPPED_NO_IMPROVEMENT",
+                 "lastIterationSearchRunId":  "328ad607-a68a-49af-8d7f-6c44514f327f",
+                 "startedAt":  "2026-09-05T02:56:13.803Z",
+                 "updatedAt":  "2026-09-05T02:57:30.969Z",
+                 "elapsedSeconds":  180,
+                 "timeLimitSeconds":  1800,
+                 "currentIterationCandidateCount":  5,
+                 "currentIterationEvaluatedCount":  5,
+                 "lastIterationParentStrategyVersionId":  "347824b0-b360-4934-9509-332e29a15cea"
+             }
+}

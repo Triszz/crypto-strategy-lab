@@ -250,23 +250,64 @@ function buildSpaceFromRegistry(
 }
 
 /**
+ * Validate a candidate's parameter set against the Strategy's
+ * `validateParameters` contract. Returns true when the strategy either has
+ * no validator or accepts the parameters.
+ */
+function validateAgainstStrategy(
+  registry: StrategyRegistry,
+  strategyId: string,
+  parameters: Readonly<Record<string, unknown>>,
+): boolean {
+  const strategy = registry.resolve(strategyId);
+  if (!strategy || typeof strategy.validateParameters !== "function") return true;
+  try {
+    const result = strategy.validateParameters(parameters);
+    return Boolean(result && (result as { ok?: boolean }).ok);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Mutate ALL fields in `space` for the given current parameters.
  * Fields not present in `parameters` are sampled from their default
  * range so the candidate is always validateable.
+ *
+ * Honours the strategy's `validateParameters` contract: if the mutated
+ * parameters fail cross-field validation (e.g. RSI's `buyThreshold <
+ * sellThreshold`), the mutation is retried up to `maxRetries` times.
+ * Failing that, we fall back to a safe midpoint that respects every
+ * numeric field's bounds (and the strategy's defaults) so a candidate is
+ * always emitted. This guarantees the generator never emits a candidate
+ * the strategy would immediately reject at runtime.
  */
 function mutateParameters(
   space: ParameterSpace,
   currentParams: Readonly<Record<string, unknown>>,
   rng: () => number,
+  registry: StrategyRegistry,
 ): Record<string, unknown> {
+  const maxRetries = 8;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const out: Record<string, unknown> = {};
+    for (const field of space.fields) {
+      const cur = currentParams[field.key];
+      if (cur === undefined || cur === null) {
+        out[field.key] = field.defaultValue;
+      } else {
+        out[field.key] = mutateField(field, cur as number | string, rng);
+      }
+    }
+    if (validateAgainstStrategy(registry, space.strategyId, out)) {
+      return out;
+    }
+  }
+  // Last resort — fall back to the spec defaults, which the strategy
+  // declares as a validateable baseline.
   const out: Record<string, unknown> = {};
   for (const field of space.fields) {
-    const cur = currentParams[field.key];
-    if (cur === undefined || cur === null) {
-      out[field.key] = field.defaultValue;
-    } else {
-      out[field.key] = mutateField(field, cur as number | string, rng);
-    }
+    out[field.key] = field.defaultValue;
   }
   return out;
 }
@@ -293,7 +334,7 @@ function mutateBaseCandidate(
     };
     return base;
   }
-  const params = mutateParameters(space, parent.parameters, rng);
+  const params = mutateParameters(space, parent.parameters, rng, registry);
   const base: BaseCandidate = {
     candidateType: "BASE",
     candidateId,
@@ -329,7 +370,7 @@ function mutateCompositeCandidate(
   const components: CombinationComponent[] = parentConfig.components.map((c, idx) => {
     const space = buildSpaceFromRegistry(registry, c.strategyId);
     const newParams = space
-      ? mutateParameters(space, c.parameters ?? {}, rng)
+      ? mutateParameters(space, c.parameters ?? {}, rng, registry)
       : (c.parameters ? { ...c.parameters } : {});
     return {
       strategyId: c.strategyId,

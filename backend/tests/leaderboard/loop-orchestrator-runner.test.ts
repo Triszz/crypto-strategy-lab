@@ -76,6 +76,8 @@ class FakePrisma {
   candidateStrategy = {
     count: async ({ where }: { where: { searchRunId: string } }) =>
       this.candidates.filter((c) => c.searchRunId === where.searchRunId).length,
+    findFirst: async ({ where }: { where: { strategyVersionId: string } }) =>
+      this.candidates.find((c) => c.strategyVersionId === where.strategyVersionId) ?? null,
   };
 }
 

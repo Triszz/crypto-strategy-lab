@@ -1,0 +1,314 @@
+﻿{
+    "success":  true,
+    "data":  [
+                 {
+                     "iterationIndex":  1,
+                     "status":  "DONE",
+                     "parentStrategyVersionId":  "8a4e43c2-890d-49c9-a26e-3ca08034195c",
+                     "searchRunId":  "383b0f2e-e34d-476b-b4d4-6c89b5b4b905",
+                     "candidateCount":  20,
+                     "evaluatedCount":  21,
+                     "bestScoreInIteration":  0,
+                     "bestStrategyVersionId":  "8a4e43c2-890d-49c9-a26e-3ca08034195c",
+                     "completedAt":  "2026-09-05T02:56:23.948Z",
+                     "candidates":  [
+                                        {
+                                            "id":  "8fc4a180-dc59-44e3-a48b-6780ed565de0",
+                                            "strategyName":  "Domain-guided ma + rsi + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "a5735ea7-9356-432f-b62e-e46d98647531",
+                                            "strategyName":  "Domain-guided bollinger + ma + rsi + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "9d494381-2d81-4475-89e5-ab39f40f9b0d",
+                                            "strategyName":  "Domain-guided ma + rsi + sentiment.news + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "264a4d61-b4e5-4c71-9f0c-6b26991f1d08",
+                                            "strategyName":  "Domain-guided bollinger + ma",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "73ba0bac-68e2-4a06-8068-1aaa644e2bf2",
+                                            "strategyName":  "Domain-guided bollinger + rsi",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "83886ecd-678f-464b-9946-f001661a60cf",
+                                            "strategyName":  "Domain-guided bollinger + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "9d9aeb93-9e84-4ae8-acef-4c71c945233f",
+                                            "strategyName":  "Domain-guided ma + rsi",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "3e3a6e8f-fb11-45fc-a706-d8f2fc24906e",
+                                            "strategyName":  "Domain-guided ma + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "166da94a-943e-4669-b741-1b182a7e9b3a",
+                                            "strategyName":  "Domain-guided rsi + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "d83085aa-e6cb-487a-8423-c65152dc64ff",
+                                            "strategyName":  "Domain-guided bollinger + ma + rsi",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "32950a29-8164-4714-8725-fd994a4f43d2",
+                                            "strategyName":  "Domain-guided bollinger + ma + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "864cc4cd-9580-4b64-b0c7-84d068d612c0",
+                                            "strategyName":  "Domain-guided bollinger + rsi + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "25c68d70-fb4a-4d59-80f3-e73acb12c6b5",
+                                            "strategyName":  "Domain-guided ma + rsi + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "026b9f63-1403-40f7-bc97-2c496189eae4",
+                                            "strategyName":  "Domain-guided bollinger + ma + rsi + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "94af1385-4c85-44a4-9cd3-20b14d02b26a",
+                                            "strategyName":  "Domain-guided bollinger + ma + sentiment.news",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "a85c265f-db9d-4ebd-9429-df50dc252d5e",
+                                            "strategyName":  "Domain-guided bollinger + ma + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "56fff0b2-4e27-40e9-8249-17517e17c352",
+                                            "strategyName":  "Domain-guided bollinger + rsi + sentiment.news",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  9.14,
+                                            "totalReturn":  0.2515,
+                                            "winRate":  1,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "01ac8c24-7316-4aca-8ab6-42ab92516ab6",
+                                            "strategyName":  "Domain-guided bollinger + rsi + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "ed1c3be9-b937-4ea5-882b-a85ac987da38",
+                                            "strategyName":  "Domain-guided bollinger + sentiment.news + support_resistance",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "5b2420cf-c835-4c6a-b698-46f4c5d176b1",
+                                            "strategyName":  "Domain-guided ma + rsi + sentiment.news",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        }
+                                    ]
+                 },
+                 {
+                     "iterationIndex":  2,
+                     "status":  "DONE",
+                     "parentStrategyVersionId":  "8a4e43c2-890d-49c9-a26e-3ca08034195c",
+                     "searchRunId":  "328ad607-a68a-49af-8d7f-6c44514f327f",
+                     "candidateCount":  5,
+                     "evaluatedCount":  5,
+                     "bestScoreInIteration":  0,
+                     "bestStrategyVersionId":  "347824b0-b360-4934-9509-332e29a15cea",
+                     "completedAt":  "2026-09-05T02:57:04.747Z",
+                     "candidates":  [
+                                        {
+                                            "id":  "3ec22f73-f9f9-4470-8290-7cbfbb5bacf4",
+                                            "strategyName":  "Domain-guided bollinger + support_resistance (loop mutation)",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "b2a49b58-4731-4d16-9f29-ce0d2f8ac9ef",
+                                            "strategyName":  "Domain-guided bollinger + support_resistance (loop mutation)",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "8e74ec4f-4b45-400c-89db-31a4415f8c72",
+                                            "strategyName":  "Crossover (Domain-guided ma + rsi + support_resistance × Domain-guided bollinger + ma + support_resistance)",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "dcd3037f-6bb3-4dfe-ad9c-c4b86457cf90",
+                                            "strategyName":  "Loop explore 0_3",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "3e9bcbf6-7ac2-4b8b-bec2-27ba32406eb4",
+                                            "strategyName":  "Loop explore 0_4",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        }
+                                    ]
+                 },
+                 {
+                     "iterationIndex":  3,
+                     "status":  "RUNNING",
+                     "parentStrategyVersionId":  "347824b0-b360-4934-9509-332e29a15cea",
+                     "searchRunId":  "42f0419d-8cd4-4142-97d1-fc49c3c0f217",
+                     "candidateCount":  5,
+                     "evaluatedCount":  5,
+                     "bestScoreInIteration":  0,
+                     "bestStrategyVersionId":  null,
+                     "completedAt":  null,
+                     "candidates":  [
+                                        {
+                                            "id":  "8a460a5d-48b4-482e-896d-e53be137c8ca",
+                                            "strategyName":  "Domain-guided bollinger + support_resistance (loop mutation)",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "9a776d01-0bb6-447c-8a0a-eb9db6e2ab98",
+                                            "strategyName":  "Domain-guided bollinger + support_resistance (loop mutation)",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "133dae46-3ea8-4238-aa18-7d411a8a004e",
+                                            "strategyName":  "Crossover (Domain-guided ma + rsi + support_resistance × Domain-guided bollinger + ma + support_resistance)",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "57d43dda-799e-4e5c-8a30-bb44d971d51f",
+                                            "strategyName":  "Loop explore 0_3",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        },
+                                        {
+                                            "id":  "ab013585-bdba-4398-8349-985ac0e14ef3",
+                                            "strategyName":  "Loop explore 0_4",
+                                            "strategyType":  "COMPOSITE",
+                                            "overallScore":  0,
+                                            "totalReturn":  0,
+                                            "winRate":  0,
+                                            "maxDrawdown":  0
+                                        }
+                                    ]
+                 }
+             ]
+}

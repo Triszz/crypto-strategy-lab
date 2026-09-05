@@ -1,0 +1,32 @@
+﻿{
+    "success":  true,
+    "data":  {
+                 "loopId":  "combo-211ae266-c060-477f-a431-a925c433e29b",
+                 "status":  "RUNNING",
+                 "currentIteration":  2,
+                 "maxIterations":  20,
+                 "maxCandidates":  100,
+                 "candidateCountPerIteration":  5,
+                 "totalEvaluated":  24,
+                 "noImprovementCount":  22,
+                 "noImprovementCap":  25,
+                 "bestScore":  9.22,
+                 "bestStrategyVersionId":  "34aeba34-fc27-4bbc-9d23-de1512721e8b",
+                 "bestStrategyName":  "Domain-guided bollinger + rsi",
+                 "bestStrategyType":  "COMPOSITE",
+                 "bestStrategySymbolCode":  "BTCUSDT",
+                 "bestStrategyTimeframe":  "1h",
+                 "bestTotalReturn":  0.2619,
+                 "bestWinRate":  1,
+                 "bestMaxDrawdown":  0,
+                 "stopReason":  null,
+                 "lastIterationSearchRunId":  "211ae266-c060-477f-a431-a925c433e29b",
+                 "startedAt":  "2026-09-05T03:18:04.369Z",
+                 "updatedAt":  "2026-09-05T03:21:10.057Z",
+                 "elapsedSeconds":  192,
+                 "timeLimitSeconds":  1800,
+                 "currentIterationCandidateCount":  5,
+                 "currentIterationEvaluatedCount":  4,
+                 "lastIterationParentStrategyVersionId":  "34aeba34-fc27-4bbc-9d23-de1512721e8b"
+             }
+}

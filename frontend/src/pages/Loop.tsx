@@ -285,15 +285,29 @@ export default function Loop() {
     }
   }, [loopId]);
 
-  // Poll while RUNNING.
+  // Poll while the selected loop is RUNNING or while we don't yet know
+  // its status (initial mount / navigated to URL mid-iteration).
+  //
+  // Phase 3.2 — fixed: the previous effect depended on
+  // `status?.status`, which could re-create the interval right when
+  // an iteration transition briefly looked "stopped". The polling
+  // now keys ONLY on `loopId` + the loop's RUNNING-ness. We poll on a
+  // fixed cadence regardless of which iteration is in flight, and
+  // stop polling only when the loop is in a terminal state.
   useEffect(() => {
     if (!loopId) return;
     void refresh();
-    if (status?.status !== "RUNNING") return;
-    const t = window.setInterval(() => void refresh(), POLL_INTERVAL_MS);
-    return () => window.clearInterval(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loopId, status?.status]);
+    let cancelled = false;
+    const tick = () => {
+      if (cancelled) return;
+      void refresh();
+    };
+    const intervalId = window.setInterval(tick, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [loopId, refresh]);
 
   // Form inputs.
   const [maxIterations, setMaxIterations] = useState(20);
@@ -529,8 +543,8 @@ export default function Loop() {
                   <MetricBox
                     label="Current Iteration"
                     value={
-                      status.candidateCountPerIteration > 0
-                        ? `${status.currentIterationEvaluatedCount} / ${status.candidateCountPerIteration}`
+                      status.currentIterationCandidateCount > 0
+                        ? `${status.currentIterationEvaluatedCount} / ${status.currentIterationCandidateCount}`
                         : "—"
                     }
                     hint="evaluated"

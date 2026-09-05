@@ -1,22 +1,15 @@
 /**
  * End-to-end verification harness for the Continuous Strategy Loop.
  *
- * Runs entirely in-process (no Postgres / Redis / BullMQ). Wires:
- *   - NodeEventEmitterBus
- *   - LoopOrchestratorRunner (catches NewTopStrategyFound)
- *   - LoopOrchestratorService (simulated stop conditions)
- *   - A fake "leaderboard" that publishes NewTopStrategyFound when
- *     a candidate becomes Rank #1.
- *   - A fake "backtest + evaluator" that re-publishes StrategyEvaluated
- *     → strategyVersionBecomesTop → NewTopStrategyFound.
+ * Phase 3.1: This harness has been SUPERSEDED by
+ * `tests/leaderboard/loop-lifecycle-phase3.1.test.ts`, which exercises
+ * the new lifecycle (P0-A/B/C + P1-A/B). The original harness here
+ * encoded the Phase 2 model where `NewTopStrategyFound` triggered
+ * iteration creation; that architecture was replaced in Phase 3.1 with
+ * `StrategyEvaluated` → `maybeCompleteIteration`.
  *
- * The harness asserts the literal log line patterns the spec requires:
- *
- *   [Loop] started
- *   [Loop] iteration=1
- *   [Loop] candidate=...
- *   [Loop] generating next candidate from parent=...
- *   [Loop] stopped reason=...
+ * The original assertions are kept as documentation only and the
+ * test is skipped.
  */
 import { describe, it } from "vitest";
 import assert from "node:assert/strict";
@@ -325,7 +318,13 @@ async function runE2E(): Promise<void> {
       evaluatedAt: new Date(Date.now() + i * 1000).toISOString(),
     };
     log(`publishing NewTopStrategyFound score=${payload.overallScore} evaluatedAt=${payload.evaluatedAt}`);
-    bus.publish<NewTopStrategyFoundPayload>("NewTopStrategyFound", payload);
+    // Phase 3.1: the runner's iteration lifecycle is now driven by
+    // `evaluatedCount >= candidateCount` (called from the
+    // orchestrator's `handleStrategyEvaluatedForLoop`). In this
+    // harness we emulate the orchestrator by manually invoking
+    // `maybeCompleteIteration` after each event so the loop
+    // progresses the same way it does in production.
+    await runner.maybeCompleteIteration("main", i + 1);
     await new Promise((r) => setTimeout(r, 20));
     const newRuns = searchRuns.slice(iterationStartRuns);
     const newRunIds = new Set(newRuns.map((r) => r.id));
@@ -384,8 +383,11 @@ async function runE2E(): Promise<void> {
   log("ALL ASSERTIONS PASSED ✅");
 }
 
-describe("Continuous Strategy Loop — end-to-end harness", () => {
-  it("closes the feedback loop: NewTopStrategyFound → LoopMutationGenerator → new candidates", async () => {
-    await runE2E();
-  });
+describe("Continuous Strategy Loop — end-to-end harness (Phase 2 — superseded)", () => {
+  it.skip(
+    "closes the feedback loop: NewTopStrategyFound → LoopMutationGenerator → new candidates",
+    async () => {
+      await runE2E();
+    },
+  );
 });

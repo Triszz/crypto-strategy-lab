@@ -1,0 +1,10 @@
+﻿{
+    "searchRunId":  "1a1d6599-e078-4d48-ad30-63a72216a19f",
+    "algorithm":  "domain_guided",
+    "status":  "DONE",
+    "totalGenerated":  20,
+    "totalQueued":  20,
+    "totalRejected":  0,
+    "stopReason":  "MAX_CANDIDATES",
+    "generationMs":  39265
+}

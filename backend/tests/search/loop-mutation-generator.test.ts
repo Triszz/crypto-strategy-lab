@@ -368,6 +368,84 @@ describe("LoopMutationGenerator", () => {
       expect(v).toBeGreaterThanOrEqual(5);
     }
   });
+
+  /**
+   * Regression test: LoopMutationGenerator must honour cross-field rules
+   * declared by the strategy's `validateParameters` (e.g. RSI's
+   * `buyThreshold < sellThreshold`). Without this guarantee the loop emits
+   * candidates that the strategy rejects at runtime, which previously
+   * caused Phase 3.1 E2E failures with:
+   *   BACKTEST_ERROR: [strategy.rsi] buyThreshold (34) must be strictly
+   *                   less than sellThreshold (22).
+   */
+  it("never emits a candidate that violates the strategy's validateParameters cross-field rule", async () => {
+    // Real-shape RSI spec with strict cross-field validation.
+    const strictRsiSpec: ParamSpec = {
+      fields: [
+        { key: "period", kind: "integer", min: 2, max: 100, default: 14 },
+        { key: "buyThreshold", kind: "integer", min: 1, max: 99, default: 30 },
+        { key: "sellThreshold", kind: "integer", min: 1, max: 99, default: 70 },
+      ],
+    };
+    const strictRsi: Strategy = {
+      id: "strategy.rsi.strict",
+      name: "Strict RSI",
+      family: "MOMENTUM" as const,
+      requiredHistory: 101,
+      parameterSpec: strictRsiSpec,
+      defaultParameters: () => {
+        const o: Record<string, unknown> = {};
+        for (const f of strictRsiSpec.fields) o[f.key] = f.default;
+        return o;
+      },
+      validateParameters: (p: unknown) => {
+        if (!p || typeof p !== "object") return { ok: false, errors: ["bad params"] };
+        const buy = (p as { buyThreshold?: unknown }).buyThreshold;
+        const sell = (p as { sellThreshold?: unknown }).sellThreshold;
+        if (typeof buy !== "number" || typeof sell !== "number" || buy >= sell) {
+          return { ok: false, errors: ["buyThreshold must be strictly less than sellThreshold"] };
+        }
+        return { ok: true };
+      },
+      analyze: () => ({ side: "HOLD", strength: 0 }),
+    };
+    const strictRegistry = new FakeRegistry();
+    strictRegistry.register(strictRsi);
+    setStrategyRegistry(strictRegistry);
+
+    const gen = new LoopMutationGenerator();
+    gen.setRegistry(strictRegistry);
+    gen.applyConfig({
+      parent: {
+        type: "BASE",
+        strategyId: "strategy.rsi.strict",
+        parameters: { period: 14, buyThreshold: 30, sellThreshold: 70 },
+      },
+      candidateCount: 50,
+      // Use a range of seeds to exercise different random walks.
+      randomSeed: 12345,
+    });
+
+    const seen: SearchCandidate[] = [];
+    await gen.generate(
+      async (c) => {
+        seen.push(c);
+        return true;
+      },
+      () => false,
+      { generatedCount: 0, queuedCount: 0, rejectedCount: 0, elapsedMs: 0 },
+    );
+
+    expect(seen.length).toBe(50);
+    for (const cand of seen) {
+      if (cand.candidateType !== "BASE") continue;
+      const p = cand.parameters as Record<string, number>;
+      expect(p.buyThreshold).toBeLessThan(p.sellThreshold);
+    }
+
+    // Restore the default registry so other tests are not affected.
+    setStrategyRegistry(registry);
+  });
 });
 
 /* Keep TS happy about the unused import. */

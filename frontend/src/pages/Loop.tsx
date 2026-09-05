@@ -30,6 +30,8 @@ import {
   History,
   ChevronDown,
   ChevronRight,
+  Clock,
+  ArrowRight,
 } from "lucide-react";
 import {
   startLoop,
@@ -39,9 +41,14 @@ import {
   getLoopStatus,
   getLoopProgress,
   getLoopCandidates,
+  listLoops,
+  getActiveLoop,
+  setActiveLoop,
+  clearActiveLoop,
   type LoopProgressResponse,
   type LoopStatusResponse,
   type LoopIterationData,
+  type LoopListItem,
   type StartLoopInput,
 } from "../services/loopApi";
 
@@ -65,6 +72,13 @@ function statusBadgeClass(status: string): string {
       return "bg-emerald-50 text-emerald-700 border border-emerald-200";
     case "PAUSED":
       return "bg-amber-50 text-amber-700 border border-amber-200";
+    case "STOPPED_MAX_CANDIDATES":
+    case "STOPPED_TIMEOUT":
+    case "STOPPED_NO_IMPROVEMENT":
+    case "STOPPED_MAX_ITERATIONS":
+    case "STOPPED_MANUAL":
+    case "STOPPED":
+      return "bg-slate-100 text-slate-700 border border-slate-300";
     default:
       return "bg-slate-100 text-slate-600 border border-slate-200";
   }
@@ -230,10 +244,13 @@ function IterationSection({
 /* ── Main component ────────────────────────────────────────────────────── */
 
 export default function Loop() {
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const loopIdFromUrl = searchParams.get("loopId");
 
-  // NO fallback to "main" — if no URL param, show "No Loop Selected" state.
+  // NO fallback to "main" — if no URL param, show "No Loop Selected" state
+  // and let the active-loop discovery effect either auto-restore the
+  // followed loop (via the explicit LoopActivePointer) or render the
+  // today's-history list.
   const [loopId, setLoopId] = useState<string>(loopIdFromUrl ?? "");
 
   useEffect(() => {
@@ -249,6 +266,53 @@ export default function Loop() {
 
   const previousBestRef = useRef<number | null>(null);
   const [newTopFlash, setNewTopFlash] = useState<string | null>(null);
+
+  // Phase 3.3: active-loop discovery + today's-history support.
+  const [activeLoop, setActiveLoop] = useState<{
+    loopId: string;
+    status: string;
+  } | null>(null);
+  const [todaysLoops, setTodaysLoops] = useState<LoopListItem[]>([]);
+  const [activeResolved, setActiveResolved] = useState(false);
+  const [historyResolved, setHistoryResolved] = useState(false);
+
+  // On mount, if no loopId in URL, ask the backend for the active loop
+  // and auto-navigate to it. This is the "restoration after navigation"
+  // path. We only navigate when the URL genuinely lacks the param so
+  // existing direct-URL links keep their precedence.
+  useEffect(() => {
+    if (loopIdFromUrl) {
+      // Direct URL: also persist as active pointer so refresh restores it.
+      void setActiveLoop(loopIdFromUrl).catch(() => undefined);
+      setActiveResolved(true);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const active = await getActiveLoop();
+        if (cancelled) return;
+        setActiveLoop(active);
+        if (active?.loopId) {
+          // Auto-restore: rewrite the URL so the rest of the page picks
+          // it up uniformly. We use replace() so the user's back button
+          // doesn't get an extra history entry.
+          setSearchParams({ loopId: active.loopId }, { replace: true });
+          setLoopId(active.loopId);
+        }
+      } catch {
+        // No active loop — fall through to history view.
+      } finally {
+        if (!cancelled) setActiveResolved(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // We intentionally only run this once on mount: changing loopIdFromUrl
+    // afterwards is handled by the regular useEffect above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const refresh = useCallback(async () => {
     if (!loopId) return;
@@ -284,6 +348,23 @@ export default function Loop() {
       }
     }
   }, [loopId]);
+
+  // Phase 3.3: refresh today's loop history (UTC-bounded by the backend).
+  const refreshHistory = useCallback(async () => {
+    try {
+      const rows = await listLoops({ today: true });
+      setTodaysLoops(rows);
+      setHistoryResolved(true);
+    } catch {
+      setTodaysLoops([]);
+      setHistoryResolved(true);
+    }
+  }, []);
+
+  // Initial history load.
+  useEffect(() => {
+    void refreshHistory();
+  }, [refreshHistory]);
 
   // Poll while the selected loop is RUNNING or while we don't yet know
   // its status (initial mount / navigated to URL mid-iteration).
@@ -342,7 +423,10 @@ export default function Loop() {
       };
       const res = await startLoop(input);
       setStatus(res);
+      // Persist as the user's active loop so refresh restores it.
+      await setActiveLoop(loopId).catch(() => undefined);
       await refresh();
+      await refreshHistory();
     } catch (err) {
       setError((err as Error).message ?? "Failed to start loop");
     } finally {
@@ -382,6 +466,11 @@ export default function Loop() {
     try {
       const res = await stopLoop(loopId);
       setStatus(res);
+      // Phase 3.3: clear the active pointer so the next auto-restore
+      // doesn't land on a stopped loop. The loop is still reachable via
+      // Today's Loop History (which works for both RUNNING and STOPPED).
+      await clearActiveLoop().catch(() => undefined);
+      await refreshHistory();
     } catch (err) {
       setError((err as Error).message ?? "Failed to stop loop");
     } finally {
@@ -425,44 +514,62 @@ export default function Loop() {
   }
 
   /* ── No Loop Selected state ─────────────────────────────────────── */
-  if (!loopIdFromUrl && !status) {
+  // Section is shown when the URL has no loopId AND the active-loop
+  // discovery has finished AND no loop has been auto-restored.
+  if (!loopIdFromUrl && !status && activeResolved) {
+    const openLoop = (id: string) => {
+      setSearchParams({ loopId: id }, { replace: true });
+      setLoopId(id);
+    };
     return (
-      <div className="p-6 flex flex-col items-center justify-center gap-6 max-w-[600px] mx-auto">
-        <div className="text-center">
-          <Activity className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-          <h2 className="text-lg font-extrabold text-slate-700">No Loop Selected</h2>
-          <p className="text-sm text-slate-400 mt-1">
-            Navigate to <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">/loop?loopId=&lt;id&gt;</span>{" "}
-            to monitor a specific loop, or start a new loop below.
+      <div className="p-6 flex flex-col gap-6 max-w-[1100px] mx-auto w-full">
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Activity className="w-12 h-12 text-slate-300" />
+          <h2 className="text-lg font-extrabold text-slate-700">Continuous Strategy Loop</h2>
+          <p className="text-sm text-slate-400 max-w-[560px]">
+            {activeLoop
+              ? `Your active loop (${activeLoop.loopId}) is loading…`
+              : "No active loop is being followed. Start a new loop, or pick one from today's history below."}
           </p>
         </div>
-        <div className="w-full bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex flex-col gap-4">
-          <h3 className="text-sm font-extrabold text-slate-700">Start a New Loop</h3>
-          <label className="flex flex-col gap-1.5">
-            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Loop ID</span>
-            <input
-              type="text"
-              value={loopId}
-              onChange={(e) => setLoopId(e.target.value)}
-              placeholder="e.g. combo-abc123 or my-loop-1"
-              className="w-full px-3 py-2 rounded-xl border text-xs font-semibold text-slate-700 bg-slate-50 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100"
-            />
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <NumberField label="Max Iterations" value={maxIterations} min={1} max={1000} onChange={setMaxIterations} />
-            <NumberField label="Max Candidates" value={maxCandidates} min={1} max={100000} onChange={setMaxCandidates} />
-            <NumberField label="Per Iteration" value={candidateCountPerIteration} min={1} max={100} onChange={setCandidateCountPerIteration} />
-            <NumberField label="Time Limit (s)" value={timeLimitSeconds} min={1} max={86400} onChange={setTimeLimitSeconds} />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
+          <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex flex-col gap-4">
+            <h3 className="text-sm font-extrabold text-slate-700 flex items-center gap-1.5">
+              <Play className="w-4 h-4 text-blue-500" />
+              Start a New Loop
+            </h3>
+            <label className="flex flex-col gap-1.5">
+              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Loop ID</span>
+              <input
+                type="text"
+                value={loopId}
+                onChange={(e) => setLoopId(e.target.value)}
+                placeholder="e.g. combo-abc123 or my-loop-1"
+                className="w-full px-3 py-2 rounded-xl border text-xs font-semibold text-slate-700 bg-slate-50 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100"
+              />
+            </label>
+            <div className="grid grid-cols-2 gap-3">
+              <NumberField label="Max Iterations" value={maxIterations} min={1} max={1000} onChange={setMaxIterations} />
+              <NumberField label="Max Candidates" value={maxCandidates} min={1} max={100000} onChange={setMaxCandidates} />
+              <NumberField label="Per Iteration" value={candidateCountPerIteration} min={1} max={100} onChange={setCandidateCountPerIteration} />
+              <NumberField label="Time Limit (s)" value={timeLimitSeconds} min={1} max={86400} onChange={setTimeLimitSeconds} />
+            </div>
+            <button
+              onClick={handleStart}
+              disabled={busy || !loopId.trim()}
+              className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold shadow-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              Start Loop
+            </button>
+            {error && <p className="text-xs text-red-600 font-semibold">{error}</p>}
           </div>
-          <button
-            onClick={handleStart}
-            disabled={busy || !loopId.trim()}
-            className="flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold shadow-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
-            Start Loop
-          </button>
-          {error && <p className="text-xs text-red-600 font-semibold">{error}</p>}
+          <TodaysHistoryCard
+            loading={!historyResolved}
+            rows={todaysLoops}
+            onPick={openLoop}
+            onRefresh={refreshHistory}
+          />
         </div>
       </div>
     );
@@ -719,6 +826,16 @@ export default function Loop() {
             </div>
           )}
         </aside>
+
+        {/* Phase 3.3: Today's Loop Runs (UTC-bounded by the backend). */}
+        <aside className="lg:col-span-3">
+          <TodaysHistoryCard
+            loading={!historyResolved}
+            rows={todaysLoops}
+            onPick={(id) => setSearchParams({ loopId: id }, { replace: true })}
+            onRefresh={refreshHistory}
+          />
+        </aside>
       </div>
     </div>
   );
@@ -778,5 +895,112 @@ function NumberField({
         className="w-full px-2 py-1.5 rounded-lg border text-[11px] font-semibold text-slate-700 bg-slate-50 focus:outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 transition-colors disabled:opacity-50"
       />
     </div>
+  );
+}
+
+/* ── Today's Loop History card ──────────────────────────────────────── */
+
+function TodaysHistoryCard({
+  loading,
+  rows,
+  onPick,
+  onRefresh,
+}: {
+  loading: boolean;
+  rows: LoopListItem[];
+  onPick: (loopId: string) => void;
+  onRefresh: () => void;
+}) {
+  const sorted = [...rows].sort((a, b) => {
+    // RUNNING first, then PAUSED, then STOPPED_*, then by updatedAt desc.
+    const rank = (s: string) => {
+      if (s === "RUNNING") return 0;
+      if (s === "PAUSED") return 1;
+      return 2;
+    };
+    const ra = rank(a.status);
+    const rb = rank(b.status);
+    if (ra !== rb) return ra - rb;
+    return new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime();
+  });
+  return (
+    <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5 flex flex-col gap-3">
+      <div className="flex items-center gap-2">
+        <Clock className="w-4 h-4 text-slate-400" />
+        <h3 className="text-sm font-extrabold text-slate-700">Today's Loop Runs</h3>
+        <span className="text-[10px] text-slate-400 ml-1">(UTC)</span>
+        <button
+          onClick={onRefresh}
+          className="ml-auto p-1.5 rounded-lg hover:bg-slate-50 text-slate-400 hover:text-slate-700 transition-colors"
+          title="Refresh"
+        >
+          <RefreshCw className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      {loading ? (
+        <div className="flex items-center justify-center py-8 text-slate-400 text-xs gap-2">
+          <Loader2 className="w-4 h-4 animate-spin" /> Loading…
+        </div>
+      ) : sorted.length === 0 ? (
+        <p className="text-xs text-slate-400 italic py-6 text-center">
+          No loop runs were created today. Start a new loop to populate this list.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-1.5 max-h-[420px] overflow-y-auto pr-1">
+          {sorted.map((row) => (
+            <TodaysHistoryRow key={row.id} row={row} onPick={onPick} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TodaysHistoryRow({
+  row,
+  onPick,
+}: {
+  row: LoopListItem;
+  onPick: (loopId: string) => void;
+}) {
+  const shortId =
+    row.loopId.length > 18 ? row.loopId.slice(0, 8) + "…" + row.loopId.slice(-6) : row.loopId;
+  const started = new Date(row.startedAt);
+  const updated = new Date(row.updatedAt);
+  const bestScore = Number(row.bestScoreSoFar);
+  return (
+    <button
+      type="button"
+      onClick={() => onPick(row.loopId)}
+      className="w-full flex flex-col gap-1.5 p-3 rounded-xl border border-slate-100 hover:border-blue-300 hover:bg-blue-50/40 transition-colors text-left"
+    >
+      <div className="flex items-center gap-2">
+        <span className="font-mono text-[11px] font-bold text-slate-700 truncate">{shortId}</span>
+        <span className={`text-[9px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full border ${statusBadgeClass(row.status)}`}>
+          {row.status === "RUNNING" || row.status === "PAUSED"
+            ? row.status
+            : stopReasonLabel(row.status)}
+        </span>
+        <ArrowRight className="w-3.5 h-3.5 text-slate-300 ml-auto" />
+      </div>
+      <div className="flex items-center gap-3 text-[10px] text-slate-500 font-semibold">
+        <span>Iter {row.currentIteration}</span>
+        <span className="text-slate-300">·</span>
+        <span>{row.candidateCount} cands · {row.evaluatedCount} eval</span>
+        <span className="text-slate-300">·</span>
+        <span>Best {Number.isFinite(bestScore) ? bestScore.toFixed(2) : "—"}</span>
+      </div>
+      <div className="flex items-center gap-2 text-[10px] text-slate-400">
+        <span>Started {started.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        <span className="text-slate-300">·</span>
+        <span>Updated {updated.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
+        {row.stopReason && row.status !== "RUNNING" && row.status !== "PAUSED" && (
+          <>
+            <span className="text-slate-300">·</span>
+            <span className="font-bold text-slate-500">{stopReasonLabel(row.stopReason)}</span>
+          </>
+        )}
+      </div>
+    </button>
   );
 }

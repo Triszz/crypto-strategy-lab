@@ -89,6 +89,12 @@ export interface LoopListItem {
   lastIterationSearchRunId: string | null;
   startedAt: string;
   updatedAt: string;
+  /** Phase 3.3: stopReason surfaced in today's loop history. */
+  stopReason: string | null;
+  /** Phase 3.3: total candidates across all iterations (sum of candidateCount). */
+  candidateCount: number;
+  /** Phase 3.3: total evaluated across all iterations (sum of evaluatedCount). */
+  evaluatedCount: number;
 }
 
 /** Input to POST /api/loop/start */
@@ -183,6 +189,52 @@ export async function getLoopCandidates(loopId: string): Promise<LoopIterationDa
 }
 
 /** List all loops (most recent first). */
-export async function listLoops(): Promise<LoopListItem[]> {
-  return get<LoopListItem[]>("/api/loop/list");
+export async function listLoops(
+  opts: { today?: boolean; limit?: number } = {},
+): Promise<LoopListItem[]> {
+  const params = new URLSearchParams();
+  if (opts.today) params.set("today", "true");
+  if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  const qs = params.toString();
+  return get<LoopListItem[]>(`/api/loop/list${qs ? `?${qs}` : ""}`);
+}
+
+/** Phase 3.3: active-loop discovery for auto-restore after navigation. */
+export interface LoopActiveResponse {
+  loopId: string;
+  status: string;
+  currentIteration: number;
+  startedAt: string;
+  updatedAt: string;
+  source: "pointer" | "most-recent-running";
+}
+
+export async function getActiveLoop(): Promise<LoopActiveResponse | null> {
+  try {
+    return await get<LoopActiveResponse>("/api/loop/active");
+  } catch (err) {
+    const msg = (err as Error).message ?? "";
+    if (msg.includes("NOT_FOUND")) return null;
+    throw err;
+  }
+}
+
+/** Phase 3.3: explicitly mark the user's active/followed loop. */
+export async function setActiveLoop(loopId: string): Promise<{ loopId: string }> {
+  return post<{ loopId: string }>("/api/loop/active", { loopId });
+}
+
+/** Phase 3.3: clear the active-loop pointer (used after stopping a loop). */
+export async function clearActiveLoop(): Promise<{ cleared: boolean }> {
+  const res = await fetch(`${BASE}/api/loop/active`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  const json = (await res.json().catch(() => null)) as
+    | { success: true; data: { cleared: boolean } }
+    | { success: false; error: string }
+    | null;
+  if (!json) throw new Error(`Invalid JSON from server (HTTP ${res.status})`);
+  if (!json.success) throw new Error(json.error ?? `HTTP ${res.status}`);
+  return (json as { success: true; data: { cleared: boolean } }).data;
 }

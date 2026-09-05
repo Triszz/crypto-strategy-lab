@@ -92,6 +92,11 @@ async function main(): Promise<void> {
     strategyVersionMapper: search.strategyVersionMapper,
   });
   loopOrchestrator.setRunner(loopRunner);
+  // Phase 3.3: back-reference so the runner can consult the
+  // orchestrator's read-side authoritative-best helper (and self-heal
+  // any stale persisted LoopRunState.bestScoreSoFar). Optional — the
+  // runner falls back to the persisted row if this is missing.
+  loopRunner.setOrchestrator(loopOrchestrator);
   loopRunner.startListening();
   mountLoop({ orchestrator: loopOrchestrator, runner: loopRunner });
 

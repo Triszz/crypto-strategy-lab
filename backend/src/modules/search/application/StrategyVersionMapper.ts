@@ -137,6 +137,22 @@ export class StrategyVersionMapper {
     if (existingVersion) {
       // Sync CompositeComponent rows for this version.
       await this.syncCompositeComponents(existingVersion.id, config.components);
+      // Phase 3.3: keep the version's human-readable name in sync with
+      // the latest generator's naming. Earlier versions stored names
+      // like "Loop explore 0_3" — when the generator now derives a
+      // richer name from the actual components, update the version row
+      // so the UI shows the new name. We only update when the name
+      // actually changed to avoid touching the DB on every call.
+      if (
+        existingVersion.name !== strategyName &&
+        typeof strategyName === "string" &&
+        strategyName.length > 0
+      ) {
+        await this.prisma.strategyVersion.update({
+          where: { id: existingVersion.id },
+          data: { name: strategyName },
+        });
+      }
       return {
         strategyVersionId: existingVersion.id,
         definitionId: existingVersion.definitionId,

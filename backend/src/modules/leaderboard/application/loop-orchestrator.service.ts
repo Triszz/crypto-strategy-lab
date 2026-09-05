@@ -657,32 +657,42 @@ export class LoopOrchestratorService {
 
     const searchRunId = iteration.searchRunId;
 
-    // Highest score from the authoritative BacktestResult rows for
-    // this SearchRun. The result is matched to its candidate's
-    // StrategyVersion so attribution and score are 1:1.
+    // Phase 3.3: a candidate can have multiple experiments / backtest
+    // results. The MAX-score query that was used before is wrong — a
+    // stale retry with an inflated score can become the "best" and
+    // flicker back to the correct value once the final experiment
+    // lands. We instead pick, for each candidate, the experiment that
+    // the orchestrator treated as authoritative: the one whose
+    // LoopProcessedEvent is the latest for this loop. The MAX-score is
+    // taken over those authoritative experiments.
     //
-    // Phase 3.2 fix: avoid Prisma's chained-relation join which can
-    // throw "Field candidate is required to return data, got null".
-    // We resolve candidate IDs first, query BacktestResult by
-    // experiment.candidateId IN (one hop), then resolve the
-    // candidate's strategyVersionId separately.
+    // The score, attribution, return, win-rate and max-drawdown all
+    // come from the SAME row (the authoritative experiment's
+    // BacktestResult), so the iteration's "best" snapshot is internally
+    // consistent.
     const candidates = await this.prisma.candidateStrategy.findMany({
       where: { searchRunId },
       select: { id: true },
     });
-    const candidateIds = candidates.map((c) => c.id);
-    if (candidateIds.length === 0) return;
+    if (candidates.length === 0) return;
+
+    const authoritativeExpIds = await this.resolveAuthoritativeExperimentsForCandidates(
+      loopId,
+      candidates.map((c) => c.id),
+    );
+    if (authoritativeExpIds.length === 0) return;
 
     const top = await this.prisma.backtestResult.findFirst({
-      where: { experiment: { candidateId: { in: candidateIds } } },
+      where: { experimentId: { in: authoritativeExpIds } },
       orderBy: [{ overallScore: "desc" }, { createdAt: "asc" }],
-      include: {
-        experiment: { select: { candidateId: true } },
-      },
     });
     if (!top) return;
 
-    const candidateId = top.experiment?.candidateId;
+    const experiment = await this.prisma.experiment.findUnique({
+      where: { id: top.experimentId },
+      select: { candidateId: true },
+    });
+    const candidateId = experiment?.candidateId;
     if (!candidateId) return;
     const candidateRow = await this.prisma.candidateStrategy.findUnique({
       where: { id: candidateId },
@@ -820,34 +830,47 @@ export class LoopOrchestratorService {
       return;
     }
 
-    // Phase 3.2 fix: avoid Prisma's chained-relation join which can
-    // throw "Field candidate is required to return data, got null".
-    // Resolve candidate IDs in one query, then fetch the top
-    // backtestResult via experiment.candidateId IN (one hop), then
-    // resolve strategyVersionId via a separate findUnique.
+    // Phase 3.3: a candidate may have multiple experiments / backtest
+    // results (retries, duplicate events). We pick, per candidate, the
+    // experiment the orchestrator treated as authoritative — the one
+    // whose LoopProcessedEvent was the latest for this loop — and
+    // only consider those rows for the loop's "best" pick. This makes
+    // the loop-level best, score, return, win rate, and max-drawdown
+    // all come from the same authoritative experiment.
     const candidates = await this.prisma.candidateStrategy.findMany({
       where: { searchRunId: { in: runIds } },
       select: { id: true },
     });
-    const candidateIds = candidates.map((c) => c.id);
-    if (candidateIds.length === 0) {
+    if (candidates.length === 0) {
       logger.info({ loopId, runIds, candCount: candidates.length }, "[Phase 3.2 e2e] recomputeLoopBest no candidateIds");
       return;
     }
 
-    const top = await this.prisma.backtestResult.findFirst({
-      where: { experiment: { candidateId: { in: candidateIds } } },
-      orderBy: [{ overallScore: "desc" }, { createdAt: "asc" }],
-      include: {
-        experiment: { select: { candidateId: true } },
-      },
-    });
-    if (!top) {
-      logger.info({ loopId, candidateIds }, "[Phase 3.2 e2e] recomputeLoopBest no top BR");
+    const authoritativeExpIds = await this.resolveAuthoritativeExperimentsForCandidates(
+      loopId,
+      candidates.map((c) => c.id),
+    );
+    if (authoritativeExpIds.length === 0) {
+      logger.info({ loopId, candidates: candidates.length }, "[Phase 3.2 e2e] recomputeLoopBest no authoritative experiments");
       return;
     }
 
-    const candidateId = top.experiment?.candidateId;
+    const top = await this.prisma.backtestResult.findFirst({
+      where: { experimentId: { in: authoritativeExpIds } },
+      orderBy: [{ overallScore: "desc" }, { createdAt: "asc" }],
+    });
+    if (!top) {
+      logger.info({ loopId, authoritativeExpIds }, "[Phase 3.2 e2e] recomputeLoopBest no top BR");
+      return;
+    }
+
+    // Resolve the candidate whose authoritative experiment produced
+    // this top BacktestResult.
+    const topExperiment = await this.prisma.experiment.findUnique({
+      where: { id: top.experimentId },
+      select: { candidateId: true },
+    });
+    const candidateId = topExperiment?.candidateId;
     if (!candidateId) return;
     const topCandidate = await this.prisma.candidateStrategy.findUnique({
       where: { id: candidateId },
@@ -862,12 +885,9 @@ export class LoopOrchestratorService {
         loopId,
         runIds,
         topOverallScore: top?.overallScore ? Number(top.overallScore) : null,
-        // top.experiment only has candidateId in the select; the full
-        // candidate row (with searchRunId/strategyVersionId) is
-        // resolved separately via topCandidate below. We log the
-        // resolved topCandidate fields instead.
         topCandidateSearchRunId: topCandidate.searchRunId,
         topCandidateStrategyVersionId: topCandidate.strategyVersionId,
+        authoritativeExpCount: authoritativeExpIds.length,
       },
       "[Phase 3.2 e2e] recomputeLoopBest top pick",
     );
@@ -877,10 +897,15 @@ export class LoopOrchestratorService {
       where: { loopId },
     });
     if (!loop) return;
-    if (Number(loop.bestScoreSoFar) >= Number(top.overallScore)) {
-      // Already at or above this score. Don't regress.
-      return;
-    }
+
+    // Phase 3.3: NO-OP the "don't regress" guard. A later, lower-scoring
+    // experiment may replace a stale inflated earlier one (e.g. retry
+    // completed with corrected parameters). Forcing the loop's best to
+    // remain at the historical MAX would lock in a stale value forever
+    // and produce the observed "46.04 → 8.79" flicker. Instead, recompute
+    // from authoritative rows every time, and trust the orchestrator's
+    // deduplication to keep this idempotent.
+    void loop.bestScoreSoFar;
 
     await this.prisma.loopRunState.update({
       where: { loopId },
@@ -891,8 +916,213 @@ export class LoopOrchestratorService {
         bestStrategyTimeframe: top.timeframe,
         bestTotalReturn: top.totalReturn,
         bestWinRate: top.winRate,
+        // Phase 3.3: persist maxDrawdown from the SAME authoritative
+        // BacktestResult row so the runtime state has a single source
+        // of truth for bestScore/bestReturn/bestWinRate/bestMaxDrawdown.
+        bestMaxDrawdown: top.maxDrawdown,
         updatedAt: new Date(),
       },
     });
+  }
+
+  /**
+   * For a given set of CandidateStrategy ids, return the array of
+   * Experiment ids the orchestrator treated as authoritative — one per
+   * candidate, the experiment whose `LoopProcessedEvent.evaluatedAt`
+   * is the latest for this loop.
+   *
+   * Phase 3.3 — single source of truth for "which backtest counts for
+   * a candidate". A candidate may have multiple experiments (e.g.
+   * retries) and the orchestrator's deduped `LoopProcessedEvent` table
+   * records the experimentId it actually consumed for each evaluation.
+   * Using the LATEST event per candidate makes the authoritative pick
+   * stable across reads: the older (and possibly stale) rows never get
+   * surfaced as the loop's "best".
+   */
+  private async resolveAuthoritativeExperimentsForCandidates(
+    loopId: string,
+    candidateIds: string[],
+  ): Promise<string[]> {
+    if (candidateIds.length === 0) return [];
+
+    // Step 1: load all experiments for these candidates.
+    const experiments = await this.prisma.experiment.findMany({
+      where: { candidateId: { in: candidateIds } },
+      select: { id: true, candidateId: true, createdAt: true },
+    });
+    if (experiments.length === 0) return [];
+
+    // Step 2: load all deduped LoopProcessedEvent rows for this loop.
+    // dedupeKey is "${loopId}:${experimentId}".
+    const eventRows = await this.prisma.loopProcessedEvent.findMany({
+      where: { loopId },
+      orderBy: { evaluatedAt: "desc" },
+      select: { dedupeKey: true, evaluatedAt: true },
+    });
+    const latestEventByExperiment = new Map<string, Date>();
+    for (const ev of eventRows) {
+      const idx = ev.dedupeKey.indexOf(":");
+      const experimentId = idx >= 0 ? ev.dedupeKey.slice(idx + 1) : null;
+      if (!experimentId) continue;
+      if (!latestEventByExperiment.has(experimentId)) {
+        latestEventByExperiment.set(experimentId, ev.evaluatedAt);
+      }
+    }
+
+    // Step 3: per candidate, pick the experiment with the latest
+    // event. Candidates with no events yet (still running) fall back
+    // to the most-recently-created experiment so the UI shows a
+    // meaningful current snapshot instead of "no result".
+    const expIdByCandidate = new Map<string, string>();
+    const byCandidate = new Map<string, Array<{ id: string; createdAt: Date }>>();
+    for (const e of experiments) {
+      const arr = byCandidate.get(e.candidateId) ?? [];
+      arr.push({ id: e.id, createdAt: e.createdAt });
+      byCandidate.set(e.candidateId, arr);
+    }
+    for (const [candId, exps] of byCandidate) {
+      let bestExpId: string | null = null;
+      let bestEvaluatedAt: Date | null = null;
+      for (const exp of exps) {
+        const ev = latestEventByExperiment.get(exp.id);
+        if (!ev) continue;
+        if (bestEvaluatedAt === null || ev > bestEvaluatedAt) {
+          bestExpId = exp.id;
+          bestEvaluatedAt = ev;
+        }
+      }
+      if (!bestExpId) {
+        // No event yet → use the most-recently-created experiment.
+        const sorted = exps.slice().sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+        bestExpId = sorted[0]?.id ?? null;
+      }
+      if (bestExpId) expIdByCandidate.set(candId, bestExpId);
+    }
+
+    return Array.from(expIdByCandidate.values());
+  }
+
+  /**
+   * Phase 3.3 — read-time authoritative best metrics.
+   *
+   * Re-derives `bestScoreSoFar` / `bestTotalReturn` / `bestWinRate` /
+   * `bestMaxDrawdown` / `bestStrategyVersionId` from the SAME
+   * authoritative BacktestResult row. Use this whenever the runtime
+   * state is being read for the UI, so that a stale persisted
+   * `LoopRunState.bestScoreSoFar` (left over from an older buggy
+   * orchestrator version or from a BacktestResult that was later
+   * deleted/replaced) is never surfaced as the loop's "best".
+   *
+   * Side effect: if the authoritative pick differs from the persisted
+   * `LoopRunState.bestScoreSoFar`, the LoopRunState row is corrected
+   * (self-healing) so the persisted state stays in sync with the
+   * authoritative read-side source.
+   *
+   * Returns null when the loop has no scored candidates yet (no rows
+   * to derive from). The caller should fall back to `LoopRunState`
+   * values in that case.
+   */
+  public async getAuthoritativeBest(loopId: string): Promise<{
+    overallScore: number;
+    strategyVersionId: string;
+    symbolId: string;
+    timeframe: string;
+    totalReturn: number;
+    winRate: number;
+    maxDrawdown: number;
+    backtestResultId: string;
+    experimentId: string;
+  } | null> {
+    const iterations = await this.prisma.loopIteration.findMany({
+      where: { loopId, searchRunId: { not: null } },
+      select: { searchRunId: true },
+    });
+    const runIds = iterations
+      .map((i) => i.searchRunId)
+      .filter((s): s is string => Boolean(s));
+    if (runIds.length === 0) return null;
+
+    const candidates = await this.prisma.candidateStrategy.findMany({
+      where: { searchRunId: { in: runIds } },
+      select: { id: true },
+    });
+    if (candidates.length === 0) return null;
+
+    const authoritativeExpIds =
+      await this.resolveAuthoritativeExperimentsForCandidates(
+        loopId,
+        candidates.map((c) => c.id),
+      );
+    if (authoritativeExpIds.length === 0) return null;
+
+    const top = await this.prisma.backtestResult.findFirst({
+      where: { experimentId: { in: authoritativeExpIds } },
+      orderBy: [{ overallScore: "desc" }, { createdAt: "asc" }],
+    });
+    if (!top) return null;
+
+    const topExperiment = await this.prisma.experiment.findUnique({
+      where: { id: top.experimentId },
+      select: { candidateId: true },
+    });
+    if (!topExperiment?.candidateId) return null;
+    const topCandidate = await this.prisma.candidateStrategy.findUnique({
+      where: { id: topExperiment.candidateId },
+      select: { strategyVersionId: true, searchRunId: true },
+    });
+    if (!topCandidate) return null;
+
+    const authoritative = {
+      overallScore: Number(top.overallScore),
+      strategyVersionId: topCandidate.strategyVersionId,
+      symbolId: top.symbolId,
+      timeframe: top.timeframe,
+      totalReturn: Number(top.totalReturn),
+      winRate: Number(top.winRate),
+      maxDrawdown: top.maxDrawdown ? Number(top.maxDrawdown) : 0,
+      backtestResultId: top.id,
+      experimentId: top.experimentId,
+    };
+
+    // Self-heal: persist the authoritative pick on LoopRunState so
+    // the runtime row never drifts away from the canonical read-side
+    // source. We only write when the persisted bestScoreSoFar is
+    // stale or missing — this is idempotent and race-safe because
+    // recomputeLoopBest uses the same authoritative selection.
+    const row = await this.prisma.loopRunState.findUnique({
+      where: { loopId },
+      select: { bestScoreSoFar: true, bestStrategyVersionId: true },
+    });
+    if (!row) return authoritative;
+    const persistedScore = row.bestScoreSoFar ? Number(row.bestScoreSoFar) : 0;
+    const drifted =
+      persistedScore !== authoritative.overallScore ||
+      row.bestStrategyVersionId !== authoritative.strategyVersionId;
+    if (drifted) {
+      await this.prisma.loopRunState.update({
+        where: { loopId },
+        data: {
+          bestScoreSoFar: authoritative.overallScore,
+          bestStrategyVersionId: authoritative.strategyVersionId,
+          bestStrategySymbolId: authoritative.symbolId,
+          bestStrategyTimeframe: authoritative.timeframe,
+          bestTotalReturn: authoritative.totalReturn,
+          bestWinRate: authoritative.winRate,
+          bestMaxDrawdown: authoritative.maxDrawdown,
+          updatedAt: new Date(),
+        },
+      });
+      logger.info(
+        {
+          loopId,
+          previousScore: persistedScore,
+          newScore: authoritative.overallScore,
+          previousSv: row.bestStrategyVersionId,
+          newSv: authoritative.strategyVersionId,
+        },
+        "[Phase 3.3] self-healed LoopRunState.bestScoreSoFar from authoritative read-side",
+      );
+    }
+    return authoritative;
   }
 }

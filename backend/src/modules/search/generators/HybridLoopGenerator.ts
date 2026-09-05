@@ -136,8 +136,7 @@ function buildSpaceFromRegistry(
   const spec = strategy.parameterSpec;
   const fields: ParameterSpaceField[] = [];
   let totalGridPoints = 1;
-  for (const f of spec.fields) {
-    if (f.kind === "integer") {
+  for (const f of spec.fields) {    if (f.kind === "integer") {
       if (f.min === undefined || f.max === undefined) continue;
       const cnt = Math.floor(f.max) - Math.ceil(f.min) + 1;
       if (cnt <= 0) continue;
@@ -332,9 +331,18 @@ function mutateCompositeCandidate(
     };
   });
 
+  // Phase 3.3: derive a meaningful name from the actual components so
+  // the Candidate History UI doesn't show "Loop explore 0_3" style
+  // generic labels. We keep the parent's semantic prefix so the user
+  // sees this is a mutation of e.g. their "combo-bollinger-ma-rsi".
+  // Use the strategy registry's `name` field when available, falling
+  // back to a stripped implementationRef (e.g. "strategy.ma" → "ma").
+  const componentNames = components.map((c) =>
+    registry.resolve(c.strategyId)?.name ?? c.strategyId.replace(/^strategy\./, ""),
+  );
   const newConfig: CombinationConfig = {
     id: `strategy.composite.loop.${candidateId}`,
-    name: `${parentConfig.name} (loop mutation)`,
+    name: `${parentConfig.name} → ${componentNames.join(" + ")}`,
     components,
     operator: parentConfig.operator ?? CombinationOperator.WEIGHTED,
   };
@@ -444,9 +452,13 @@ function crossoverCompositeCandidates(
   }));
 
   const operator = parentA.config.operator ?? parentB.config.operator ?? CombinationOperator.WEIGHTED;
+  // Phase 3.3: meaningful crossover name (component-based).
+  const componentNames = normalised.map((c) =>
+    registry.resolve(c.strategyId)?.name ?? c.strategyId.replace(/^strategy\./, ""),
+  );
   const newConfig: CombinationConfig = {
     id: `strategy.composite.crossover.${candidateId}`,
-    name: `Crossover (${parentA.config.name} × ${parentB.config.name})`,
+    name: `Crossover (${parentA.config.name} × ${parentB.config.name}) → ${componentNames.join(" + ")}`,
     components: normalised,
     operator,
   };
@@ -543,9 +555,17 @@ function exploreCandidate(
     });
     pos += 1;
   }
+  // Phase 3.3: explore name is derived from the actual components so
+  // the UI can show "Loop explore: bollinger + ma + rsi" instead of
+  // the meaningless "Loop explore 0_3". The registry provides a
+  // human-readable name (e.g. "Bollinger Bands"); we fall back to a
+  // stripped implementationRef for any strategy not yet registered.
+  const componentNames = components.map((c) =>
+    registry.resolve(c.strategyId)?.name ?? c.strategyId.replace(/^strategy\./, ""),
+  );
   const config: CombinationConfig = {
     id: `strategy.composite.explore.${candidateId}`,
-    name: `Loop explore ${candidateId}`,
+    name: `Loop explore: ${componentNames.join(" + ")}`,
     components,
     operator: CombinationOperator.WEIGHTED,
   };

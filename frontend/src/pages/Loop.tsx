@@ -43,8 +43,8 @@ import {
   getLoopCandidates,
   listLoops,
   getActiveLoop,
-  setActiveLoop,
-  clearActiveLoop,
+  setActiveLoop as setActiveLoopApi,
+  clearActiveLoop as clearActiveLoopApi,
   type LoopProgressResponse,
   type LoopStatusResponse,
   type LoopIterationData,
@@ -267,6 +267,36 @@ export default function Loop() {
   const previousBestRef = useRef<number | null>(null);
   const [newTopFlash, setNewTopFlash] = useState<string | null>(null);
 
+  // Phase 3.4 — FIX D: a single guarded helper for the active-loop
+  // pointer API. Wrapping these calls keeps a network failure or a
+  // torn-down import from ever surfacing as an
+  //   "Cannot read properties of undefined (reading 'catch')"
+  // runtime error. The import is also aliased (`setActiveLoopApi`,
+  // `clearActiveLoopApi`) above so the state setter `setActiveLoop`
+  // is not shadowed by the API function of the same name.
+  const safelyPersistActiveLoop = useCallback(async (id: string) => {
+    try {
+      const p = setActiveLoopApi(id);
+      if (p && typeof (p as Promise<unknown>).then === "function") {
+        await (p as Promise<unknown>);
+      }
+    } catch (err) {
+      // Non-fatal: the active pointer is a soft signal used only
+      // for auto-restore. Log but never unhandled-throw.
+      console.warn("[Loop] safelyPersistActiveLoop failed:", err);
+    }
+  }, []);
+  const safelyClearActiveLoop = useCallback(async () => {
+    try {
+      const p = clearActiveLoopApi();
+      if (p && typeof (p as Promise<unknown>).then === "function") {
+        await (p as Promise<unknown>);
+      }
+    } catch (err) {
+      console.warn("[Loop] safelyClearActiveLoop failed:", err);
+    }
+  }, []);
+
   // Phase 3.3: active-loop discovery + today's-history support.
   const [activeLoop, setActiveLoop] = useState<{
     loopId: string;
@@ -283,7 +313,7 @@ export default function Loop() {
   useEffect(() => {
     if (loopIdFromUrl) {
       // Direct URL: also persist as active pointer so refresh restores it.
-      void setActiveLoop(loopIdFromUrl).catch(() => undefined);
+      void safelyPersistActiveLoop(loopIdFromUrl);
       setActiveResolved(true);
       return;
     }
@@ -292,6 +322,10 @@ export default function Loop() {
       try {
         const active = await getActiveLoop();
         if (cancelled) return;
+        // `active` is the response payload (loopId+status); assign
+        // it to the state setter `setActiveLoop`. This is NOT the
+        // API service — that import is aliased to `setActiveLoopApi`
+        // and is never called here.
         setActiveLoop(active);
         if (active?.loopId) {
           // Auto-restore: rewrite the URL so the rest of the page picks
@@ -349,10 +383,15 @@ export default function Loop() {
     }
   }, [loopId]);
 
-  // Phase 3.3: refresh today's loop history (UTC-bounded by the backend).
+  // Phase 3.3 / 3.4: refresh today's loop history. The backend
+  // accepts an optional `tzOffsetMinutes`; we send the user's local
+  // offset so "today" matches the user's calendar day.
   const refreshHistory = useCallback(async () => {
     try {
-      const rows = await listLoops({ today: true });
+      const rows = await listLoops({
+        today: true,
+        tzOffsetMinutes: -new Date().getTimezoneOffset(),
+      });
       setTodaysLoops(rows);
       setHistoryResolved(true);
     } catch {
@@ -424,7 +463,7 @@ export default function Loop() {
       const res = await startLoop(input);
       setStatus(res);
       // Persist as the user's active loop so refresh restores it.
-      await setActiveLoop(loopId).catch(() => undefined);
+      await safelyPersistActiveLoop(loopId);
       await refresh();
       await refreshHistory();
     } catch (err) {
@@ -469,7 +508,7 @@ export default function Loop() {
       // Phase 3.3: clear the active pointer so the next auto-restore
       // doesn't land on a stopped loop. The loop is still reachable via
       // Today's Loop History (which works for both RUNNING and STOPPED).
-      await clearActiveLoop().catch(() => undefined);
+      await safelyClearActiveLoop();
       await refreshHistory();
     } catch (err) {
       setError((err as Error).message ?? "Failed to stop loop");
@@ -528,7 +567,7 @@ export default function Loop() {
           <h2 className="text-lg font-extrabold text-slate-700">Continuous Strategy Loop</h2>
           <p className="text-sm text-slate-400 max-w-[560px]">
             {activeLoop
-              ? `Your active loop (${activeLoop.loopId}) is loading…`
+              ? `Continuing active loop ${activeLoop.loopId} (status: ${activeLoop.status}). This loop was started earlier — opening /loop does not start a new one.`
               : "No active loop is being followed. Start a new loop, or pick one from today's history below."}
           </p>
         </div>
@@ -928,7 +967,7 @@ function TodaysHistoryCard({
       <div className="flex items-center gap-2">
         <Clock className="w-4 h-4 text-slate-400" />
         <h3 className="text-sm font-extrabold text-slate-700">Today's Loop Runs</h3>
-        <span className="text-[10px] text-slate-400 ml-1">(UTC)</span>
+        <span className="text-[10px] text-slate-400 ml-1">(your timezone)</span>
         <button
           onClick={onRefresh}
           className="ml-auto p-1.5 rounded-lg hover:bg-slate-50 text-slate-400 hover:text-slate-700 transition-colors"

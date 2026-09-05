@@ -38,6 +38,7 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import type { CombinationConfig } from "../../strategy/combination/CombinationConfig";
+import { getCanonicalCompositeDisplayName } from "../../strategy/combination/CombinationConfig";
 import { logger } from "../../../shared/logger/logger";
 
 export interface StrategyVersionInfo {
@@ -122,7 +123,13 @@ export class StrategyVersionMapper {
    */
   public async resolveCompositeStrategy(
     config: CombinationConfig,
-    strategyName: string,
+    // Phase 3.4: `strategyName` is intentionally ignored — the
+    // canonical display name is now derived from the actual
+    // composite components and is therefore stable and
+    // non-recursive. We keep the parameter name (no underscore) so
+    // the public signature remains identical for existing callers
+    // (HybridLoopGenerator, SearchService).
+    _strategyName: string,
   ): Promise<StrategyVersionInfo> {
     if (!config.id || typeof config.id !== "string") {
       throw new Error("StrategyVersionMapper.resolveCompositeStrategy: config.id is required.");
@@ -137,21 +144,30 @@ export class StrategyVersionMapper {
     if (existingVersion) {
       // Sync CompositeComponent rows for this version.
       await this.syncCompositeComponents(existingVersion.id, config.components);
-      // Phase 3.3: keep the version's human-readable name in sync with
-      // the latest generator's naming. Earlier versions stored names
-      // like "Loop explore 0_3" — when the generator now derives a
-      // richer name from the actual components, update the version row
-      // so the UI shows the new name. We only update when the name
-      // actually changed to avoid touching the DB on every call.
+      // Phase 3.4: derive the canonical display name from the
+      // composite components (stable, non-recursive). We never write
+      // a longer / recursive name on top of an existing one — that
+      // was the source of names like
+      //   "Bollinger + RSI → Bollinger + RSI → Bollinger + RSI".
+      // The executable definition (components / weights / parameters /
+      // operator / implementationRef) is unchanged by this update.
+      const canonicalName = getCanonicalCompositeDisplayName(config);
       if (
-        existingVersion.name !== strategyName &&
-        typeof strategyName === "string" &&
-        strategyName.length > 0
+        existingVersion.name !== canonicalName &&
+        canonicalName.length < existingVersion.name.length
       ) {
         await this.prisma.strategyVersion.update({
           where: { id: existingVersion.id },
-          data: { name: strategyName },
+          data: { name: canonicalName },
         });
+        this.log.info(
+          {
+            strategyVersionId: existingVersion.id,
+            previousName: existingVersion.name,
+            canonicalName,
+          },
+          "search.StrategyVersionMapper.canonicalNameRewritten",
+        );
       }
       return {
         strategyVersionId: existingVersion.id,
@@ -172,11 +188,19 @@ export class StrategyVersionMapper {
       data: { type: "COMPOSITE", family: "TREND" },
     });
 
+    // Phase 3.4: persist a canonical, non-recursive display name. The
+    // generator-supplied `strategyName` may carry recursive parent
+    // prefixes (e.g. "... → Bollinger + RSI → Bollinger + RSI"). We
+    // derive the canonical name from the actual composite components
+    // so the persisted label is stable across iterations and does not
+    // accumulate parent prefixes.
+    const canonicalBootstrapName = getCanonicalCompositeDisplayName(config);
+
     const version = await this.prisma.strategyVersion.create({
       data: {
         definitionId: newDef.id,
         version: "1.0.0",
-        name: strategyName,
+        name: canonicalBootstrapName,
         implementationRef: config.id,
         parameters: {},
         isActive: true,

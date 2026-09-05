@@ -42,11 +42,18 @@ interface FakePrisma {
     findFirst: (args: any) => Promise<StrategyVersionRow | null>;
     findMany: (args: any) => Promise<StrategyVersionRow[]>;
     create: (args: any) => Promise<StrategyVersionRow>;
+    update: (args: any) => Promise<StrategyVersionRow>;
   };
   compositeComponent: {
     rows: CompositeComponentRow[];
     deleteMany: (args: any) => Promise<{ count: number }>;
     create: (args: any) => Promise<CompositeComponentRow>;
+    upsert: (args: any) => Promise<CompositeComponentRow>;
+  };
+  systemLog: {
+    rows: Array<{ id: number; level: string; sourceModule: string; eventCode: string | null; message: string; context: unknown; createdAt: Date }>;
+    nextId: number;
+    create: (args: any) => Promise<{ id: number }>;
   };
   $transaction: <T>(fn: (tx: FakePrisma) => Promise<T>) => Promise<T>;
 }
@@ -153,6 +160,13 @@ function makeFakePrisma(): FakePrisma {
         versions.push(row);
         return row;
       },
+      async update(args) {
+        const row = versions.find((v) => v.id === args.where.id);
+        if (!row) throw new Error(`strategyVersion.update: not found ${args.where.id}`);
+        if (args.data.name !== undefined) row.name = args.data.name;
+        if (args.data.isActive !== undefined) row.isActive = args.data.isActive;
+        return row;
+      },
     },
     compositeComponent: {
       rows: comps,
@@ -175,6 +189,37 @@ function makeFakePrisma(): FakePrisma {
         };
         comps.push(row);
         return row;
+      },
+      async upsert(args) {
+        const w = args.where;
+        const existing = comps.find(
+          (c) =>
+            c.compositeVersionId === w.compositeVersionId_componentVersionId.compositeVersionId &&
+            c.componentVersionId === w.compositeVersionId_componentVersionId.componentVersionId,
+        );
+        if (existing) {
+          if (args.update.weight !== undefined) existing.weight = args.update.weight;
+          if (args.update.position !== undefined) existing.position = args.update.position;
+          return existing;
+        }
+        return this.create({ data: args.create });
+      },
+    },
+    systemLog: {
+      rows: [],
+      nextId: 1,
+      async create(args) {
+        const row = {
+          id: this.nextId++,
+          level: args.data.level,
+          sourceModule: args.data.sourceModule,
+          eventCode: args.data.eventCode ?? null,
+          message: args.data.message,
+          context: args.data.context,
+          createdAt: new Date(),
+        };
+        this.rows.push(row);
+        return { id: row.id };
       },
     },
     async $transaction(fn) {
@@ -299,5 +344,170 @@ describe("StrategyVersionMapper — BASE resolution", () => {
     // pre-seeded in makeFakePrisma
     expect(info.definitionType).toBe("BASE");
     expect(info.strategyVersionId).toMatch(/^[0-9a-f-]{36}$/i);
+  });
+});
+
+// ─── Phase 3.4 — canonical-name regression suite ──────────────────────────
+// These tests exercise the recursive-name bug reported in audit and prove
+// that the new contract derives a stable, non-recursive display name from
+// the actual composite components, regardless of how the caller labels the
+// config.
+describe("StrategyVersionMapper — Phase 3.4 canonical composite name", () => {
+  let prisma: FakePrisma;
+  let mapper: StrategyVersionMapper;
+
+  beforeEach(() => {
+    prisma = makeFakePrisma();
+    mapper = new StrategyVersionMapper(prisma as any);
+  });
+
+  it("does NOT use a recursive prefix when bootstrapping a composite", async () => {
+    // The generator in HybridLoopGenerator would pass a name like
+    //   "Domain-guided bollinger + rsi → Bollinger Bands + RSI"
+    // We expect the persisted name to be derived from the canonical
+    // components instead (here: ma + rsi), NOT include any recursive
+    // prefix the caller supplied.
+    const config: CombinationConfig = {
+      id: "strategy.composite.loop.0_0",
+      name: "Domain-guided bollinger + rsi → Bollinger Bands + RSI",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.ma", weight: 0.5, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.5, position: 1 },
+      ],
+    };
+    const info = await mapper.resolveCompositeStrategy(config, config.name);
+    const stored = prisma.strategyVersion.rows.find(
+      (v) => v.id === info.strategyVersionId,
+    );
+    expect(stored).toBeDefined();
+    expect(stored!.name).not.toContain("Domain-guided bollinger + rsi");
+    // The persisted name should NOT contain any recursive prefix.
+    expect(stored!.name).not.toMatch(/→/);
+  });
+
+  it("does NOT grow the persisted name across re-resolutions", async () => {
+    // Iteration 1 bootstrap with a non-recursive caller name.
+    const config: CombinationConfig = {
+      id: "strategy.composite.loop.0_1",
+      name: "Loop explore: ma + rsi",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.ma", weight: 0.5, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.5, position: 1 },
+      ],
+    };
+    const info = await mapper.resolveCompositeStrategy(config, config.name);
+    const stored = prisma.strategyVersion.rows.find(
+      (v) => v.id === info.strategyVersionId,
+    );
+    const nameAfterFirst = stored!.name;
+
+    // Iteration 2: caller pretends to pass a recursive name where the
+    // prefix is the previously-persisted name (the bug pattern).
+    const recursiveName = `${nameAfterFirst} → Bollinger + RSI`;
+    await mapper.resolveCompositeStrategy(config, recursiveName);
+
+    const stored2 = prisma.strategyVersion.rows.find(
+      (v) => v.id === info.strategyVersionId,
+    );
+    expect(stored2!.name).toBe(nameAfterFirst);
+    // Crucially, the persisted name must not contain `recursiveName`.
+    expect(stored2!.name).not.toContain(recursiveName);
+    expect(stored2!.name).not.toMatch(/→/);
+  });
+
+  it("preserves the executable composite definition across re-resolutions", async () => {
+    const config: CombinationConfig = {
+      id: "strategy.composite.loop.0_2",
+      name: "Initial name",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.ma", weight: 0.4, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.6, position: 1 },
+      ],
+    };
+    const info = await mapper.resolveCompositeStrategy(config, config.name);
+
+    const componentsAfterFirst = prisma.compositeComponent.rows
+      .filter((r) => r.compositeVersionId === info.strategyVersionId)
+      .map((r) => ({
+        weight: r.weight,
+        position: r.position,
+      }));
+    const stored1 = prisma.strategyVersion.rows.find(
+      (v) => v.id === info.strategyVersionId,
+    );
+    const implRefBefore = stored1!.implementationRef;
+
+    // Iteration 2 with a mutated weight on component 0.
+    await mapper.resolveCompositeStrategy(
+      { ...config, components: [
+        { strategyId: "strategy.ma", weight: 0.55, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.45, position: 1 },
+      ] },
+      "Recursive prefix → recursive suffix",
+    );
+
+    const componentsAfterSecond = prisma.compositeComponent.rows
+      .filter((r) => r.compositeVersionId === info.strategyVersionId)
+      .map((r) => ({
+        weight: r.weight,
+        position: r.position,
+      }));
+
+    // implementationRef MUST be unchanged — it is the lookup key.
+    const stored2 = prisma.strategyVersion.rows.find(
+      (v) => v.id === info.strategyVersionId,
+    );
+    expect(stored2!.implementationRef).toBe(implRefBefore);
+
+    // Component rows are replaced (deleteMany + create) by
+    // syncCompositeComponents. We assert the FINAL weights match the
+    // second config exactly.
+    expect(componentsAfterSecond.find((c) => c.position === 0)!.weight).toBeCloseTo(0.55, 5);
+    expect(componentsAfterSecond.find((c) => c.position === 1)!.weight).toBeCloseTo(0.45, 5);
+
+    // And the FIRST component snapshot must NOT equal the SECOND's
+    // (otherwise the re-resolution did nothing).
+    expect(componentsAfterFirst.find((c) => c.position === 0)!.weight).toBeCloseTo(0.4, 5);
+    expect(componentsAfterFirst.find((c) => c.position === 1)!.weight).toBeCloseTo(0.6, 5);
+  });
+});
+
+// ─── Phase 3.4 — getCanonicalCompositeDisplayName direct suite ────────────
+import { getCanonicalCompositeDisplayName } from "../../src/modules/strategy/combination/CombinationConfig";
+describe("getCanonicalCompositeDisplayName", () => {
+  it("returns the same name for identical components regardless of caller name", () => {
+    const a: CombinationConfig = {
+      id: "strategy.composite.loop.A",
+      name: "Long recursive caller name → suffix",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.ma", weight: 0.5, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.5, position: 1 },
+      ],
+    };
+    const b: CombinationConfig = {
+      ...a,
+      id: "strategy.composite.loop.B",
+      name: "Different caller name",
+    };
+    expect(getCanonicalCompositeDisplayName(a)).toBe(
+      getCanonicalCompositeDisplayName(b),
+    );
+  });
+
+  it("orders components by position", () => {
+    const cfg: CombinationConfig = {
+      id: "strategy.composite.loop.order",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.rsi", weight: 0.5, position: 1 },
+        { strategyId: "strategy.ma", weight: 0.5, position: 0 },
+      ],
+    };
+    expect(getCanonicalCompositeDisplayName(cfg)).toMatch(/Moving Average.*RSI|ma.*rsi/);
   });
 });

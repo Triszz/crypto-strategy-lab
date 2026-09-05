@@ -190,11 +190,25 @@ export async function getLoopCandidates(loopId: string): Promise<LoopIterationDa
 
 /** List all loops (most recent first). */
 export async function listLoops(
-  opts: { today?: boolean; limit?: number } = {},
+  opts: {
+    today?: boolean;
+    limit?: number;
+    /**
+     * Phase 3.4 — offset of the user's local timezone, in MINUTES
+     * EAST of UTC (e.g. UTC+7 → +420, UTC-5 → -300). The backend
+     * uses this to compute the "today" calendar-day boundary in the
+     * client's local timezone. `Date.getTimezoneOffset()` returns
+     * minutes WEST of UTC, so we negate it here.
+     */
+    tzOffsetMinutes?: number;
+  } = {},
 ): Promise<LoopListItem[]> {
   const params = new URLSearchParams();
   if (opts.today) params.set("today", "true");
   if (opts.limit !== undefined) params.set("limit", String(opts.limit));
+  if (opts.tzOffsetMinutes !== undefined) {
+    params.set("tzOffsetMinutes", String(opts.tzOffsetMinutes));
+  }
   const qs = params.toString();
   return get<LoopListItem[]>(`/api/loop/list${qs ? `?${qs}` : ""}`);
 }

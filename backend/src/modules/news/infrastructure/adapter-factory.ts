@@ -4,23 +4,15 @@ import { AggregatingNewsAdapter } from "./aggregating-news.adapter";
 import { CryptoCompareNewsAdapter } from "./cryptocompare-news.adapter";
 import { CryptopanicNewsAdapter } from "./cryptopanic-news.adapter";
 import { NewsDataNewsAdapter } from "./newsdata-news.adapter";
+import { HtmlNewsAdapter } from "./html-news.adapter";
 import { CoinDeskRssAdapter } from "./rss-feed.adapters";
 import { CointelegraphRssAdapter } from "./rss-feed.adapters";
 import { BitcoinMagazineRssAdapter } from "./rss-feed.adapters";
 import { RSSNewsAdapter } from "./rss-news.adapter"; // mock fallback
 import { logger } from "../../../shared/logger/logger";
+import { loadEnv } from "../../../config/env";
 
 // ─── Registry bootstrap ───────────────────────────────────────────────────────
-//
-// Every concrete adapter self-registers here (priority = order in which they
-// are tried; lower = earlier).  The factory reads the comma-separated
-// NEWS_PROVIDERS env variable to decide which adapters are enabled.
-//
-// Adding a new adapter:
-//   1. Create the adapter class (implements NewsProviderAdapter).
-//   2. Add ONE register() call below with a unique code and priority.
-//   3. DONE — the aggregator picks it up automatically.
-
 function bootstrapRegistry(): AdapterRegistry {
   const reg = AdapterRegistry.getInstance();
 
@@ -30,7 +22,7 @@ function bootstrapRegistry(): AdapterRegistry {
     label: "CryptoCompare API",
     priority: 1,
     requiresApiKey: true,
-    enabled: false, // enabled only when CRYPTOCOMPARE_API_KEY is set (see below)
+    enabled: false,
     factory: () => {
       const key = process.env.CRYPTOCOMPARE_API_KEY?.trim();
       if (!key) return null;
@@ -82,7 +74,7 @@ function bootstrapRegistry(): AdapterRegistry {
     label: "CoinDesk RSS",
     priority: 2,
     requiresApiKey: false,
-    enabled: false, // enabled only when "coindesk" is in NEWS_PROVIDERS env
+    enabled: false,
     factory: () => new CoinDeskRssAdapter(),
   });
 
@@ -104,7 +96,17 @@ function bootstrapRegistry(): AdapterRegistry {
     factory: () => new BitcoinMagazineRssAdapter(),
   });
 
-  // Priority 5 — Legacy / mock (always available as last-resort fallback)
+  // Priority 5 — HTML Web Scraper (LLM Extraction Template)
+  reg.register({
+    code: "html",
+    label: "HTML Web Scraper (LLM Template)",
+    priority: 5,
+    requiresApiKey: false,
+    enabled: false,
+    factory: () => new HtmlNewsAdapter(),
+  });
+
+  // Priority 99 — Legacy / mock (fallback)
   reg.register({
     code: "rss",
     label: "Mock RSS (dev only)",
@@ -117,56 +119,59 @@ function bootstrapRegistry(): AdapterRegistry {
   return reg;
 }
 
-/**
- * Reads `NEWS_PROVIDERS` env (comma-separated list of adapter codes) and
- * enables those adapters in the registry.
- *
- * Supported values:
- *   "newsdata"                → NewsData.io (https://newsdata.io/) — PRIMARY; free tier: 200 credits/day
- *   "cryptocompare"           → CryptoCompare API (https://min-api.cryptocompare.com/)
- *   "coindesk"                → CoinDesk RSS
- *   "cointelegraph"           → Cointelegraph RSS
- *   "btcmagazine"             → Bitcoin Magazine RSS
- *   "rss"                     → Mock RSS (dev / fallback)
- *
- * If NEWS_PROVIDERS is omitted → ALL adapters that have their API key configured
- * are auto-enabled (newsdata/cryptocompare only when key present; RSS feeds always).
- *
- * @example
- *   NEWS_PROVIDERS=newsdata,coindesk,cointelegraph
- */
 function applyEnvOverrides(reg: AdapterRegistry): void {
-  const envProviders = (process.env.NEWS_PROVIDERS ?? "")
+  // Ensure dotenv is loaded so process.env contains variables from backend/.env
+  try {
+    loadEnv();
+  } catch {
+    // ignore if already loaded or env file missing
+  }
+
+  const rawEnv = (process.env.NEWS_PROVIDERS ?? "").trim();
+  const envProviders = rawEnv
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean);
 
   const knownCodes = new Set(reg.listAll().map((e) => e.code));
+  const isAll = envProviders.includes("all") || envProviders.includes("auto") || envProviders.length === 0;
 
-  if (envProviders.length === 0) {
-    // Auto-enable: all "code ending with nothing" that need a key only when the key is present;
-    // RSS feeds have no key → always available.
+  if (isAll) {
+    // Auto-enable logic:
+    // - Enable RSS feeds and HTML scraper (no API key needed)
+    // - Enable API adapters if their corresponding env API key is set
     for (const entry of reg.listAll()) {
-      if (entry.code === "rss") continue; // never auto-enable mock
+      if (entry.code === "rss") continue; // Never auto-enable mock RSS unless explicitly requested
       if (!entry.requiresApiKey) {
         entry.enabled = true;
         continue;
       }
-      // Look up env var: cryptocompare → CRYPTOCOMPARE_API_KEY, newsdata → NEWSDATA_API_KEY, etc.
       const envVar = `${entry.code.toUpperCase().replace(/-/g, "_")}_API_KEY`;
       entry.enabled = !!process.env[envVar]?.trim();
     }
     return;
   }
 
-  // Explicit list: disable everything, then enable the requested ones.
+  // Explicit list provided in NEWS_PROVIDERS (e.g. NEWS_PROVIDERS=newsdata,coindesk,html)
   for (const entry of reg.listAll()) {
     entry.enabled = envProviders.includes(entry.code);
   }
 
-  // Warn about unknown codes in NEWS_PROVIDERS.
+  // Warn if user set an API key in .env but forgot to include the code in NEWS_PROVIDERS
+  for (const entry of reg.listAll()) {
+    if (entry.requiresApiKey && !entry.enabled) {
+      const envVar = `${entry.code.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+      if (process.env[envVar]?.trim()) {
+        logger.warn(
+          `[adapter-factory] Environment variable ${envVar} is set, but "${entry.code}" ` +
+            `is not listed in NEWS_PROVIDERS="${rawEnv}". Add "${entry.code}" or "all" to NEWS_PROVIDERS to enable it.`,
+        );
+      }
+    }
+  }
+
   for (const raw of envProviders) {
-    if (!knownCodes.has(raw)) {
+    if (raw !== "all" && raw !== "auto" && !knownCodes.has(raw)) {
       logger.warn(
         `[adapter-factory] Unknown NEWS_PROVIDERS code "${raw}". ` +
           `Known: ${knownCodes.size > 0 ? [...knownCodes].join(", ") : "(none)"}.`,

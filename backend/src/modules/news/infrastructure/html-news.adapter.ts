@@ -16,8 +16,7 @@ export class HtmlNewsAdapter implements NewsProviderAdapter {
   }
 
   public async fetchLatestNews(symbol?: string): Promise<Omit<NewsItem, "providerId">[]> {
-    const domain = "coindesk.com";
-    const template = await this.templateManager.getActiveTemplate(domain);
+    await this.templateManager.getActiveTemplate(domain);
 
     // Mock HTML sample fetching (or real HTTP GET)
     const sampleHtml = `

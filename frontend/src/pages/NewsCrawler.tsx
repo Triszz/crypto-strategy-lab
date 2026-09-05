@@ -62,28 +62,13 @@ function matchesSourceCategory(itemSource: string, activeSources: SourceCategory
   if (activeSources.length === 3) return true; // All active
   const s = (itemSource || '').toLowerCase();
 
-  const isWebsite =
-    s.includes('cryptopanic') ||
-    s.includes('newsdata') ||
-    s.includes('cryptocompare') ||
-    s.includes('api') ||
-    s.includes('website');
-  const isRss =
-    s.includes('rss') ||
-    s.includes('coindesk') ||
-    s.includes('cointelegraph') ||
-    s.includes('bitcoin magazine') ||
-    s.includes('btcmagazine');
-  const isHtml =
-    s.includes('html') || s.includes('scraper') || s.includes('cheerio') || s.includes('extract');
+  const isHtml = s.includes('html') || s.includes('scraper') || s.includes('cheerio') || s.includes('extract');
+  const isExplicitRss = s.includes('rss') || s === 'coindesk' || s === 'cointelegraph' || s === 'bitcoin magazine' || s === 'btcmagazine';
+  const isWebsite = s.includes('newsdata') || s.includes('cryptopanic') || s.includes('cryptocompare') || s.includes('api') || (!isHtml && !isExplicitRss);
 
-  if (isWebsite && activeSources.includes('Website')) return true;
-  if (isRss && activeSources.includes('RSS')) return true;
-  if (isHtml && activeSources.includes('HTML')) return true;
-
-  if (!isWebsite && !isRss && !isHtml) {
-    return activeSources.includes('Website') || activeSources.includes('RSS');
-  }
+  if (activeSources.includes('HTML') && isHtml) return true;
+  if (activeSources.includes('Website') && isWebsite) return true;
+  if (activeSources.includes('RSS') && isExplicitRss && !isWebsite) return true;
 
   return false;
 }

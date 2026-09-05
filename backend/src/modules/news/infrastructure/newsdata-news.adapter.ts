@@ -91,14 +91,14 @@ export class NewsDataNewsAdapter implements NewsProviderAdapter {
   private async _fetchOnce(symbol?: string): Promise<Omit<NewsItem, "providerId">[]> {
     const params = new URLSearchParams({
       apikey: this.apiKey,
-      category: "crypto,top",
       language: "en",
     });
 
     if (symbol) {
-      // NewsData free tier doesn't support exact coin filter; we'll filter client-side.
       const base = symbol.toUpperCase().replace(/USDT?$/, "");
-      params.set("q", `${base} OR bitcoin OR ethereum OR solana`);
+      params.set("q", `${base} OR crypto OR bitcoin OR ethereum OR solana`);
+    } else {
+      params.set("q", "crypto OR bitcoin OR ethereum OR solana");
     }
 
     const url = `https://newsdata.io/api/1/latest?${params.toString()}`;
@@ -196,7 +196,7 @@ export class NewsDataNewsAdapter implements NewsProviderAdapter {
       summary: article.description ?? null,
       content: article.content ?? null,
       url: article.link,
-      source: article.source_id ?? "NewsData.io",
+      source: article.source_id ? `NewsData (${article.source_id})` : "NewsData.io",
       author: article.creator?.[0] ?? null,
       publishedAt: new Date(article.pubDate),
       coinSymbols: [...new Set(coinSymbols)],

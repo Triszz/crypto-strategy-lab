@@ -142,12 +142,18 @@ export default function Backtest() {
   const handleStartBacktest = async () => {
     setActiveChartConfig({ pair: selectedPair, timeframe: timeframe });
     setIsRunning(true);
-    setProgress(15);
+    setProgress(2);
     setErrorMsg(null);
 
+    // Smooth, organic progress curve (asymptotic easing towards 92%)
     const interval = setInterval(() => {
-      setProgress((prev) => (prev < 85 ? prev + 15 : prev));
-    }, 150);
+      setProgress((prev) => {
+        if (prev >= 92) return prev;
+        const remaining = 92 - prev;
+        const step = Math.max(0.8, Math.min(5, remaining * 0.1 + Math.random() * 1.5));
+        return Math.min(92, Math.round((prev + step) * 10) / 10);
+      });
+    }, 80);
 
     const fromTime = fromDate ? new Date(fromDate).getTime() : undefined;
     const toTime = toDate ? new Date(`${toDate}T23:59:59`).getTime() : undefined;
@@ -207,7 +213,7 @@ export default function Backtest() {
     } finally {
       setTimeout(() => {
         setIsRunning(false);
-      }, 300);
+      }, 350);
     }
   };
 

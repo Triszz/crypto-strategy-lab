@@ -395,6 +395,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
                 select: {
                   id: true,
                   name: true,
+                  displayNameWithWeights: true,
                   implementationRef: true,
                   definition: { select: { type: true } },
                 },
@@ -420,7 +421,9 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
                 return {
                   id: c.id,
                   strategyVersionId: c.strategyVersionId,
-                  strategyName: c.strategyVersion.name,
+                  strategyName:
+                    c.strategyVersion.displayNameWithWeights ??
+                    c.strategyVersion.name,
                   implementationRef: c.strategyVersion.implementationRef,
                   strategyType: c.strategyVersion.definition.type,
                   status: c.status,
@@ -463,7 +466,9 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
                 return {
                   id: c.id,
                   strategyVersionId: c.strategyVersionId,
-                  strategyName: c.strategyVersion.name,
+                  strategyName:
+                    c.strategyVersion.displayNameWithWeights ??
+                    c.strategyVersion.name,
                   implementationRef: c.strategyVersion.implementationRef,
                   strategyType: c.strategyVersion.definition.type,
                   status: c.status,
@@ -482,7 +487,9 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
               return {
                 id: c.id,
                 strategyVersionId: c.strategyVersionId,
-                strategyName: c.strategyVersion.name,
+                strategyName:
+                  c.strategyVersion.displayNameWithWeights ??
+                  c.strategyVersion.name,
                 implementationRef: c.strategyVersion.implementationRef,
                 strategyType: c.strategyVersion.definition.type,
                 status: c.status,

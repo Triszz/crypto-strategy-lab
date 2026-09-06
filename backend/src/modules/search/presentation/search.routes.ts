@@ -421,6 +421,7 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
             select: {
               id: true,
               name: true,
+              displayNameWithWeights: true,
               implementationRef: true,
               definition: { select: { type: true, family: true } },
             },
@@ -442,6 +443,8 @@ export function buildSearchRouter(deps: SearchRouterDeps): Router {
             ? {
                 id: r.strategyVersion.id,
                 name: r.strategyVersion.name,
+                displayNameWithWeights:
+                  r.strategyVersion.displayNameWithWeights ?? r.strategyVersion.name,
                 implementationRef: r.strategyVersion.implementationRef,
                 definitionType: r.strategyVersion.definition.type,
                 definitionFamily: r.strategyVersion.definition.family,

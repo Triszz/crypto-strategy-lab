@@ -290,6 +290,16 @@ function CandidatesSection({
             const isLoading = state?.loading ?? false;
             const experimentId = state?.experimentId;
             const errorMsg = state?.error;
+            const backtestResult = state?.result;
+            // Phase 4.5: prefer the weight-aware display label when the
+            // backend supplied one; otherwise fall back to the family label.
+            // BASE strategies have no weight suffix; the API returns `name`
+            // duplicated in `displayNameWithWeights` for those, so the
+            // behaviour is identical for non-composite rows.
+            const primaryLabel =
+              c.strategyVersion?.displayNameWithWeights ??
+              c.strategyVersion?.name ??
+              "(unknown strategy)";
 
             const paramsPreview = Object.entries(c.parameters || {})
               .filter(([k]) => !k.startsWith("_"))
@@ -308,8 +318,11 @@ function CandidatesSection({
                       <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
                         #{idx + 1}
                       </span>
-                      <span className="text-xs font-extrabold text-slate-800 truncate">
-                        {c.strategyVersion?.name ?? "(unknown strategy)"}
+                      <span
+                        className="text-xs font-extrabold text-slate-800 truncate"
+                        title={c.strategyVersion?.name ?? undefined}
+                      >
+                        {primaryLabel}
                       </span>
                       <span
                         className={`px-2 py-0.5 rounded text-[9px] font-black tracking-wide ${
@@ -320,8 +333,14 @@ function CandidatesSection({
                       >
                         {c.strategyVersion?.definitionType ?? "?"}
                       </span>
-                      <span className="text-[10px] font-mono text-slate-400">
-                        {c.id.slice(0, 8)}…
+                      <span
+                        className="text-[10px] font-mono text-slate-400"
+                        title={`strategyVersionId=${c.strategyVersionId}\nimplementationRef=${c.strategyVersion?.implementationRef ?? ""}`}
+                      >
+                        {c.strategyVersion?.implementationRef?.replace(
+                          /^strategy\./,
+                          "",
+                        ) ?? c.id.slice(0, 8)}…
                       </span>
                     </div>
                     {paramsPreview && (
@@ -354,6 +373,11 @@ function CandidatesSection({
                           <RefreshCw className="w-3 h-3 animate-spin" />
                           Running…
                         </>
+                      ) : backtestResult ? (
+                        <>
+                          <CheckCircle2 className="w-3 h-3" />
+                          Run Again
+                        </>
                       ) : (
                         <>
                           <PlayCircle className="w-3 h-3" />
@@ -365,9 +389,60 @@ function CandidatesSection({
                 </div>
 
                 {errorMsg && (
-                  <div className="bg-red-50 border border-red-100 rounded-lg px-3 py-2 text-[10px] text-red-700 font-semibold flex items-center gap-1.5">
+                  <div
+                    data-testid="backtest-failed"
+                    className="bg-red-50 border border-red-100 rounded-lg px-3 py-2 text-[10px] text-red-700 font-semibold flex items-center gap-1.5"
+                  >
                     <AlertCircle className="w-3 h-3 shrink-0" />
-                    {errorMsg}
+                    Backtest Failed: {errorMsg}
+                  </div>
+                )}
+
+                {backtestResult && (
+                  <div
+                    data-testid="backtest-result"
+                    className="bg-white border border-emerald-100 rounded-lg p-3 grid grid-cols-2 sm:grid-cols-3 gap-2"
+                  >
+                    <BacktestResultMetric
+                      label="Final Capital"
+                      value={`$${Number(
+                        backtestResult.result.metrics.finalCapital,
+                      ).toLocaleString(undefined, {
+                        maximumFractionDigits: 2,
+                      })}`}
+                    />
+                    {/* The backend BacktestMetricsApi returns totalReturn,
+                        winRate, and maxDrawdown as percentage points
+                        (e.g. 8.42, not 0.0842) — same convention as
+                        Backtest.tsx MetricCard. */}
+                    <BacktestResultMetric
+                      label="Total Return"
+                      value={`${Number(
+                        backtestResult.result.metrics.totalReturn,
+                      ).toFixed(2)}%`}
+                    />
+                    <BacktestResultMetric
+                      label="Win Rate"
+                      value={`${Number(
+                        backtestResult.result.metrics.winRate,
+                      ).toFixed(2)}%`}
+                    />
+                    <BacktestResultMetric
+                      label="Max Drawdown"
+                      value={`${Number(
+                        backtestResult.result.metrics.maxDrawdown,
+                      ).toFixed(2)}%`}
+                    />
+                    <BacktestResultMetric
+                      label="Trades"
+                      value={String(backtestResult.result.metrics.numTrades)}
+                    />
+                    <BacktestResultMetric
+                      label="Overall Score"
+                      value={Number(
+                        backtestResult.result.metrics.overallScore,
+                      ).toFixed(2)}
+                    />
                   </div>
                 )}
               </div>
@@ -380,6 +455,19 @@ function CandidatesSection({
 }
 
 // ─── Empty / Error states ─────────────────────────────────────────────────────
+
+function BacktestResultMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">
+        {label}
+      </span>
+      <span className="text-sm font-extrabold text-slate-700 tabular-nums">
+        {value}
+      </span>
+    </div>
+  );
+}
 
 function LoadingState({ message }: { message: string }) {
   return (
@@ -576,10 +664,19 @@ export default function SearchPage() {
   const [loopLoading, setLoopLoading] = useState<boolean>(false);
   const [loopError, setLoopError] = useState<string | null>(null);
 
-  // Per-candidate backtest state: experimentId returned by /api/backtests/run
-  // and any error message. Keyed by candidateId.
+  // Per-candidate backtest state — keyed by candidateId. Holds the
+  // experimentId, an in-flight flag, an optional error message, and the
+  // (optional) BacktestRunResponseData result payload. State is per
+  // candidate so candidates don't share a global `isBacktesting` flag.
+  // (Phase 4.5.)
+  type BacktestCell = {
+    experimentId?: string;
+    loading: boolean;
+    error?: string;
+    result?: import("../services/backtestApi").BacktestRunResponseData;
+  };
   const [backtestByCandidate, setBacktestByCandidate] = useState<
-    Record<string, { experimentId?: string; loading: boolean; error?: string }>
+    Record<string, BacktestCell>
   >({});
 
   // Track timer in ref so cleanup is reliable across re-renders.
@@ -618,25 +715,30 @@ export default function SearchPage() {
   }, []);
 
   // ── Run Backtest for one candidate ──────────────────────────────────────
+  // Phase 4.5: same-page, per-candidate behaviour. The button on the
+  // clicked candidate transitions to "Running…" (only that candidate —
+  // siblings are untouched); on success the BacktestRunResponseData is
+  // rendered under the candidate; on failure an inline error replaces
+  // the loading state. No navigation to /backtest.
   const runBacktestForCandidate = useCallback(
     async (candidate: CandidateItem) => {
       const id = candidate.id;
-      setBacktestByCandidate((prev) => ({
-        ...prev,
-        [id]: { loading: true },
-      }));
+      setBacktestByCandidate((prev) => {
+        // Prevent duplicate in-flight calls per candidate.
+        const existing = prev[id];
+        if (existing?.loading) return prev;
+        return { ...prev, [id]: { loading: true } };
+      });
       try {
         const response = await backtestApi.runBacktest({
           candidateId: id,
           sync: true,
         });
-        const experimentId =
-          response.result && "experimentId" in response.result
-            ? (response.result as { experimentId: string }).experimentId
-            : undefined;
+        const result = response.result;
+        const experimentId = result?.experimentId;
         setBacktestByCandidate((prev) => ({
           ...prev,
-          [id]: { loading: false, experimentId },
+          [id]: { loading: false, ...(experimentId ? { experimentId } : {}), ...(result ? { result } : {}) },
         }));
       } catch (err) {
         const msg = (err as Error).message ?? "Backtest request failed.";

@@ -72,27 +72,44 @@ export class Backtester {
         let exitPrice = candle.close;
         let exitReason = "SIGNAL";
 
-        const currentPrice = candle.close;
-        const pnlPct =
-          activePosition.direction === "LONG"
-            ? ((currentPrice - activePosition.entryPrice) / activePosition.entryPrice) * 100
-            : ((activePosition.entryPrice - currentPrice) / activePosition.entryPrice) * 100;
+        let slHit = false;
+        let tpHit = false;
+        let slTargetPrice = 0;
+        let tpTargetPrice = 0;
 
-        if (stopLossPct !== undefined && pnlPct <= -Math.abs(stopLossPct)) {
+        if (activePosition.direction === "LONG") {
+          if (stopLossPct !== undefined) {
+            slTargetPrice = activePosition.entryPrice * (1 - Math.abs(stopLossPct) / 100);
+            slHit = candle.low <= slTargetPrice;
+          }
+          if (takeProfitPct !== undefined) {
+            tpTargetPrice = activePosition.entryPrice * (1 + Math.abs(takeProfitPct) / 100);
+            tpHit = candle.high >= tpTargetPrice;
+          }
+        } else {
+          // SHORT position
+          if (stopLossPct !== undefined) {
+            slTargetPrice = activePosition.entryPrice * (1 + Math.abs(stopLossPct) / 100);
+            slHit = candle.high >= slTargetPrice;
+          }
+          if (takeProfitPct !== undefined) {
+            tpTargetPrice = activePosition.entryPrice * (1 - Math.abs(takeProfitPct) / 100);
+            tpHit = candle.low <= tpTargetPrice;
+          }
+        }
+
+        if (slHit && tpHit) {
+          // Priority to Stop Loss if both triggered within same candle
           exitTriggered = true;
-          const slPrice =
-            activePosition.direction === "LONG"
-              ? activePosition.entryPrice * (1 - Math.abs(stopLossPct) / 100)
-              : activePosition.entryPrice * (1 + Math.abs(stopLossPct) / 100);
-          exitPrice = slPrice;
+          exitPrice = slTargetPrice;
           exitReason = "STOP_LOSS";
-        } else if (takeProfitPct !== undefined && pnlPct >= Math.abs(takeProfitPct)) {
+        } else if (slHit) {
           exitTriggered = true;
-          const tpPrice =
-            activePosition.direction === "LONG"
-              ? activePosition.entryPrice * (1 + Math.abs(takeProfitPct) / 100)
-              : activePosition.entryPrice * (1 - Math.abs(takeProfitPct) / 100);
-          exitPrice = tpPrice;
+          exitPrice = slTargetPrice;
+          exitReason = "STOP_LOSS";
+        } else if (tpHit) {
+          exitTriggered = true;
+          exitPrice = tpTargetPrice;
           exitReason = "TAKE_PROFIT";
         } else if (
           (activePosition.direction === "LONG" && signal === "SELL") ||

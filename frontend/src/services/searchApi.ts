@@ -220,6 +220,9 @@ export interface CandidateItem {
   readonly strategyVersion: {
     readonly id: string;
     readonly name: string;
+    // Phase 4.5: weight-aware display label (distinct per weight distribution).
+    // Falls back to `name` for BASE StrategyVersions and pre-fix rows.
+    readonly displayNameWithWeights: string;
     readonly implementationRef: string;
     readonly definitionType: "BASE" | "COMPOSITE";
     readonly definitionFamily: string;

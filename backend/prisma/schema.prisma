@@ -108,6 +108,12 @@ model StrategyVersion {
   indicatorTypeId    String?              @map("indicator_type_id") @db.Uuid
   implementationRef  String               @map("implementation_ref") @db.VarChar(255)
   parameters         Json                 @default("{}")
+  // Phase 4.5: weight-aware display label for COMPOSITE StrategyVersions.
+  // Distinct from `name` (the stable Phase 3.4 family label) so two SVs
+  // with identical component set but different weight distributions can
+  // be told apart in the UI without violating the Phase 3.4 invariant
+  // ("same components → same family label").
+  displayNameWithWeights String?            @map("display_name_with_weights") @db.VarChar(512)
   isActive           Boolean              @default(true) @map("is_active")
   createdAt          DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
   candidates         CandidateStrategy[]

@@ -38,7 +38,10 @@
  */
 import type { PrismaClient } from "@prisma/client";
 import type { CombinationConfig } from "../../strategy/combination/CombinationConfig";
-import { getCanonicalCompositeDisplayName } from "../../strategy/combination/CombinationConfig";
+import {
+  getCanonicalCompositeDisplayName,
+  getCanonicalCompositeDisplayNameWithWeights,
+} from "../../strategy/combination/CombinationConfig";
 import { logger } from "../../../shared/logger/logger";
 
 export interface StrategyVersionInfo {
@@ -142,29 +145,53 @@ export class StrategyVersionMapper {
     });
 
     if (existingVersion) {
-      // Sync CompositeComponent rows for this version.
+      // Sync CompositeComponent rows for this version. (Phase 4.5: the
+      // components are always overwritten with the current config so that
+      // the persisted definition reflects what the user actually selected
+      // — e.g. `sentiment.news` instead of a stale `bollinger`.)
       await this.syncCompositeComponents(existingVersion.id, config.components);
-      // Phase 3.4: derive the canonical display name from the
-      // composite components (stable, non-recursive). We never write
-      // a longer / recursive name on top of an existing one — that
-      // was the source of names like
-      //   "Bollinger + RSI → Bollinger + RSI → Bollinger + RSI".
-      // The executable definition (components / weights / parameters /
-      // operator / implementationRef) is unchanged by this update.
+
+      // Phase 4.5: Two independent display labels are persisted now.
+      //
+      //   • `name` (weight-free canonical family label, Phase 3.4 contract
+      //     "same components → same family label"). Always overwrite with
+      //     the current canonical value — the historical length-guard
+      //     `canonicalName.length < existingVersion.name.length` was the
+      //     cause of the Phase 4.5 staleness bug: short legacy names
+      //     like "Domain-guided bollinger + ma" could not be replaced by
+      //     longer legitimate canonical names, leaving components and
+      //     name permanently out of sync.
+      //
+      //   • `displayNameWithWeights` (NEW, Phase 4.5): includes the
+      //     normalized weight digest so two SVs that differ ONLY in
+      //     their weight distribution get distinguishable labels. This
+      //     is a display-only field; it does NOT participate in the
+      //     uniqueness contract.
       const canonicalName = getCanonicalCompositeDisplayName(config);
-      if (
-        existingVersion.name !== canonicalName &&
-        canonicalName.length < existingVersion.name.length
-      ) {
+      const canonicalNameWithWeights =
+        getCanonicalCompositeDisplayNameWithWeights(config);
+
+      const nameChanged = existingVersion.name !== canonicalName;
+      const displayChanged =
+        existingVersion.displayNameWithWeights !== canonicalNameWithWeights;
+
+      if (nameChanged || displayChanged) {
         await this.prisma.strategyVersion.update({
           where: { id: existingVersion.id },
-          data: { name: canonicalName },
+          data: {
+            ...(nameChanged ? { name: canonicalName } : {}),
+            ...(displayChanged
+              ? { displayNameWithWeights: canonicalNameWithWeights }
+              : {}),
+          },
         });
         this.log.info(
           {
             strategyVersionId: existingVersion.id,
             previousName: existingVersion.name,
+            previousDisplayNameWithWeights: existingVersion.displayNameWithWeights,
             canonicalName,
+            canonicalNameWithWeights,
           },
           "search.StrategyVersionMapper.canonicalNameRewritten",
         );
@@ -195,12 +222,19 @@ export class StrategyVersionMapper {
     // so the persisted label is stable across iterations and does not
     // accumulate parent prefixes.
     const canonicalBootstrapName = getCanonicalCompositeDisplayName(config);
+    // Phase 4.5: persist a separate, weight-aware label so two SVs
+    // with identical components but different weight distributions
+    // remain distinguishable in the UI without violating the
+    // Phase 3.4 "same components → same family label" invariant.
+    const canonicalBootstrapNameWithWeights =
+      getCanonicalCompositeDisplayNameWithWeights(config);
 
     const version = await this.prisma.strategyVersion.create({
       data: {
         definitionId: newDef.id,
         version: "1.0.0",
         name: canonicalBootstrapName,
+        displayNameWithWeights: canonicalBootstrapNameWithWeights,
         implementationRef: config.id,
         parameters: {},
         isActive: true,

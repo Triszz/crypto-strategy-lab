@@ -123,6 +123,15 @@ class FakePrisma {
     findUnique: async ({ where }: { where: { loopId: string } }) => {
       return this.loopRunStates.get(where.loopId) ?? null;
     },
+    findFirst: async ({ where, orderBy }: { where?: { status?: string; loopId?: string }; orderBy?: unknown }) => {
+      let rows = [...this.loopRunStates.values()];
+      if (where?.status) rows = rows.filter((r) => r.status === where.status);
+      if (where?.loopId) rows = rows.filter((r) => r.loopId === where.loopId);
+      if (orderBy && (orderBy as { updatedAt?: string }).updatedAt === "desc") {
+        rows.sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime());
+      }
+      return rows[0] ?? null;
+    },
     upsert: async ({
       where,
       update,
@@ -183,6 +192,31 @@ class FakePrisma {
         .sort((a, b) => b.iterationIndex - a.iterationIndex);
       return rows[0] ?? null;
     },
+    findMany: async ({ where }: { where: { loopId: string } }) => {
+      return this.loopIterations.filter((i) => i.loopId === where.loopId);
+    },
+  };
+
+  // Phase 4.1: stub for candidateStrategy used by the new
+  // processedCount / failedCount derivation. Tests don't seed
+  // candidates, so it always returns 0.
+  candidateStrategy = {
+    count: async () => 0,
+    findMany: async () => [] as Array<{ id: string; status: string }>,
+  };
+  // Phase 4.1: stub for backtestResult, experiment, strategyVersion,
+  // loopProcessedEvent used by /candidates when iterations exist.
+  backtestResult = {
+    findFirst: async () => null,
+  };
+  experiment = {
+    findMany: async () => [] as Array<{ id: string; errorMessage: string | null; status: string }>,
+  };
+  strategyVersion = {
+    findUnique: async () => null,
+  };
+  loopProcessedEvent = {
+    findMany: async () => [] as Array<{ dedupeKey: string; evaluatedAt: Date; strategyVersionId: string }>,
   };
 
   // Phase 3.3: stub for the explicit active-loop pointer. Single-row
@@ -592,6 +626,194 @@ describe("loop.routes", () => {
       expect(res.status).toBe(200);
       const body = res.body as { success: boolean; data: Array<{ loopId: string }> };
       expect(body.data.some((r) => r.loopId === "today-utc")).toBe(true);
+    });
+  });
+
+  // ─── Phase 4.1 — Candidate accounting DTO ───────────────────────────
+  describe("Phase 4.1 — candidate accounting DTO", () => {
+    it("/status response includes processedCount and failedCount", async () => {
+      await request("POST", "/api/loop/start", { loopId: "phase41-status" });
+      const res = await request("GET", "/api/loop/status?loopId=phase41-status");
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        success: boolean;
+        data: {
+          processedCount?: number;
+          failedCount?: number;
+          totalEvaluated: number;
+        };
+      };
+      expect(body.data.processedCount).toBeDefined();
+      expect(body.data.failedCount).toBeDefined();
+      // Test FakePrisma returns 0 candidates by default.
+      expect(body.data.processedCount).toBe(0);
+      expect(body.data.failedCount).toBe(0);
+    });
+
+    it("/progress response includes processedCount and failedCount", async () => {
+      await request("POST", "/api/loop/start", { loopId: "phase41-progress" });
+      const res = await request("GET", "/api/loop/progress?loopId=phase41-progress");
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        success: boolean;
+        data: { processedCount?: number; failedCount?: number };
+      };
+      expect(body.data.processedCount).toBeDefined();
+      expect(body.data.failedCount).toBeDefined();
+    });
+
+    it("/candidates response is wrapped in { data, processedCount, failedCount }", async () => {
+      const res = await request("GET", "/api/loop/candidates?loopId=does-not-exist");
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        success: boolean;
+        data: unknown[];
+        processedCount: number;
+        failedCount: number;
+      };
+      expect(Array.isArray(body.data)).toBe(true);
+      expect(typeof body.processedCount).toBe("number");
+      expect(typeof body.failedCount).toBe("number");
+      // No iterations → both counts zero.
+      expect(body.processedCount).toBe(0);
+      expect(body.failedCount).toBe(0);
+    });
+  });
+
+  // ─── Phase 4.2 — /loop initial-load behavior ─────────────────────
+  describe("Phase 4.2 — /loop initial-load behavior", () => {
+    it("A. empty DB: /active returns null and does not create any state", async () => {
+      const res = await request("GET", "/api/loop/active");
+      expect(res.status).toBe(200);
+      const body = res.body as { success: boolean; data: unknown };
+      expect(body.data).toBeNull();
+      // No side-effects: still no loopRunState rows in the FakePrisma.
+      expect(prisma.loopRunStates.size).toBe(0);
+    });
+
+    it("B. pointer to existing loop: /active returns that loop regardless of status", async () => {
+      // Stopped loop that the user explicitly followed.
+      prisma.loopRunStates.set("historical-stopped", {
+        loopId: "historical-stopped",
+        status: "STOPPED_NO_IMPROVEMENT",
+        currentIteration: 6,
+        maxIterations: 20,
+        maxCandidates: 100,
+        totalEvaluated: 27,
+        noImprovementCount: 27,
+        noImprovementCap: 25,
+        bestScoreSoFar: 7.95,
+        bestStrategyVersionId: "sv-1",
+        bestStrategySymbolId: "sym-1",
+        bestStrategyTimeframe: "1h",
+        startedAt: new Date("2026-09-06T04:47:24.856Z"),
+        updatedAt: new Date("2026-09-06T05:06:43.516Z"),
+      });
+      (prisma as unknown as { loopActivePointers: Map<number, { id: number; loopId: string; updatedAt: Date }> }).loopActivePointers = new Map([
+        [1, { id: 1, loopId: "historical-stopped", updatedAt: new Date() }],
+      ]);
+
+      const res = await request("GET", "/api/loop/active");
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        success: boolean;
+        data: { loopId: string; status: string; source: string };
+      };
+      expect(body.data.loopId).toBe("historical-stopped");
+      expect(body.data.status).toBe("STOPPED_NO_IMPROVEMENT");
+      expect(body.data.source).toBe("pointer");
+    });
+
+    it("C. stale pointer: falls back to most-recently-updated loopRunState (any status)", async () => {
+      // Stale pointer that points to a loop no longer in DB.
+      (prisma as unknown as { loopActivePointers: Map<number, { id: number; loopId: string; updatedAt: Date }> }).loopActivePointers = new Map([
+        [1, { id: 1, loopId: "ghost-loop", updatedAt: new Date() }],
+      ]);
+      // One loopRunState row — a stopped historical loop. Even
+      // though there's no RUNNING row, this MUST be returned.
+      prisma.loopRunStates.set("only-stopped", {
+        loopId: "only-stopped",
+        status: "STOPPED_MAX_CANDIDATES",
+        currentIteration: 20,
+        maxIterations: 20,
+        maxCandidates: 100,
+        totalEvaluated: 100,
+        noImprovementCount: 0,
+        noImprovementCap: 25,
+        bestScoreSoFar: 4.5,
+        bestStrategyVersionId: null,
+        bestStrategySymbolId: null,
+        bestStrategyTimeframe: null,
+        startedAt: new Date("2026-09-05T10:00:00.000Z"),
+        updatedAt: new Date("2026-09-05T12:00:00.000Z"),
+      });
+
+      const res = await request("GET", "/api/loop/active");
+      const body = res.body as {
+        success: boolean;
+        data: { loopId: string; status: string; source: string };
+      };
+      expect(body.data.loopId).toBe("only-stopped");
+      expect(body.data.status).toBe("STOPPED_MAX_CANDIDATES");
+      expect(body.data.source).toBe("latest-historical");
+    });
+
+    it("D. regression guard: a stale RUNNING row is NOT auto-restored via the fallback path", async () => {
+      // Phase 4.2 regression: the previous implementation returned
+      // the most-recently-updated RUNNING/PAUSED loop from the
+      // fallback. With the new rule, a stale RUNNING loop is only
+      // returned if (a) the user explicitly pointed at it, or
+      // (b) it's also the most-recently-updated row of any status.
+      prisma.loopRunStates.set("stale-running", {
+        loopId: "stale-running",
+        status: "RUNNING",
+        currentIteration: 1,
+        maxIterations: 20,
+        maxCandidates: 100,
+        totalEvaluated: 16,
+        noImprovementCount: 0,
+        noImprovementCap: 25,
+        bestScoreSoFar: 8.85,
+        bestStrategyVersionId: null,
+        bestStrategySymbolId: null,
+        bestStrategyTimeframe: null,
+        startedAt: new Date("2026-09-04T14:01:53.000Z"),
+        // older updatedAt than `fresh-stopped` below
+        updatedAt: new Date("2026-09-04T14:07:31.000Z"),
+      });
+      prisma.loopRunStates.set("fresh-stopped", {
+        loopId: "fresh-stopped",
+        status: "STOPPED_NO_IMPROVEMENT",
+        currentIteration: 6,
+        maxIterations: 20,
+        maxCandidates: 100,
+        totalEvaluated: 27,
+        noImprovementCount: 27,
+        noImprovementCap: 25,
+        bestScoreSoFar: 7.95,
+        bestStrategyVersionId: "sv-1",
+        bestStrategySymbolId: null,
+        bestStrategyTimeframe: null,
+        startedAt: new Date("2026-09-06T04:47:24.000Z"),
+        updatedAt: new Date("2026-09-06T05:06:43.000Z"),
+      });
+      // No pointer.
+      (prisma as unknown as { loopActivePointers: Map<number, { id: number; loopId: string; updatedAt: Date }> }).loopActivePointers = new Map();
+
+      const res = await request("GET", "/api/loop/active");
+      const body = res.body as {
+        success: boolean;
+        data: { loopId: string; status: string; source: string };
+      };
+      // The most-recently-updated row is `fresh-stopped`, not the
+      // 2-day-old stale RUNNING row.
+      expect(body.data.loopId).toBe("fresh-stopped");
+      expect(body.data.status).toBe("STOPPED_NO_IMPROVEMENT");
+    });
+
+    it("E. GET /status with no state returns 404 and the frontend shows empty state", async () => {
+      const res = await request("GET", "/api/loop/status?loopId=does-not-exist");
+      expect(res.status).toBe(404);
     });
   });
 

@@ -30,6 +30,11 @@ import {
 import { on, connect } from '../lib/socket';
 import { HttpError } from '../lib/http';
 
+function formatWinrate(winRate: number): string {
+  const pct = winRate <= 1 ? winRate * 100 : winRate;
+  return `${pct.toFixed(2)}%`;
+}
+
 export default function Leaderboard() {
   const [symbolFilter, setSymbolFilter] = useState<string>('ALL');
   const [timeframeFilter, setTimeframeFilter] = useState<string>('ALL');
@@ -238,7 +243,7 @@ export default function Leaderboard() {
               </div>
               <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-slate-100 text-xs font-bold">
                 <div>Return: <span className={top2.totalReturn >= 0 ? 'text-emerald-600' : 'text-red-500'}>{top2.totalReturn}%</span></div>
-                <div>Winrate: <span className="text-slate-800">{top2.winRate}%</span></div>
+                <div>Winrate: <span className="text-slate-800">{formatWinrate(top2.winRate)}</span></div>
               </div>
             </div>
           ) : <div />}
@@ -270,7 +275,7 @@ export default function Leaderboard() {
                 </div>
                 <div className="bg-amber-50/60 p-2 rounded-xl border border-amber-100">
                   <span className="text-[9px] text-amber-600 block">WINRATE</span>
-                  <span className="text-slate-800">{top1.winRate}%</span>
+                  <span className="text-slate-800">{formatWinrate(top1.winRate)}</span>
                 </div>
                 <div className="bg-amber-50/60 p-2 rounded-xl border border-amber-100">
                   <span className="text-[9px] text-amber-600 block">DRAWDOWN</span>
@@ -301,7 +306,7 @@ export default function Leaderboard() {
               </div>
               <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-slate-100 text-xs font-bold">
                 <div>Return: <span className={top3.totalReturn >= 0 ? 'text-emerald-600' : 'text-red-500'}>{top3.totalReturn}%</span></div>
-                <div>Winrate: <span className="text-slate-800">{top3.winRate}%</span></div>
+                <div>Winrate: <span className="text-slate-800">{formatWinrate(top3.winRate)}</span></div>
               </div>
             </div>
           ) : <div />}
@@ -380,7 +385,7 @@ export default function Leaderboard() {
                     <td className={`py-3 px-3 text-right font-extrabold ${item.totalReturn >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                       {item.totalReturn >= 0 ? '+' : ''}{item.totalReturn}%
                     </td>
-                    <td className="py-3 px-3 text-right text-slate-800">{item.winRate}%</td>
+                    <td className="py-3 px-3 text-right text-slate-800">{formatWinrate(item.winRate)}</td>
                     <td className="py-3 px-3 text-right text-red-500">-{item.maxDrawdown}%</td>
                     <td className="py-3 px-3 text-right text-slate-700">{item.numTrades}</td>
                     <td className="py-3 px-4 text-right font-black text-blue-600 text-sm">

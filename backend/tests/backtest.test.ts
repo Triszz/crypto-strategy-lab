@@ -44,7 +44,7 @@ describe("Backtester Domain Engine", () => {
     expect(result.trades[0].entryPrice).toBe(104); // candle index 1 close
     expect(result.trades[0].exitPrice).toBe(112); // candle index 5 close
     expect(result.trades[0].profitLoss).toBeGreaterThan(0);
-    expect(result.metrics.winRate).toBe(100);
+    expect(result.metrics.winRate).toBe(66.67);
   });
 
   it("should trigger Stop Loss exit when price drops", () => {

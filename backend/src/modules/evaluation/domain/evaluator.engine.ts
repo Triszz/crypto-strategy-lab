@@ -125,7 +125,8 @@ export class EvaluatorEngine {
 
     const totalReturn = (currentCapital - initialCapital) / initialCapital;
     const numTrades = trades.length;
-    const winRate = numTrades > 0 ? numWinningTrades / numTrades : 0;
+    // Laplace / Bayesian Smoothing to adjust winRate for small sample sizes: (numWinning + 1) / (numTrades + 2)
+    const winRate = (numWinningTrades + 1) / (numTrades + 2);
 
     // Calculate Sharpe Ratio (Risk-free rate = 0%)
     const avgReturn = returnsList.length > 0 ? returnsList.reduce((a, b) => a + b, 0) / returnsList.length : 0;

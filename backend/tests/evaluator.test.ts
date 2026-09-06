@@ -29,7 +29,7 @@ describe("EvaluatorEngine.calculateMetrics Unit Test Suite", () => {
     const res = EvaluatorEngine.calculateMetrics(trades, 10000);
     expect(res.finalCapital).toBe(10100);
     expect(res.totalReturn).toBe(0.01);
-    expect(res.winRate).toBe(1.0);
+    expect(res.winRate).toBe(0.6667);
     expect(res.maxDrawdown).toBe(0);
     expect(res.numWinningTrades).toBe(1);
     expect(res.numLosingTrades).toBe(0);
@@ -43,13 +43,13 @@ describe("EvaluatorEngine.calculateMetrics Unit Test Suite", () => {
     const res = EvaluatorEngine.calculateMetrics(trades, 10000);
     expect(res.finalCapital).toBe(9900);
     expect(res.totalReturn).toBe(-0.01);
-    expect(res.winRate).toBe(0);
+    expect(res.winRate).toBe(0.3333);
     expect(res.maxDrawdown).toBe(0.01);
     expect(res.numWinningTrades).toBe(0);
     expect(res.numLosingTrades).toBe(1);
   });
 
-  it("T.4: calculates winRate 0.6 for mixed 5 trades (3 win, 2 lose)", () => {
+  it("T.4: calculates winRate 0.5714 for mixed 5 trades (3 win, 2 lose) with Laplace Smoothing", () => {
     const trades: TradeInput[] = [
       { entryPrice: 100, exitPrice: 110, quantity: 1, profitLoss: 10, entryTime: 1, exitTime: 2, side: "BUY", position: "LONG" },
       { entryPrice: 110, exitPrice: 105, quantity: 1, profitLoss: -5, entryTime: 3, exitTime: 4, side: "BUY", position: "LONG" },
@@ -61,16 +61,16 @@ describe("EvaluatorEngine.calculateMetrics Unit Test Suite", () => {
     expect(res.numTrades).toBe(5);
     expect(res.numWinningTrades).toBe(3);
     expect(res.numLosingTrades).toBe(2);
-    expect(res.winRate).toBe(0.6);
+    expect(res.winRate).toBe(0.5714);
   });
 
-  it("T.5: calculates winRate 0 and high MDD when all trades are losing", () => {
+  it("T.5: calculates winRate 0.25 and high MDD when all 2 trades are losing", () => {
     const trades: TradeInput[] = [
       { entryPrice: 100, exitPrice: 90, quantity: 10, profitLoss: -100, entryTime: 1, exitTime: 2, side: "BUY", position: "LONG" },
       { entryPrice: 90, exitPrice: 80, quantity: 10, profitLoss: -100, entryTime: 3, exitTime: 4, side: "BUY", position: "LONG" },
     ];
     const res = EvaluatorEngine.calculateMetrics(trades, 10000);
-    expect(res.winRate).toBe(0);
+    expect(res.winRate).toBe(0.25);
     expect(res.numWinningTrades).toBe(0);
     expect(res.numLosingTrades).toBe(2);
     expect(res.maxDrawdown).toBeGreaterThan(0.015);

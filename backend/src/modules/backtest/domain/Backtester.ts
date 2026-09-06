@@ -249,7 +249,8 @@ export class Backtester {
     const losingTrades = trades.filter((t) => t.profitLoss <= 0);
 
     const totalReturn = ((currentCapital - initialCapital) / initialCapital) * 100;
-    const winRate = trades.length > 0 ? (winningTrades.length / trades.length) * 100 : 0;
+    // Laplace / Bayesian Smoothing: (winning + 1) / (total + 2) * 100
+    const winRate = trades.length > 0 ? ((winningTrades.length + 1) / (trades.length + 2)) * 100 : 0;
 
     const overallScore = Math.max(
       0,

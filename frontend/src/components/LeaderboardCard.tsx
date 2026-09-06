@@ -269,7 +269,7 @@ export default function LeaderboardCard({
                       ))}
                     </div>
                   </td>
-                  <td className="py-3 px-3 text-right font-bold text-emerald-600">
+                  <td className={`py-3 px-3 text-right font-bold ${item.totalReturn >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                     {profitText}
                   </td>
                   <td className="py-3 px-3 text-right font-bold text-slate-700">

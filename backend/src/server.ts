@@ -52,6 +52,12 @@ async function main(): Promise<void> {
   // Bootstrap the EvaluationWorker so it starts consuming jobs from the "evaluation" queue.
   const evaluationWorker = getEvaluationWorker();
   evaluationWorker.start();
+  // Reset Leaderboard & Active Loop Pointer on server startup so Leaderboard starts clean
+  const prisma = getPrismaClient();
+  await prisma.leaderboardEntry.deleteMany({}).catch(() => {});
+  await prisma.rankingHistory.deleteMany({}).catch(() => {});
+  await prisma.loopActivePointer.deleteMany({}).catch(() => {});
+
   new LeaderboardService(new PrismaLeaderboardRepository());
   const loopOrchestrator = new LoopOrchestratorService();
 

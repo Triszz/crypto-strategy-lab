@@ -103,4 +103,78 @@ describe("Backtester Domain Engine", () => {
     expect(result.trades).toHaveLength(1);
     expect(result.trades[0].exitReason).toBe("END_OF_DATA");
   });
+
+  it("should trigger intra-bar Stop Loss when candle low reaches SL price even if close recovers", () => {
+    const candles: CandleData[] = [
+      { openTime: 1000, closeTime: 1999, open: 100, high: 100, low: 100, close: 100, volume: 100 },
+      // Candle 2: low drops to 94 (triggering 5% SL at 95), but close recovers to 98
+      { openTime: 2000, closeTime: 2999, open: 100, high: 101, low: 94, close: 98, volume: 100 },
+    ];
+
+    const mockSignalFn: StrategySignalFunction = (_candles, index) => {
+      if (index === 0) return "BUY";
+      return "HOLD";
+    };
+
+    const result = backtester.run(candles, mockSignalFn, {
+      initialCapital: 1000,
+      stopLossPct: 5.0,
+      feePercent: 0,
+      slippageBps: 0,
+    });
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].exitReason).toBe("STOP_LOSS");
+    expect(result.trades[0].exitPrice).toBe(95);
+  });
+
+  it("should trigger intra-bar Take Profit when candle high reaches TP price even if close retraces", () => {
+    const candles: CandleData[] = [
+      { openTime: 1000, closeTime: 1999, open: 100, high: 100, low: 100, close: 100, volume: 100 },
+      // Candle 2: high spikes to 112 (triggering 10% TP at 110), but close retraces to 103
+      { openTime: 2000, closeTime: 2999, open: 100, high: 112, low: 99, close: 103, volume: 100 },
+    ];
+
+    const mockSignalFn: StrategySignalFunction = (_candles, index) => {
+      if (index === 0) return "BUY";
+      return "HOLD";
+    };
+
+    const result = backtester.run(candles, mockSignalFn, {
+      initialCapital: 1000,
+      takeProfitPct: 10.0,
+      feePercent: 0,
+      slippageBps: 0,
+    });
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].exitReason).toBe("TAKE_PROFIT");
+    expect(result.trades[0].exitPrice).toBe(110);
+  });
+
+  it("should trigger intra-bar Stop Loss and Take Profit correctly for SHORT position", () => {
+    const candles: CandleData[] = [
+      { openTime: 1000, closeTime: 1999, open: 100, high: 100, low: 100, close: 100, volume: 100 },
+      // Candle 2: high spikes to 106 (triggering 5% SL at 105 for SHORT)
+      { openTime: 2000, closeTime: 2999, open: 100, high: 106, low: 98, close: 99, volume: 100 },
+    ];
+
+    const mockSignalFn: StrategySignalFunction = (_candles, index) => {
+      if (index === 0) return "SELL";
+      return "HOLD";
+    };
+
+    const result = backtester.run(candles, mockSignalFn, {
+      initialCapital: 1000,
+      positionType: "SHORT",
+      stopLossPct: 5.0,
+      feePercent: 0,
+      slippageBps: 0,
+    });
+
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].direction).toBe("SHORT");
+    expect(result.trades[0].exitReason).toBe("STOP_LOSS");
+    expect(result.trades[0].exitPrice).toBe(105);
+  });
 });

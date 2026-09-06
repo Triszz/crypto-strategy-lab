@@ -137,23 +137,64 @@ function bestStrategyContext(s: Pick<LoopStatusResponse,
 
 /* ── Candidate history row ─────────────────────────────────────────────── */
 
+/**
+ * Phase 4.1: helper to display the score column. Three distinct
+ * states now:
+ *   - PENDING / RUNNING (c.status && !FAILED): "—" (not yet ready)
+ *   - FAILED: "FAILED" (red badge)
+ *   - DONE with numeric score: format as before
+ *
+ * Identity (strategyVersionId / implementationRef) is exposed in
+ * the title attribute so users can hover to see the authoritative
+ * key without it acting as a primary display element.
+ */
+function candidateScoreCell(c: LoopIterationData["candidates"][number]): {
+  text: string;
+  className: string;
+  title: string;
+} {
+  if (c.status === "FAILED") {
+    return {
+      text: "FAILED",
+      className: "text-rose-500 font-mono font-bold text-right w-20",
+      title: c.errorMessage ? `FAILED — ${c.errorMessage}` : "FAILED — evaluation unavailable",
+    };
+  }
+  return {
+    text: scoreDisplay(c.overallScore),
+    className: "text-slate-400 font-mono text-right w-16",
+    title: "",
+  };
+}
+
 function CandidateRow({ c }: { c: LoopIterationData["candidates"][number] }) {
+  const scoreCell = candidateScoreCell(c);
   return (
-    <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-4 gap-y-0.5 px-4 py-1.5 hover:bg-slate-50 rounded-lg transition-colors text-xs">
-      <span className="font-medium text-slate-700 truncate" title={c.strategyName}>
+    <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-4 gap-y-0.5 px-4 py-1.5 hover:bg-slate-50 rounded-lg transition-colors text-xs">
+      <span
+        className={
+          c.status === "FAILED"
+            ? "font-medium text-slate-400 line-through truncate"
+            : "font-medium text-slate-700 truncate"
+        }
+        title={`${c.strategyName} · ${c.implementationRef ?? ""}`}
+      >
         {c.strategyName}
       </span>
       <span className="text-slate-400 font-mono text-right w-16">
         {c.strategyType === "COMPOSITE" ? "COMPOSITE" : "BASE"}
       </span>
-      <span className="text-slate-400 font-mono text-right w-16">
-        {scoreDisplay(c.overallScore)}
+      <span className={scoreCell.className} title={scoreCell.title}>
+        {scoreCell.text}
       </span>
       <span className="text-slate-400 text-right w-20">
-        {formatSignedPercent(c.totalReturn)}
+        {c.status === "FAILED" ? "—" : formatSignedPercent(c.totalReturn)}
       </span>
       <span className="text-slate-400 text-right w-16">
-        {formatPercent(c.winRate)}
+        {c.status === "FAILED" ? "—" : formatPercent(c.winRate)}
+      </span>
+      <span className="text-slate-300 font-mono text-[10px] text-right w-28 truncate" title={c.implementationRef ?? ""}>
+        {c.implementationRef ?? "—"}
       </span>
     </div>
   );
@@ -170,9 +211,14 @@ function IterationSection({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
+  // Phase 4.1: best candidate = highest score, ignoring FAILED
+  // rows (they have null scores and would otherwise fall to `—`).
   const best = iter.candidates.reduce<typeof iter.candidates[number] | null>(
-    (prev, c) =>
-      !prev || (c.overallScore ?? -Infinity) > (prev.overallScore ?? -Infinity) ? c : prev,
+    (prev, c) => {
+      if (c.overallScore === null) return prev;
+      if (!prev || c.overallScore > (prev.overallScore ?? -Infinity)) return c;
+      return prev;
+    },
     null,
   );
   return (
@@ -191,7 +237,8 @@ function IterationSection({
           Iteration {iter.iterationIndex}
         </span>
         <span className="text-xs text-slate-400">
-          {iter.candidateCount} candidates · {iter.evaluatedCount} evaluated
+          {iter.candidateCount} candidates · {iter.successfulEvaluatedCount} succeeded
+          {iter.failedCount > 0 ? ` · ${iter.failedCount} failed` : ""}
         </span>
         {iter.bestScoreInIteration > 0 && (
           <span className="ml-auto text-xs font-mono text-slate-500">
@@ -214,12 +261,13 @@ function IterationSection({
       {isExpanded && (
         <div className="border-t border-slate-100">
           {/* Column headers */}
-          <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-4 gap-y-0.5 px-4 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-50">
+          <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-4 gap-y-0.5 px-4 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-50">
             <span>Strategy</span>
             <span className="text-right w-16">Type</span>
             <span className="text-right w-16">Score</span>
             <span className="text-right w-20">Return</span>
             <span className="text-right w-16">Win Rate</span>
+            <span className="text-right w-28">Identity</span>
           </div>
           {iter.candidates.length === 0 ? (
             <p className="px-4 py-3 text-xs text-slate-400 italic">No candidates yet.</p>
@@ -559,6 +607,10 @@ export default function Loop() {
     const openLoop = (id: string) => {
       setSearchParams({ loopId: id }, { replace: true });
       setLoopId(id);
+      // Phase 4.2: when the user explicitly picks a loop from
+      // Today's History, update the LoopActivePointer too so
+      // refresh/navigate-back lands on the same loop.
+      void safelyPersistActiveLoop(id);
     };
     return (
       <div className="p-6 flex flex-col gap-6 max-w-[1100px] mx-auto w-full">
@@ -567,8 +619,8 @@ export default function Loop() {
           <h2 className="text-lg font-extrabold text-slate-700">Continuous Strategy Loop</h2>
           <p className="text-sm text-slate-400 max-w-[560px]">
             {activeLoop
-              ? `Continuing active loop ${activeLoop.loopId} (status: ${activeLoop.status}). This loop was started earlier — opening /loop does not start a new one.`
-              : "No active loop is being followed. Start a new loop, or pick one from today's history below."}
+              ? `Continuing loop ${activeLoop.loopId} (status: ${activeLoop.status}). This loop was started earlier — opening /loop does not start a new one.`
+              : "No Continuous Loop has been run yet. Run a Combination to start a Continuous Loop, or pick one from today's history below."}
           </p>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 w-full">
@@ -683,8 +735,18 @@ export default function Loop() {
                     value={`${status.currentIteration} / ${status.maxIterations}`}
                   />
                   <MetricBox
-                    label="Candidates Checked"
-                    value={`${status.totalEvaluated} / ${status.maxCandidates}`}
+                    label="Candidates"
+                    value={`${status.processedCount} / ${status.maxCandidates}`}
+                    hint={
+                      status.failedCount > 0
+                        ? `${status.failedCount} failed`
+                        : undefined
+                    }
+                  />
+                  <MetricBox
+                    label="Evaluated"
+                    value={`${status.totalEvaluated}`}
+                    hint="LoopProcessedEvents"
                   />
                   <MetricBox
                     label="Current Iteration"

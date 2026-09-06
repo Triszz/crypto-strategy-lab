@@ -43,6 +43,19 @@ export interface LoopStatusResponse {
   currentIterationCandidateCount: number;
   /** Live count of evaluated candidates in the current iteration. */
   currentIterationEvaluatedCount: number;
+  /**
+   * Phase 4.1 — total candidate rows the loop worked on, summed
+   * across all iterations. Includes FAILED candidates. This is the
+   * authoritative "candidates processed" counter, distinct from
+   * `totalEvaluated` (which counts `LoopProcessedEvent` rows).
+   */
+  processedCount: number;
+  /**
+   * Phase 4.1 — number of `CandidateStrategy` rows in FAILED state
+   * for this loop. A failed candidate was still processed/attempted
+   * but did not produce a numeric evaluation result.
+   */
+  failedCount: number;
 }
 
 /** Loop progress — augments status with parent strategy id. */
@@ -53,12 +66,22 @@ export interface LoopProgressResponse extends LoopStatusResponse {
 /** Single candidate within an iteration. */
 export interface LoopCandidateItem {
   id: string;
+  /** Phase 4.1: authoritative identity fields (not used as keys). */
+  strategyVersionId: string;
+  implementationRef: string;
   strategyName: string;
   strategyType: string;
+  /**
+   * Phase 4.1: CandidateStrategy.status (PENDING / RUNNING / DONE /
+   * FAILED). The UI MUST distinguish FAILED from PENDING.
+   */
+  status: string;
+  experimentId: string | null;
   overallScore: number | null;
   totalReturn: number | null;
   winRate: number | null;
   maxDrawdown: number | null;
+  errorMessage: string | null;
 }
 
 /** One iteration's data including its candidate list. */
@@ -68,6 +91,17 @@ export interface LoopIterationData {
   parentStrategyVersionId: string;
   candidateCount: number;
   evaluatedCount: number;
+  /**
+   * Phase 4.1: number of candidates in this iteration that produced
+   * a numeric result (overallScore !== null). Distinct from
+   * `evaluatedCount` which counts `LoopProcessedEvent` rows.
+   */
+  successfulEvaluatedCount: number;
+  /**
+   * Phase 4.1: number of candidates in this iteration that reached
+   * terminal FAILED state without a numeric result.
+   */
+  failedCount: number;
   bestScoreInIteration: number;
   bestStrategyVersionId: string | null;
   completedAt: string | null;
@@ -185,7 +219,50 @@ export async function getLoopProgress(loopId: string): Promise<LoopProgressRespo
 
 /** Read all iterations with their candidate history for a loop. */
 export async function getLoopCandidates(loopId: string): Promise<LoopIterationData[]> {
-  return get<LoopIterationData[]>(`/api/loop/candidates?loopId=${encodeURIComponent(loopId)}`);
+  // Phase 4.1: backend wraps the iterations array inside
+  // `{ data, processedCount, failedCount }`. The frontend only
+  // needs the per-iteration data here; the loop-level counters
+  // are surfaced via `/api/loop/status`.
+  //
+  // Phase 4.2: defensively tolerate legacy array-shape responses
+  // (older backend builds without the wrap), and log when the
+  // payload arrives empty so the "0 iterations" regression is
+  // diagnosable from the browser console.
+  const wrapped = await get<{
+    data?: LoopIterationData[];
+    processedCount?: number;
+    failedCount?: number;
+  } | LoopIterationData[]>(
+    `/api/loop/candidates?loopId=${encodeURIComponent(loopId)}`,
+  );
+  let iters: LoopIterationData[] = [];
+  if (Array.isArray(wrapped)) {
+    // Legacy shape (plain array) — accepted for backward compat.
+    iters = wrapped;
+  } else if (wrapped && Array.isArray(wrapped.data)) {
+    iters = wrapped.data;
+  } else if (wrapped && Array.isArray((wrapped as { data?: unknown }).data)) {
+    iters = ((wrapped as { data: LoopIterationData[] }).data) ?? [];
+  } else if (wrapped == null) {
+    // null/undefined → no data.
+    iters = [];
+  } else {
+    // Unexpected shape. Log so we can diagnose from the browser.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[Loop] /api/loop/candidates returned unexpected shape for ${loopId}:`,
+      wrapped,
+    );
+    iters = [];
+  }
+  if (iters.length === 0) {
+    // eslint-disable-next-line no-console
+    console.info(
+      `[Loop] getLoopCandidates(${loopId}) returned 0 iterations. Raw payload:`,
+      wrapped,
+    );
+  }
+  return iters;
 }
 
 /** List all loops (most recent first). */

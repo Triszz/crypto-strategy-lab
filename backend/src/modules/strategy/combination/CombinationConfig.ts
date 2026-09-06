@@ -220,3 +220,62 @@ export function getCanonicalCompositeDisplayName(config: CombinationConfig): str
   });
   return `Composite · ${labels.join(" + ")}`;
 }
+
+/**
+ * Phase 4.1 — weight-aware variant of the canonical display name.
+ *
+ * The Phase 3.4 `getCanonicalCompositeDisplayName` deliberately
+ * ignored weights so the label identifies the *family* of strategies.
+ * This caused three different SVs whose components were
+ * `bollinger + rsi` with weights `0.5836/0.4164`,
+ * `0.5824/0.4176`, and `0.5632/0.4368` to render with the exact
+ * same label — the UI could not distinguish them, even though their
+ * `composite_components` rows and `StrategyVersion.id`s are
+ * distinct.
+ *
+ * This variant includes a *compact* normalized-weight digest so two
+ * SVs that differ ONLY in their weight distribution get
+ * distinguishable labels. The format is:
+ *
+ *   Composite · bollinger (58.36%) + rsi (41.64%)
+ *
+ * Properties:
+ *   - Deterministic: ordered by `position`, normalized to sum=1.
+ *   - Non-recursive: no parent-name prefix.
+ *   - Stable: same weights → same digest, byte-identical.
+ *   - Distinguishable: weight changes → different digest.
+ *   - Short: two-decimal weight digest; no parameter digest (params
+ *     are intentionally not part of the family label, see Phase 3.4).
+ *
+ * This helper does NOT replace `getCanonicalCompositeDisplayName`.
+ * The mapper still uses the weight-free version so the healing
+ * contract "same components → same family label" is preserved.
+ * The API DTO uses this variant so the UI can distinguish
+ * same-family-different-weight candidates.
+ */
+export function getCanonicalCompositeDisplayNameWithWeights(
+  config: CombinationConfig,
+): string {
+  if (!config || !Array.isArray(config.components) || config.components.length === 0) {
+    return "Composite";
+  }
+  const registry = getStrategyRegistry();
+  const ordered = [...config.components].sort(
+    (a, b) => (a.position ?? 0) - (b.position ?? 0),
+  );
+  // Normalize weights so they always sum to 1.0 (the engine does
+  // the same; we mirror the convention here so the digest reflects
+  // the *effective* contribution of each component).
+  const rawSum = ordered.reduce((acc, c) => acc + (Number(c.weight) || 0), 0);
+  const norm = rawSum > 0 ? rawSum : 1;
+  const labels = ordered.map((c) => {
+    const registered = registry.resolve(c.strategyId);
+    const baseLabel =
+      registered && typeof registered.name === "string" && registered.name.length > 0
+        ? registered.name
+        : c.strategyId.replace(/^strategy\./, "");
+    const w = (Number(c.weight) || 0) / norm;
+    return `${baseLabel} (${(w * 100).toFixed(2)}%)`;
+  });
+  return `Composite · ${labels.join(" + ")}`;
+}

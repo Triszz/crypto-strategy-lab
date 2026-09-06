@@ -197,6 +197,11 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
   });
 
   // ── GET /api/loop/status?loopId=… ─────────────────────────────────────────
+  // Phase 4.1: also returns `processedCount` and `failedCount` —
+  // sum of `iter.candidateCount` and sum of FAILED
+  // `CandidateStrategy` rows for this loop. These are the
+  // authoritative counters for "candidates the loop worked on"
+  // and "candidates that did not produce a numeric result".
   router.get("/status", async (req: Request, res: Response, next: NextFunction) => {
     const loopId = (req.query["loopId"] as string | undefined) ?? undefined;
     if (!loopId) {
@@ -211,7 +216,34 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
         res.status(404).json({ success: false, error: "NOT_FOUND" });
         return;
       }
-      res.json({ success: true as const, data: state });
+      // Phase 4.1: loop-level processed/failed counts. The
+      // CandidateStrategy table has no loopId column; we go
+      // through LoopIteration.searchRunId.
+      const loopIterations = await prisma.loopIteration.findMany({
+        where: { loopId },
+        select: { searchRunId: true },
+      });
+      const loopSearchRunIds = loopIterations
+        .map((li) => li.searchRunId)
+        .filter((id): id is string => !!id);
+      const totalProcessed = loopSearchRunIds.length === 0
+        ? 0
+        : await prisma.candidateStrategy.count({
+            where: { searchRunId: { in: loopSearchRunIds } },
+          });
+      const totalFailed = loopSearchRunIds.length === 0
+        ? 0
+        : await prisma.candidateStrategy.count({
+            where: { searchRunId: { in: loopSearchRunIds }, status: "FAILED" },
+          });
+      res.json({
+        success: true as const,
+        data: {
+          ...state,
+          processedCount: totalProcessed,
+          failedCount: totalFailed,
+        },
+      });
     } catch (err) {
       log.error({ err, loopId }, "loop.api.status.error");
       next(err);
@@ -219,6 +251,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
   });
 
   // ── GET /api/loop/progress?loopId=… ──────────────────────────────────────
+  // Phase 4.1: also returns `processedCount` and `failedCount`.
   router.get("/progress", async (req: Request, res: Response, next: NextFunction) => {
     const loopId = (req.query["loopId"] as string | undefined) ?? undefined;
     if (!loopId) {
@@ -235,12 +268,31 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
         where: { loopId },
         orderBy: { iterationIndex: "desc" },
       });
+      const loopIterations = await prisma.loopIteration.findMany({
+        where: { loopId },
+        select: { searchRunId: true },
+      });
+      const loopSearchRunIds = loopIterations
+        .map((li) => li.searchRunId)
+        .filter((id): id is string => !!id);
+      const processedCount = loopSearchRunIds.length === 0
+        ? 0
+        : await prisma.candidateStrategy.count({
+            where: { searchRunId: { in: loopSearchRunIds } },
+          });
+      const failedCount = loopSearchRunIds.length === 0
+        ? 0
+        : await prisma.candidateStrategy.count({
+            where: { searchRunId: { in: loopSearchRunIds }, status: "FAILED" },
+          });
       res.json({
         success: true as const,
         data: {
           ...state,
           lastIterationParentStrategyVersionId:
             lastIter?.parentStrategyVersionId ?? null,
+          processedCount,
+          failedCount,
         },
       });
     } catch (err) {
@@ -328,7 +380,12 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
             completedAt: iter.completedAt?.toISOString() ?? null,
           };
           if (!iter.searchRunId) {
-            return { ...base, candidates: [] };
+            return {
+              ...base,
+              candidates: [],
+              successfulEvaluatedCount: 0,
+              failedCount: 0,
+            };
           }
           const candidates = await prisma.candidateStrategy.findMany({
             where: { searchRunId: iter.searchRunId },
@@ -336,6 +393,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
             include: {
               strategyVersion: {
                 select: {
+                  id: true,
                   name: true,
                   implementationRef: true,
                   definition: { select: { type: true } },
@@ -352,17 +410,26 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
             candidates.map(async (c) => {
               const experiments = await prisma.experiment.findMany({
                 where: { candidateId: c.id },
-                select: { id: true },
+                select: { id: true, errorMessage: true, status: true },
               });
               if (experiments.length === 0) {
+                // Phase 4.1: a candidate with zero Experiment rows is
+                // either still RUNNING, PENDING, or FAILED. Surface the
+                // CandidateStrategy.status verbatim so the UI can render
+                // "FAILED" instead of the ambiguous "—".
                 return {
                   id: c.id,
+                  strategyVersionId: c.strategyVersionId,
                   strategyName: c.strategyVersion.name,
+                  implementationRef: c.strategyVersion.implementationRef,
                   strategyType: c.strategyVersion.definition.type,
+                  status: c.status,
+                  experimentId: null,
                   overallScore: null,
                   totalReturn: null,
                   winRate: null,
                   maxDrawdown: null,
+                  errorMessage: null,
                 };
               }
 
@@ -395,33 +462,72 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
               if (!authoritativeExperimentId) {
                 return {
                   id: c.id,
+                  strategyVersionId: c.strategyVersionId,
                   strategyName: c.strategyVersion.name,
+                  implementationRef: c.strategyVersion.implementationRef,
                   strategyType: c.strategyVersion.definition.type,
+                  status: c.status,
+                  experimentId: null,
                   overallScore: null,
                   totalReturn: null,
                   winRate: null,
                   maxDrawdown: null,
+                  errorMessage: null,
                 };
               }
               const result = await prisma.backtestResult.findFirst({
                 where: { experimentId: authoritativeExperimentId },
               });
+              const expRow = experiments.find((e) => e.id === authoritativeExperimentId);
               return {
                 id: c.id,
+                strategyVersionId: c.strategyVersionId,
                 strategyName: c.strategyVersion.name,
+                implementationRef: c.strategyVersion.implementationRef,
                 strategyType: c.strategyVersion.definition.type,
+                status: c.status,
+                experimentId: authoritativeExperimentId,
                 overallScore: result ? Number(result.overallScore) : null,
                 totalReturn: result ? Number(result.totalReturn) : null,
                 winRate: result ? Number(result.winRate) : null,
                 maxDrawdown: result ? Number(result.maxDrawdown) : null,
+                errorMessage: expRow?.errorMessage ?? null,
               };
             }),
           );
-          return { ...base, candidates: withMetrics };
+          // Phase 4.1: per-iteration explicit counters.
+          const successfulCount = withMetrics.filter(
+            (c) => c.status === "DONE" && c.overallScore !== null,
+          ).length;
+          const failedCount = withMetrics.filter((c) => c.status === "FAILED").length;
+          return {
+            ...base,
+            candidates: withMetrics,
+            successfulEvaluatedCount: successfulCount,
+            failedCount,
+          };
         }),
       );
 
-      res.json({ success: true as const, data: iterationsWithCandidates });
+      // Phase 4.1: loop-level processed/failed counts derived from
+      // the per-iteration candidate rows. `processedCount` is the
+      // authoritative "candidates the loop actually worked on";
+      // `totalFailedCount` is the sum of FAILED candidates.
+      const totalProcessedCount = iterationsWithCandidates.reduce(
+        (acc, it) => acc + it.candidates.length,
+        0,
+      );
+      const totalFailedCount = iterationsWithCandidates.reduce(
+        (acc, it) => acc + it.failedCount,
+        0,
+      );
+
+      res.json({
+        success: true as const,
+        data: iterationsWithCandidates,
+        processedCount: totalProcessedCount,
+        failedCount: totalFailedCount,
+      });
     } catch (err) {
       log.error({ err, loopId }, "loop.api.candidates.error");
       next(err);
@@ -566,16 +672,38 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
       next(err);
     }
   });
-  // Phase 3.3: returns the user's currently active RUNNING or PAUSED
-  // loop, if any. Used by the frontend Loop page to auto-restore the
-  // followed loop after navigation. Precedence:
-  //   1. Explicit LoopActivePointer (set on startLoop). If the pointer
-  //      points to a still-existing loop that is RUNNING/PAUSED, that
-  //      wins.
-  //   2. Most recently-updated RUNNING/PAUSED loopRunState.
-  //   3. null → the frontend shows the "No Loop Selected" / history state.
+  // Phase 4.2: GET /api/loop/active.
+  //
+  // The /loop page uses this endpoint for AUTO-RESTORE only.
+  // Its contract is: "is there a loop the user is currently
+  // following that we should show?"
+  //
+  // Pre-Phase-4.2 behavior caused a regression: a stale
+  // RUNNING/PAUSED loop in the DB (e.g. left over from a
+  // previous backend run, a crash, or an interrupted test) was
+  // auto-restored on every /loop visit, even if the user had
+  // never intentionally started that loop in this session.
+  //
+  // New rule:
+  //   1. LoopActivePointer wins. If it points to an existing
+  //      loop, return that loop REGARDLESS of its terminal
+  //      status — the user explicitly followed this loop and
+  //      we owe them a faithful display. The pointer is the
+  //      user's intent, not the loop's runtime status.
+  //   2. If the pointer is missing OR points to a loop that no
+  //      longer exists in LoopRunState, fall back to the most
+  //      recently-updated loop of ANY status (RUNNING, PAUSED,
+  //      or STOPPED_*). This is the "latest historical loop"
+  //      rule from the Phase 4.2 spec — never resurrect a
+  //      stale RUNNING flag just because one happens to be in
+  //      the DB.
+  //   3. If no loop has ever been recorded, return null.
+  //
+  // This endpoint NEVER starts, resumes, mutates, or creates
+  // anything. It is a read-only discovery helper.
   router.get("/active", async (_req: Request, res: Response, next: NextFunction) => {
     try {
+      // (1) LoopActivePointer wins if it points to an existing loop.
       const pointer = await prisma.loopActivePointer.findUnique({
         where: { id: 1 },
       });
@@ -583,7 +711,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
         const row = await prisma.loopRunState.findUnique({
           where: { loopId: pointer.loopId },
         });
-        if (row && (row.status === "RUNNING" || row.status === "PAUSED")) {
+        if (row) {
           res.json({
             success: true as const,
             data: {
@@ -598,8 +726,13 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
           return;
         }
       }
+
+      // (2) Latest historical loop — ANY status. The most recently
+      // updated row is the one the user most recently interacted
+      // with. We deliberately do NOT filter by status=RUNNING/PAUSED
+      // here; that filter is what caused the Phase 4.2 regression
+      // where a 2-day-old stale RUNNING row was auto-restored.
       const row = await prisma.loopRunState.findFirst({
-        where: { status: { in: ["RUNNING", "PAUSED"] } },
         orderBy: { updatedAt: "desc" },
       });
       if (!row) {
@@ -614,7 +747,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
           currentIteration: row.currentIteration,
           startedAt: row.startedAt.toISOString(),
           updatedAt: row.updatedAt.toISOString(),
-          source: "most-recent-running",
+          source: "latest-historical",
         },
       });
     } catch (err) {

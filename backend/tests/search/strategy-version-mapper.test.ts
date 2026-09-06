@@ -476,7 +476,10 @@ describe("StrategyVersionMapper — Phase 3.4 canonical composite name", () => {
 });
 
 // ─── Phase 3.4 — getCanonicalCompositeDisplayName direct suite ────────────
-import { getCanonicalCompositeDisplayName } from "../../src/modules/strategy/combination/CombinationConfig";
+import {
+  getCanonicalCompositeDisplayName,
+  getCanonicalCompositeDisplayNameWithWeights,
+} from "../../src/modules/strategy/combination/CombinationConfig";
 describe("getCanonicalCompositeDisplayName", () => {
   it("returns the same name for identical components regardless of caller name", () => {
     const a: CombinationConfig = {
@@ -509,5 +512,122 @@ describe("getCanonicalCompositeDisplayName", () => {
       ],
     };
     expect(getCanonicalCompositeDisplayName(cfg)).toMatch(/Moving Average.*RSI|ma.*rsi/);
+  });
+});
+
+// ─── Phase 4.1 — weight-aware canonical name suite ───────────────────────
+describe("getCanonicalCompositeDisplayNameWithWeights", () => {
+  it("produces distinguishable labels for same-family different-weight composites", () => {
+    const a: CombinationConfig = {
+      id: "strategy.composite.loop.A",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.bollinger", weight: 0.5836, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.4164, position: 1 },
+      ],
+    };
+    const b: CombinationConfig = {
+      id: "strategy.composite.loop.B",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.bollinger", weight: 0.5824, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.4176, position: 1 },
+      ],
+    };
+    const c: CombinationConfig = {
+      id: "strategy.composite.loop.C",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.bollinger", weight: 0.5632, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.4368, position: 1 },
+      ],
+    };
+    // The Phase 3.4 weight-free helper collapses all three.
+    expect(getCanonicalCompositeDisplayName(a)).toBe(
+      getCanonicalCompositeDisplayName(b),
+    );
+    expect(getCanonicalCompositeDisplayName(b)).toBe(
+      getCanonicalCompositeDisplayName(c),
+    );
+    // The Phase 4.1 helper MUST distinguish all three.
+    const na = getCanonicalCompositeDisplayNameWithWeights(a);
+    const nb = getCanonicalCompositeDisplayNameWithWeights(b);
+    const nc = getCanonicalCompositeDisplayNameWithWeights(c);
+    expect(na).not.toBe(nb);
+    expect(nb).not.toBe(nc);
+    expect(na).not.toBe(nc);
+  });
+
+  it("includes a per-component normalized weight digest", () => {
+    const cfg: CombinationConfig = {
+      id: "strategy.composite.loop.weights",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.ma", weight: 0.5, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.5, position: 1 },
+      ],
+    };
+    const label = getCanonicalCompositeDisplayNameWithWeights(cfg);
+    expect(label).toMatch(/50\.00%/);
+  });
+
+  it("normalizes non-1.0 weights so the digest sums to 100%", () => {
+    const cfg: CombinationConfig = {
+      id: "strategy.composite.loop.norm",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.ma", weight: 4, position: 0 },
+        { strategyId: "strategy.rsi", weight: 6, position: 1 },
+      ],
+    };
+    const label = getCanonicalCompositeDisplayNameWithWeights(cfg);
+    // normalized to 40% / 60%
+    expect(label).toMatch(/40\.00%/);
+    expect(label).toMatch(/60\.00%/);
+  });
+
+  it("returns 'Composite' for empty components", () => {
+    const cfg: CombinationConfig = {
+      id: "strategy.composite.loop.empty",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [],
+    };
+    expect(getCanonicalCompositeDisplayNameWithWeights(cfg)).toBe("Composite");
+  });
+
+  it("is deterministic across repeated calls", () => {
+    const cfg: CombinationConfig = {
+      id: "strategy.composite.loop.det",
+      name: "x",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.bollinger", weight: 0.5836, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.4164, position: 1 },
+      ],
+    };
+    expect(getCanonicalCompositeDisplayNameWithWeights(cfg)).toBe(
+      getCanonicalCompositeDisplayNameWithWeights(cfg),
+    );
+  });
+
+  it("non-recursive — caller name does not appear in the label", () => {
+    const cfg: CombinationConfig = {
+      id: "strategy.composite.loop.rec",
+      name: "Domain-guided bollinger + rsi → Bollinger Bands + RSI → ... → ... → ...",
+      operator: CombinationOperator.WEIGHTED,
+      components: [
+        { strategyId: "strategy.bollinger", weight: 0.5, position: 0 },
+        { strategyId: "strategy.rsi", weight: 0.5, position: 1 },
+      ],
+    };
+    const label = getCanonicalCompositeDisplayNameWithWeights(cfg);
+    expect(label).not.toMatch(/→/);
+    expect(label).not.toMatch(/Domain-guided/);
   });
 });

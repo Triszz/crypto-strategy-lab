@@ -136,4 +136,5 @@ Thực hiện kịch bản Demo hoàn chỉnh theo các bước sau:
 1. **Architecture Document**: [docs/ARCHITECTURE_DOCUMENT.md](./docs/ARCHITECTURE_DOCUMENT.md)
 2. **Architectural Decision Records (ADR)**: [docs/ADR.md](./docs/ADR.md)
 3. **Rubric & Proof Matrix**: [docs/RUBRIC_VERIFICATION_MATRIX.md](./docs/RUBRIC_VERIFICATION_MATRIX.md)
-4. **Báo cáo Chi tiết**: [docs/Crypto Strategy Lab – Đồ án cuối kỳ.md](./docs/Crypto%20Strategy%20Lab%20%E2%80%93%20%C4%90%E1%BB%93%20%C3%A1n%20cu%E1%BB%91i%20k%E1%BB%B3.md)
+4. **Phiếu Tự Đánh Giá (Self-Assessment Scorecard)**: [docs/SELF_ASSESSMENT_SCORECARD.md](./docs/SELF_ASSESSMENT_SCORECARD.md)
+5. **Báo cáo Chi tiết**: [docs/Crypto Strategy Lab – Đồ án cuối kỳ.md](./docs/Crypto%20Strategy%20Lab%20%E2%80%93%20%C4%90%E1%BB%93%20%C3%A1n%20cu%E1%BB%91i%20k%E1%BB%B3.md)

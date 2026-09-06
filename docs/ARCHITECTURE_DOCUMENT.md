@@ -36,46 +36,73 @@ Hệ thống Backend được xây dựng theo mô hình **Modular Monolith** k�
 
 ```mermaid
 graph TD
-    subgraph Frontend Container
-        ReactUI[React 18 SPA + Vite + TailwindCSS + Lightweight Charts]
+    %% --- FRONTEND ---
+    subgraph Frontend ["Frontend Container"]
+        ReactUI["React 18 SPA (Vite + TailwindCSS + Lightweight Charts)"]
     end
 
-    subgraph Transport Layer
-        ExpressApp[Express.js REST Gateway]
-        SocketIO[Socket.IO Realtime Gateway]
+    %% --- TRANSPORT LAYER ---
+    subgraph Transport ["Transport Layer"]
+        ExpressApp["Express.js REST Gateway"]
+        SocketIO["Socket.IO Realtime Gateway"]
     end
 
-    subgraph Backend Core Modular Monolith
-        MarketData[Market Data Module]
-        StrategyEngine[Strategy Engine & Plugins]
-        BacktestEngine[Backtest Engine]
-        SearchEngine[Strategy Search Engine]
-        LeaderboardModule[Leaderboard Module]
-        NewsCrawler[News Crawler Engine]
-        SentimentModule[Sentiment Analysis Service]
-        LoopController[Continuous Loop Controller]
+    %% --- BACKEND MONOLITH ---
+    subgraph Backend ["Backend Core (Modular Monolith)"]
+        subgraph DataPipeline ["Data & Sentiment Pipeline"]
+            MarketData["Market Data Module"]
+            NewsCrawler["News Crawler Engine"]
+            SentimentModule["Sentiment Analysis Service"]
+        end
+
+        subgraph CoreEngine ["Strategy & Automation Engine"]
+            LoopController["Continuous Loop Controller"]
+            SearchEngine["Strategy Search Engine"]
+            StrategyEngine["Strategy Engine & Plugins"]
+            BacktestEngine["Backtest Engine"]
+            LeaderboardModule["Leaderboard Module"]
+        end
     end
 
-    subgraph Storage & Infrastructure
-        Postgres[(PostgreSQL Database)]
-        RedisCache[(Redis Cache & Event Outbox)]
-        BullQueue[BullMQ Worker Queue]
+    %% --- STORAGE & INFRASTRUCTURE ---
+    subgraph Storage ["Storage & Infrastructure"]
+        RedisCache[("Redis Cache & Outbox")]
+        BullQueue["BullMQ Worker Queue"]
+        Postgres[("PostgreSQL Database")]
     end
 
+    %% --- CONNECTIONS ---
     ReactUI <--> ExpressApp
     ReactUI <--> SocketIO
-    ExpressApp --> StrategyEngine & BacktestEngine & SearchEngine & NewsCrawler & LoopController
-    SocketIO <--> MarketData & LeaderboardModule & LoopController
+
+    ExpressApp --> LoopController
+    ExpressApp --> SearchEngine
+    ExpressApp --> StrategyEngine
+    ExpressApp --> BacktestEngine
+    ExpressApp --> NewsCrawler
+
+    SocketIO <--> MarketData
+    SocketIO <--> LeaderboardModule
+    SocketIO <--> LoopController
 
     MarketData --> RedisCache
     NewsCrawler --> BullQueue
     BullQueue --> SentimentModule
     SentimentModule --> StrategyEngine
+
+    LoopController --> SearchEngine
+    LoopController --> BacktestEngine
+    LoopController --> LeaderboardModule
     SearchEngine --> BacktestEngine
     BacktestEngine --> LeaderboardModule
-    LoopController --> SearchEngine & BacktestEngine & LeaderboardModule
 
-    MarketData & StrategyEngine & BacktestEngine & LeaderboardModule & NewsCrawler & SentimentModule & LoopController --> Postgres
+    MarketData --> Postgres
+    StrategyEngine --> Postgres
+    BacktestEngine --> Postgres
+    LeaderboardModule --> Postgres
+    NewsCrawler --> Postgres
+    SentimentModule --> Postgres
+    LoopController --> Postgres
 ```
 
 ---
@@ -94,11 +121,14 @@ graph TD
         LP["Continuous Loop Component<br/>(LoopController, EvolveEngine)"]
     end
 
-    MD -->|OHLCV Data| SE & BT
+    MD -->|OHLCV Data| SE
+    MD -->|OHLCV Data| BT
     NC -->|Sentiment Score| SE
     SS -->|Candidate Strategies| BT
     BT -->|Performance Metrics| LB
-    LP -->|Orchestrates| SS & BT & LB
+    LP -->|Orchestrates| SS
+    LP -->|Orchestrates| BT
+    LP -->|Orchestrates| LB
 ```
 
 ### 3.1 Market Data Module
@@ -111,13 +141,12 @@ graph TD
   - Relative Strength Index (RSI)
   - Bollinger Bands (BB)
   - Support & Resistance (SR)
-  - Smart Money Concepts (SMC) & Wyckoff Pattern
   - SentimentStrategy (Tích hợp điểm cảm xúc thị trường)
 - **Cơ chế Plugin**: Cho phép đăng ký mới bất kỳ chiến lược nào qua `StrategyRegistry` mà không làm thay đổi mã nguồn hiện có (Open-Closed Principle).
-- **Composite Strategy**: Kết hợp các tín hiệu đơn lẻ thành chiến lược phức hợp dựa trên trọng số (`WeightedCombinationStrategy`) hoặc các toán tử logic (`AND`, `OR`).
+- **Composite Strategy**: Kết hợp các tín hiệu đơn lẻ thành chiến lược phức hợp dựa trên trọng số (`WeightedCombinationStrategy`).
 
 ### 3.3 Strategy Search Engine
-- **Trách nhiệm**: Tự động sinh ra không gian chiến lược (Strategy Search Space) từ các siêu tham số (Hyperparameters) và tổ hợp chỉ báo.
+- **Trách nhiệm**: Tự động sinh ra không gian chiến lược  từ các  tham số và tổ hợp.
 - **Thuật toán Tìm kiếm**:
   - **Random Search**: Lấy mẫu ngẫu nhiên tổ hợp tham số và trọng số.
   - **Domain-guided Search**: Sử dụng tri thức chuyên ngành để ưu tiên các cặp chỉ báo có tính bổ trợ cao (ví dụ: Trend-following MA kết hợp với Oscillator RSI).
@@ -130,7 +159,7 @@ graph TD
   - Max Drawdown - MDD (%)
   - Sharpe Ratio
   - Profit Factor & Total Trades
-- **Tách biệt Trạng thái**: Đảm bảo không bị hiện tượng Look-ahead Bias (xem trước dữ liệu tương lai).
+
 
 ### 3.5 Leaderboard Module
 - **Trách nhiệm**: Lưu trữ, quản lý và xếp hạng danh sách Top-K chiến lược hiệu quả nhất dựa trên chỉ số tổng hợp (Composite Score / Sharpe Ratio).
@@ -140,7 +169,6 @@ graph TD
 - **Trách nhiệm**:
   - `News Crawler`: Thu thập bài viết từ RSS / NewsAPI theo chu kỳ. Có cơ chế `CircuitBreaker` tự khắc phục sự cố khi nguồn tin bị hỏng.
   - `Sentiment Analysis Service`: Gửi nội dung tin tức tới Google Gemini LLM API để phân loại cảm xúc (Positive, Neutral, Negative) và trả về điểm số từ -1.0 đến +1.0.
-  - `Outbox Worker`: Áp dụng mẫu Outbox Pattern với Redis/BullMQ để đảm bảo tin tức được xử lý tin cậy ngay cả khi mất kết nối mạng.
 
 ### 3.7 Continuous Strategy Loop Engine
 - **Trách nhiệm**: Điều phối chu trình tự động hóa khép kín:
@@ -178,8 +206,8 @@ sequenceDiagram
 ```
 
 ### Mô tả Dòng dữ liệu:
-1. **Dữ liệu Nến**: Nhận từ Binance WebSocket -> Chuẩn hóa định dạng OHLCV -> Cache trên Redis -> Lưu trữ dài hạn trong PostgreSQL.
-2. **Dữ liệu Tin tức & Cảm xúc**: Crawl bài báo -> Đưa vào Outbox Queue -> Worker gọi Gemini API -> Lưu điểm Sentiment theo mốc thời gian -> Cung cấp cho SentimentStrategy.
+1. **Dữ liệu Nến**: Nhận từ Binance WebSocket -> Chuẩn hóa định dạng OHLCV -> Lưu trữ dài hạn trong PostgreSQL.
+2. **Dữ liệu Tin tức & Cảm xúc**: Crawl bài báo  -> Worker gọi Gemini API -> Lưu điểm Sentiment theo mốc thời gian -> Cung cấp cho SentimentStrategy.
 3. **Dữ liệu Đánh giá Chiến lược**: Chiến lược tạo ra tín hiệu (1: BUY, -1: SELL, 0: HOLD) -> Engine giả lập khớp lệnh -> Lưu chi tiết giao dịch (Trades) -> Xuất chỉ số thống kê -> Đẩy lên Leaderboard.
 
 ---
@@ -220,7 +248,7 @@ Hệ thống sử dụng **Socket.IO Gateway** để quản lý các kênh kết
    - Bảng xếp hạng trên UI lập tức thay đổi vị trí mượt mà với hoạt ảnh highlight.
 
 3. **Kênh `loop:progress`**:
-   - Phát sự kiện `loop:step` thông báo tiến trình của vòng lặp Continuous Loop (ví dụ: "Đã thử nghiệm 45/100 ứng viên...").
+   - Phát sự kiện `loop:step` thông báo tiến trình của vòng lặp Continuous Loop.
 
 ---
 
@@ -233,7 +261,6 @@ graph LR
         RSI[Relative Strength Index]
         BB[Bollinger Bands]
         SR[Support / Resistance]
-        SMC[SMC / Wyckoff]
         Sentiment[Sentiment Score]
     end
 
@@ -249,7 +276,12 @@ graph LR
         Signal[Trading Signal: BUY / SELL / HOLD]
     end
 
-    MA & RSI & BB & SR & SMC & Sentiment --> IStrategy
+    MA --> IStrategy
+    RSI --> IStrategy
+    BB --> IStrategy
+    SR --> IStrategy
+  
+    Sentiment --> IStrategy
     IStrategy --> Weighting
     Weighting --> Signal
 ```

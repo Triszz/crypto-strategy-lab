@@ -19,23 +19,50 @@ Hệ thống được thiết kế theo kiến trúc Modular Monolith dựa trê
 1. Sao chép và tạo file môi trường cho Backend:
 ```bash
 cd backend
-cp .env.example .env
 ```
 
-2. Cập nhật các biến môi trường trong `backend/.env`:
+2. Tạo các biến môi trường trong `backend/.env`:
 ```env
-PORT=3000
+# ===========================================================
+# Crypto Strategy Lab — Backend environment variables
+# ===========================================================
+
+# Runtime
 NODE_ENV=development
-DATABASE_URL="postgresql://postgres:postgres@localhost:5432/crypto_lab?schema=public"
-REDIS_URL="redis://localhost:6379"
-GEMINI_API_KEY="your_gemini_api_key_here"
+PORT=3000
+
+# PostgreSQL (Supabase / local Postgres)
+DATABASE_URL="postgresql://postgres.qlspigbgritydrmkdcjk:6xLgrC7n4UieYOg0@aws-0-ap-southeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true"
+DIRECT_URL="postgresql://postgres.qlspigbgritydrmkdcjk:6xLgrC7n4UieYOg0@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres"
+
+# Redis (BullMQ Broker for Backtest & Evaluation Workers)
+REDIS_HOST="localhost"
+REDIS_PORT=6379
+REDIS_PASSWORD=""
+REDIS_DB=0
+
+# Binance public endpoints (no API key needed for public market data in MVP)
+BINANCE_REST_BASE_URL=https://api.binance.com
+BINANCE_WS_BASE_URL=wss://stream.binance.com:9443
+
+# External news + sentiment providers
+CRYPTOPANIC_API_KEY=
+NEWSDATA_API_KEY=
+
+# ── Sentiment Analyzer ─────────────────────────────────────────────────────────
+# Supported: lexicon (default), gemini
+SENTIMENT_ANALYZER=gemini
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# ── News module ────────────────────────────────────────────────────────────────
+NEWS_PROVIDERS=
+NEWS_CRAWL_INTERVAL_MS=300000
+
+# ── CORS ────────────────────────────────────────────────────────────────────────
+CORS_ORIGINS=*
 ```
 
-3. Cấu hình Frontend (nếu cần):
-```bash
-cd ../frontend
-# Cấu hình mặc định kết nối tới Backend tại http://localhost:3000
-```
+
 
 ### 1.3 Khởi chạy bằng Docker Compose (Khuyên dùng cho Database & Redis)
 ```bash
@@ -105,8 +132,8 @@ Hệ thống được thiết kế chia làm 8 Module cốt lõi theo mô hình 
 1. **Market Data Module**: Tự động kết nối WebSocket Binance/CoinGecko, cung cấp dữ liệu nến realtime (Multi-timeframe: 1m, 5m, 15m, 1h, 4h, 1d) và quản lý bộ nhớ đệm nến lịch sử.
 2. **Strategy Engine & Plugin Architecture**: Định nghĩa giao diện `IStrategy` chuẩn hóa cho phép dễ dàng cắm rút (Plug-and-play) các chiến lược kỹ thuật (Moving Average, RSI, Bollinger Bands, Support/Resistance, SMC, Wyckoff) và Sentiment Strategy.
 3. **Composite Strategy Combination**: Cho phép kết hợp đa chiến lược theo trọng số (Weighted Combination, Logic AND/OR, Sentiment-aware weighting).
-4. **Strategy Search Engine**: Tìm kiếm không gian chiến lược tối ưu bằng 2 thuật toán: Random Search và Domain-guided Search (Dựa trên heuristics chỉ báo).
-5. **Backtesting Engine**: Giả lập giao dịch lịch sử chính xác cao, tính toán đầy đủ các chỉ số hiệu năng (Total Return, Win Rate, Max Drawdown, Sharpe Ratio, Profit Factor).
+4. **Strategy Search Engine**: Tìm kiếm không gian chiến lược tối ưu bằng 2 thuật toán: Random Search và Domain-guided Search.
+5. **Backtesting Engine**: Giả lập giao dịch lịch sử, tính toán đầy đủ các chỉ số hiệu năng (Total Return, Win Rate, Max Drawdown, Sharpe Ratio, Profit Factor).
 6. **Leaderboard Module**: Bảng xếp hạng chiến lược realtime, tự động cập nhật thứ hạng theo thời gian thực và quản lý các Top-K chiến lược tốt nhất.
 7. **News Crawler Engine & Sentiment Analysis**: Thu thập tin tức crypto từ RSS/NewsAPI, tự động phân tích cảm xúc (Positive/Neutral/Negative & Score -1.0 đến +1.0) qua Google Gemini LLM API, có cơ chế Self-healing Circuit Breaker.
 8. **Continuous Strategy Loop Engine**: Chu trình tự động hóa liên tục (Generate -> Execute -> Measure -> Rank -> Evolve -> Verify) để tìm kiếm và cập nhật các chiến lược tối ưu liên tục không ngắt quãng.

@@ -187,7 +187,7 @@ function CandidateRow({ c }: { c: LoopIterationData["candidates"][number] }) {
       <span className={scoreCell.className} title={scoreCell.title}>
         {scoreCell.text}
       </span>
-      <span className="text-slate-400 text-right w-20">
+      <span className={`text-right w-20 ${c.status === "FAILED" ? "text-slate-400" : (c.totalReturn ?? 0) >= 0 ? "text-emerald-600 font-bold" : "text-red-500 font-bold"}`}>
         {c.status === "FAILED" ? "—" : formatSignedPercent(c.totalReturn)}
       </span>
       <span className="text-slate-400 text-right w-16">

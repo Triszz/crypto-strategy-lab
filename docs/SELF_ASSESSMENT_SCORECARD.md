@@ -1,6 +1,5 @@
 # Phiếu Tự Đánh Giá Đồ Án Cuối Kỳ - Crypto Strategy Lab
 
-Tài liệu tự đánh giá đồ án dựa theo Mẫu Bảng Tự Đánh Giá (`FileDanhGia.xlsx - 1_TU_DANH_GIA`).
 
 ---
 

@@ -279,9 +279,9 @@ export class DomainGuidedGenerator implements StrategyGenerator {
 
     const familyGroups: FamilyGroup[] = Array.isArray(cfg.familyGroups)
       ? cfg.familyGroups.map((g: FamilyGroup) => ({
-          name: String(g.name ?? ""),
-          families: Array.isArray(g.families) ? g.families.map((f: string) => String(f)) : [],
-        }))
+        name: String(g.name ?? ""),
+        families: Array.isArray(g.families) ? g.families.map((f: string) => String(f)) : [],
+      }))
       : [];
 
     let minComponents: number | undefined;
@@ -377,9 +377,9 @@ export class DomainGuidedGenerator implements StrategyGenerator {
     const poolStrategyIds: string[] =
       filledFamilies.length > 0
         ? filledFamilies.flatMap((fam) => {
-            const bucket = spacesByFamily.get(fam) ?? [];
-            return bucket.map((sp) => sp.strategyId);
-          })
+          const bucket = spacesByFamily.get(fam) ?? [];
+          return bucket.map((sp) => sp.strategyId);
+        })
         : this.spaces.map((sp) => sp.strategyId);
     const dedupedPool = Array.from(new Set(poolStrategyIds)).sort((a, b) =>
       a.localeCompare(b),

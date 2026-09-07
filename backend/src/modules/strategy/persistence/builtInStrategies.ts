@@ -227,14 +227,134 @@ export async function syncBuiltInStrategies(
       where: { strategyVersionId: legacy.id },
       data: { strategyVersionId: canonicalVersion.id },
     });
-    const compositeChildUpdate = await prisma.compositeComponent.updateMany({
+    // ─────────────────────────────────────────────────────────────────────
+    // CompositeComponent collision handling (child-side: componentVersionId).
+    //
+    // The unique constraint `(composite_version_id, component_version_id)`
+    // means we cannot blindly update every legacy composite_child row to
+    // `canonicalVersion.id` — if the canonical version already has its
+    // own composite_child row for the same `(compositeVersionId, componentVersionId)`
+    // pair, the update would violate the constraint (Prisma P2002).
+    //
+    // For each legacy composite_child row we therefore decide:
+    //   • canonical child already exists for the same composite
+    //       → delete the redundant legacy child (preserve canonical)
+    //   • canonical child does NOT exist for that composite
+    //       → migrate the legacy child by updating its componentVersionId
+    //
+    // Note: CompositeComponent has no surrogate `id` column — its primary
+    // key is the composite (compositeVersionId, componentVersionId). All
+    // delete/update WHEREs therefore target the natural key.
+    // ─────────────────────────────────────────────────────────────────────
+    const legacyChildRows = await prisma.compositeComponent.findMany({
       where: { componentVersionId: legacy.id },
-      data: { componentVersionId: canonicalVersion.id },
+      select: { compositeVersionId: true, componentVersionId: true },
     });
-    const compositeParentUpdate = await prisma.compositeComponent.updateMany({
+
+    let childRowsDeleted = 0;
+    let childRowsMigrated = 0;
+
+    if (legacyChildRows.length > 0) {
+      // Check which of the legacy children's composite-version already has
+      // a canonical child row for the same component.
+      const compositeKeys = legacyChildRows.map((r) => r.compositeVersionId);
+      const canonicalChildRows = await prisma.compositeComponent.findMany({
+        where: {
+          componentVersionId: canonicalVersion.id,
+          compositeVersionId: { in: compositeKeys },
+        },
+        select: { compositeVersionId: true },
+      });
+
+      const collisionKeys = new Set(
+        canonicalChildRows.map((c) => c.compositeVersionId),
+      );
+
+      for (const legacyRow of legacyChildRows) {
+        if (collisionKeys.has(legacyRow.compositeVersionId)) {
+          // Canonical already has this slot — delete the legacy row.
+          const deleted = await prisma.compositeComponent.deleteMany({
+            where: {
+              compositeVersionId: legacyRow.compositeVersionId,
+              componentVersionId: legacyRow.componentVersionId,
+            },
+          });
+          childRowsDeleted += deleted.count;
+        } else {
+          // No collision — migrate the legacy child to canonical.
+          const updated = await prisma.compositeComponent.updateMany({
+            where: {
+              compositeVersionId: legacyRow.compositeVersionId,
+              componentVersionId: legacyRow.componentVersionId,
+            },
+            data: { componentVersionId: canonicalVersion.id },
+          });
+          childRowsMigrated += updated.count;
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // CompositeComponent collision handling (parent-side: compositeVersionId).
+    //
+    // Same P2002 risk when updating the parent: if the canonical composite
+    // already has a child row with the same `componentVersionId` as one of
+    // the legacy composite's children, we cannot create a second row with
+    // the canonical's id.
+    //
+    // Decision (per legacy parent row):
+    //   • canonical composite already has a child for the same component
+    //       → delete the entire legacy composite row (preserve canonical's row)
+    //   • canonical composite does NOT have that child
+    //       → migrate the legacy composite's children by updating compositeVersionId
+    // ─────────────────────────────────────────────────────────────────────
+    const legacyCompositeRows = await prisma.compositeComponent.findMany({
       where: { compositeVersionId: legacy.id },
-      data: { compositeVersionId: canonicalVersion.id },
+      select: { compositeVersionId: true, componentVersionId: true },
     });
+
+    let parentRowsDeleted = 0;
+    let parentRowsMigrated = 0;
+
+    if (legacyCompositeRows.length > 0) {
+      const childKeys = legacyCompositeRows.map((r) => r.componentVersionId);
+      // Does the canonical composite already have a child row for any of
+      // the same component-version ids?
+      const canonicalParentRows = await prisma.compositeComponent.findMany({
+        where: {
+          compositeVersionId: canonicalVersion.id,
+          componentVersionId: { in: childKeys },
+        },
+        select: { componentVersionId: true },
+      });
+
+      const childCollisionKeys = new Set(
+        canonicalParentRows.map((c) => c.componentVersionId),
+      );
+
+      for (const legacyRow of legacyCompositeRows) {
+        if (childCollisionKeys.has(legacyRow.componentVersionId)) {
+          // Canonical composite already has this child slot — delete legacy row.
+          const deleted = await prisma.compositeComponent.deleteMany({
+            where: {
+              compositeVersionId: legacyRow.compositeVersionId,
+              componentVersionId: legacyRow.componentVersionId,
+            },
+          });
+          parentRowsDeleted += deleted.count;
+        } else {
+          // No collision — migrate the legacy composite child to canonical.
+          const updated = await prisma.compositeComponent.updateMany({
+            where: {
+              compositeVersionId: legacyRow.compositeVersionId,
+              componentVersionId: legacyRow.componentVersionId,
+            },
+            data: { compositeVersionId: canonicalVersion.id },
+          });
+          parentRowsMigrated += updated.count;
+        }
+      }
+    }
 
     // Stage the legacy rows for deletion in a second pass so that
     // multiple legacy versions sharing the same `StrategyDefinition`
@@ -251,8 +371,9 @@ export async function syncBuiltInStrategies(
     console.log(
       `[syncBuiltInStrategies] folded ${legacy.implementationRef} (def=${legacy.definitionId.slice(0, 8)}, ` +
         `candidates=${candidateUpdate.count}, leaderboardMigrated=${leaderboardMigrated}, leaderboardDeleted=${leaderboardDeleted}, ` +
-        `ranking=${rankingUpdate.count}, compositeChild=${compositeChildUpdate.count}, ` +
-        `compositeParent=${compositeParentUpdate.count}) -> ${canonical.id}`,
+        `ranking=${rankingUpdate.count}, ` +
+        `compositeChildDeleted=${childRowsDeleted}, compositeChildMigrated=${childRowsMigrated}, ` +
+        `compositeParentDeleted=${parentRowsDeleted}, compositeParentMigrated=${parentRowsMigrated}) -> ${canonical.id}`,
     );
   }
 

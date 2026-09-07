@@ -143,6 +143,11 @@ function getSocket(): Socket {
       emit("SentimentAnalyzed", data);
     });
 
+    socket.on("LeaderboardUpdated", (data: unknown) => {
+      debug("IN ← LeaderboardUpdated", data);
+      emit("LeaderboardUpdated", data);
+    });
+
     socket.on("subscribed", (data: unknown) => {
       debug("IN ← subscribed", data);
       emit("subscribed", data);

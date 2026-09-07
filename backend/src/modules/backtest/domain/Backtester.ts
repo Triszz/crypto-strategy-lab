@@ -59,12 +59,15 @@ export class Backtester {
 
     let activePosition: ActivePosition | null = null;
     let tradeCounter = 0;
+    let prevSignal: "BUY" | "SELL" | "HOLD" = "HOLD";
 
     for (let i = 0; i < candles.length; i++) {
       const candle = candles[i];
       if (!candle) continue;
 
       const signal = signalFn(candles, i);
+
+      let exitedOnThisCandle = false;
 
       // 1. Check if active position hits StopLoss / TakeProfit during the candle
       if (activePosition) {
@@ -163,16 +166,18 @@ export class Backtester {
           });
 
           activePosition = null;
+          exitedOnThisCandle = true;
         }
       }
 
-      // 2. If no position is open, check entry signals
-      if (!activePosition) {
-        const canOpenLong = defaultPositionType === "LONG" && signal === "BUY";
-        const canOpenShort = defaultPositionType === "SHORT" && signal === "SELL";
+      // 2. If no position is open (and didn't exit on this candle), check entry signals.
+      // Require a fresh signal transition (prevSignal !== currentSignal) to open positions.
+      if (!activePosition && !exitedOnThisCandle) {
+        const isFreshBuy = defaultPositionType === "LONG" && signal === "BUY" && prevSignal !== "BUY";
+        const isFreshSell = defaultPositionType === "SHORT" && signal === "SELL" && prevSignal !== "SELL";
 
-        if (canOpenLong || canOpenShort) {
-          const direction: PositionType = canOpenLong ? "LONG" : "SHORT";
+        if (isFreshBuy || isFreshSell) {
+          const direction: PositionType = isFreshBuy ? "LONG" : "SHORT";
           const entryPrice = candle.close;
 
           const effectiveEntryPrice =
@@ -196,6 +201,8 @@ export class Backtester {
           };
         }
       }
+
+      prevSignal = signal;
 
       // 3. Update Peak Capital, Drawdown and Equity Curve
       if (currentCapital > peakCapital) {

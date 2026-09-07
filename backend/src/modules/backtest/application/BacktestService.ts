@@ -123,8 +123,8 @@ export class BacktestService {
       initialCapital,
       feePercent: params.feePercent ?? 0.08,
       slippageBps: params.slippageBps ?? 5,
-      stopLossPct: params.stopLossPct,
-      takeProfitPct: params.takeProfitPct,
+      stopLossPct: params.stopLossPct ?? 3,
+      takeProfitPct: params.takeProfitPct ?? 6,
     };
 
     const result = this.backtester.run(candles, signalFn, options);
@@ -438,7 +438,7 @@ export class BacktestService {
           }
         }
 
-        if (dbCandles.length >= 1) {
+        if (dbCandles.length >= 500) {
           return dbCandles.map((c) => ({
             openTime: Number(c.openTime),
             closeTime: Number(c.closeTime),
@@ -454,31 +454,42 @@ export class BacktestService {
       logger.warn({ err, timeframe: timeframeStr }, "Could not load candles from DB; falling back to fixture data");
     }
 
-    return this.generateFixtureCandles(100, timeframeStr);
+    return this.generateFixtureCandles(1000, timeframeStr);
   }
 
   /**
-   * Generates realistic synthetic candle data matching the requested timeframe interval.
+   * Generates realistic synthetic candle data with deterministic oscillating market cycles
+   * matching the requested timeframe interval.
    */
   private generateFixtureCandles(count: number, timeframeStr: string): CandleData[] {
     const candles: CandleData[] = [];
-    let currentPrice = 68000;
+    const basePrice = 68000;
 
     // Convert timeframe to milliseconds
     const intervalMs = this.parseTimeframeToMs(timeframeStr);
-    const startTime = Date.now() - count * intervalMs;
+    // Fixed base timestamp so candle dataset is 100% deterministic across runs
+    const startTime = 1700000000000;
 
     for (let i = 0; i < count; i++) {
       const openTime = startTime + i * intervalMs;
       const closeTime = openTime + intervalMs - 1;
-      const change = (Math.random() - 0.48) * 150;
-      const open = currentPrice;
-      const close = Math.max(1000, open + change);
-      const high = Math.max(open, close) + Math.random() * 50;
-      const low = Math.min(open, close) - Math.random() * 50;
-      const volume = Math.round(10 + Math.random() * 200);
 
-      currentPrice = close;
+      // Deterministic market cycles + micro fluctuations + pseudo-noise
+      const cycle = Math.sin((i / 80) * 2 * Math.PI) * 1500;
+      const microCycle = Math.sin((i / 15) * 2 * Math.PI) * 400;
+      const noise = Math.sin(i * 12.9898 + 78.233) * 250;
+
+      const targetClose = basePrice + cycle + microCycle + noise;
+      const prevClose = i > 0 ? candles[i - 1]!.close : basePrice - 50;
+
+      const open = prevClose;
+      const close = Math.max(100, targetClose);
+      const highNoise = Math.abs(Math.sin(i * 4.1415 + 1.234)) * 90;
+      const lowNoise = Math.abs(Math.sin(i * 7.1234 + 5.678)) * 90;
+      const high = Math.max(open, close) + highNoise;
+      const low = Math.min(open, close) - lowNoise;
+      const volume = Math.round(100 + Math.abs(Math.sin(i * 3.456)) * 900);
+
       candles.push({ openTime, closeTime, open, high, low, close, volume });
     }
 

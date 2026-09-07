@@ -193,6 +193,9 @@ function CandidateRow({ c }: { c: LoopIterationData["candidates"][number] }) {
       <span className="text-slate-400 text-right w-16">
         {c.status === "FAILED" ? "—" : formatPercent(c.winRate)}
       </span>
+      <span className="text-slate-500 font-bold font-mono text-right w-16" title={`${c.numTrades ?? 0} executed trades`}>
+        {c.status === "FAILED" ? "—" : (c.numTrades ?? 0)}
+      </span>
     </div>
   );
 }
@@ -257,16 +260,14 @@ function IterationSection({
       {/* Expanded candidate list */}
       {isExpanded && (
         <div className="border-t border-slate-100">
-          {/* Column headers — Phase 4.5: removed visible "Identity" column;
-              strategyVersionId + implementationRef remain available via the
-              title attribute on the Strategy cell (hover tooltip) and the
-              /api/loop/candidates response payload for debugging. */}
-          <div className="grid grid-cols-[1fr_auto_auto_auto_auto] gap-x-4 gap-y-0.5 px-4 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-50">
+          {/* Column headers */}
+          <div className="grid grid-cols-[1fr_auto_auto_auto_auto_auto] gap-x-4 gap-y-0.5 px-4 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-50">
             <span>Strategy</span>
             <span className="text-right w-16">Type</span>
             <span className="text-right w-16">Score</span>
             <span className="text-right w-20">Return</span>
             <span className="text-right w-16">Win Rate</span>
+            <span className="text-right w-16">Trades</span>
           </div>
           {iter.candidates.length === 0 ? (
             <p className="px-4 py-3 text-xs text-slate-400 italic">No candidates yet.</p>
@@ -837,7 +838,7 @@ export default function Loop() {
           )}
 
           {/* Embedded Leaderboard Card */}
-          <LeaderboardCard limit={5} title="Leaderboard (Top strategies)" />
+          <LeaderboardCard limit={5} title="Leaderboard (Top strategies)" refreshInterval={3000} />
         </div>
 
         {/* Controls sidebar */}

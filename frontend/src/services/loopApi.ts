@@ -81,6 +81,7 @@ export interface LoopCandidateItem {
   totalReturn: number | null;
   winRate: number | null;
   maxDrawdown: number | null;
+  numTrades: number | null;
   errorMessage: string | null;
 }
 

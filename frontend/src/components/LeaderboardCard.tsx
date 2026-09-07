@@ -19,6 +19,7 @@ interface LeaderboardCardProps {
   limit?: number;
   title?: string;
   className?: string;
+  refreshInterval?: number;
 }
 
 interface TagConfig {
@@ -64,10 +65,11 @@ function parseStrategyTags(name: string): TagConfig[] {
   // Clean generic generator prefixes
   const cleanName = name
     .replace(/^Domain-guided\s+/i, '')
-    .replace(/^Composite:\s+/i, '');
+    .replace(/^Composite:\s+/i, '')
+    .replace(/^Composite\s+-\s+/i, '');
 
-  // Split by '+' or ',' or '-'
-  const rawParts = cleanName.split(/[\+,\-]/).map((p) => p.trim()).filter(Boolean);
+  // Split by '+' or ','
+  const rawParts = cleanName.split(/[\+,]/).map((p) => p.trim()).filter(Boolean);
   if (rawParts.length === 0) {
     return [{ tag: cleanName, cls: 'bg-blue-50 text-blue-600 border-blue-100' }];
   }
@@ -89,30 +91,42 @@ function parseStrategyTags(name: string): TagConfig[] {
 
     const baseConfig = getTagStyle(baseKey, part);
 
+    // Extract weight percentage if present, e.g. "(50.00%)" -> "50%" or "33.3%"
+    const weightMatch = part.match(/\(([\d\.]+%?)\)/);
+    let formattedWeight = "";
+    if (weightMatch?.[1]) {
+      const rawW = weightMatch[1].replace("%", "");
+      const num = parseFloat(rawW);
+      if (!isNaN(num)) {
+        formattedWeight = num % 1 === 0 ? `${num.toFixed(0)}%` : `${num.toFixed(1)}%`;
+      }
+    }
+
     let displayTag = baseConfig.tag;
     let customCls = baseConfig.cls;
 
-    // Distinguish MA components specifically: Fast MA vs Slow MA
     if (baseKey === 'MA') {
+      let maLabel = 'MA';
       if (totalCount > 1) {
         if (idx === 1) {
-          displayTag = 'MA (Fast)';
+          maLabel = 'MA (Fast)';
           customCls = 'bg-blue-50 text-blue-600 border-blue-100';
         } else if (idx === 2) {
-          displayTag = 'MA (Slow)';
+          maLabel = 'MA (Slow)';
           customCls = 'bg-sky-100 text-sky-800 border-sky-300 font-black';
         } else {
-          displayTag = `MA (${idx})`;
+          maLabel = `MA (${idx})`;
         }
       } else if (/\bfast\b/i.test(part)) {
-        displayTag = 'MA (Fast)';
+        maLabel = 'MA (Fast)';
       } else if (/\bslow\b/i.test(part)) {
-        displayTag = 'MA (Slow)';
+        maLabel = 'MA (Slow)';
       }
-    } else if (totalCount > 1) {
-      if (/\(|\)|w:|weight|fast|slow/i.test(part)) {
-        displayTag = `${baseConfig.tag} (${part})`;
-      } else {
+      displayTag = formattedWeight ? `${maLabel} (${formattedWeight})` : maLabel;
+    } else {
+      if (formattedWeight) {
+        displayTag = `${baseConfig.tag} (${formattedWeight})`;
+      } else if (totalCount > 1) {
         displayTag = `${baseConfig.tag} #${idx}`;
       }
     }
@@ -170,6 +184,7 @@ export default function LeaderboardCard({
   limit = 5,
   title = 'Leaderboard (Top strategies)',
   className = '',
+  refreshInterval,
 }: LeaderboardCardProps) {
   const [items, setItems] = useState<LeaderboardItemApi[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -187,17 +202,24 @@ export default function LeaderboardCard({
 
   useEffect(() => {
     void loadData();
-  }, [loadData]);
 
-  useEffect(() => {
+    let timerId: number | undefined;
+    if (refreshInterval && refreshInterval > 0) {
+      timerId = window.setInterval(() => {
+        void loadData();
+      }, refreshInterval);
+    }
+
     connect();
     const off = on('LeaderboardUpdated', () => {
       void loadData();
     });
+
     return () => {
+      if (timerId) window.clearInterval(timerId);
       off();
     };
-  }, [loadData]);
+  }, [loadData, refreshInterval]);
 
   return (
     <article className={`bg-white p-5 rounded-2xl border border-slate-100 shadow-sm flex flex-col gap-4 ${className}`}>
@@ -221,6 +243,7 @@ export default function LeaderboardCard({
             <tr className="border-b border-slate-100 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
               <th className="py-2.5 px-3 w-16 text-center">Rank</th>
               <th className="py-2.5 px-3">Strategy</th>
+              <th className="py-2.5 px-3 text-right">Score</th>
               <th className="py-2.5 px-3 text-right">Profit (USDT)</th>
               <th className="py-2.5 px-3 text-right">Winrate</th>
             </tr>
@@ -228,7 +251,7 @@ export default function LeaderboardCard({
           <tbody className="divide-y divide-slate-50 font-semibold text-slate-700">
             {isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={4} className="py-8 text-center text-slate-400 animate-pulse">
+                <td colSpan={5} className="py-8 text-center text-slate-400 animate-pulse">
                   Đang tải bảng xếp hạng...
                 </td>
               </tr>
@@ -236,7 +259,7 @@ export default function LeaderboardCard({
 
             {!isLoading && items.length === 0 && (
               <tr>
-                <td colSpan={4} className="py-8 text-center text-slate-400">
+                <td colSpan={5} className="py-8 text-center text-slate-400">
                   Chưa có dữ liệu bảng xếp hạng.
                 </td>
               </tr>
@@ -244,9 +267,10 @@ export default function LeaderboardCard({
 
             {items.slice(0, limit).map((item, idx) => {
               const rank = item.rank ?? idx + 1;
-              const tags = parseStrategyTags(item.strategyName ?? item.strategyVersionId);
+              const tags = parseStrategyTags(item.displayNameWithWeights || item.strategyName || item.strategyVersionId);
               const profitText = formatProfitUsdt(item.totalReturn);
               const winrateText = formatWinrate(item.winRate);
+              const scoreText = item.overallScore !== undefined && item.overallScore !== null ? Number(item.overallScore).toFixed(2) : "—";
 
               return (
                 <tr key={item.id || idx} className="hover:bg-slate-50/50 transition-colors">
@@ -268,6 +292,9 @@ export default function LeaderboardCard({
                         </span>
                       ))}
                     </div>
+                  </td>
+                  <td className="py-3 px-3 text-right font-extrabold font-mono text-slate-800">
+                    {scoreText}
                   </td>
                   <td className={`py-3 px-3 text-right font-bold ${item.totalReturn >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
                     {profitText}

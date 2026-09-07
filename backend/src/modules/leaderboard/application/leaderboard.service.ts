@@ -113,4 +113,9 @@ export class LeaderboardService {
   public async getRankHistory(strategyVersionId: string): Promise<RankingHistoryItem[]> {
     return this.repository.getHistory(strategyVersionId);
   }
+
+  public async getTraceDetails(idOrVersionId: string): Promise<import("../domain/leaderboard.entity").LeaderboardTraceDetails | null> {
+    return this.repository.getTraceDetails(idOrVersionId);
+  }
 }
+

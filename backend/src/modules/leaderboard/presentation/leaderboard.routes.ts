@@ -11,6 +11,10 @@ export function buildLeaderboardRouter(): Router {
 
   router.get("/", controller.getTopK);
   router.get("/history/:strategyVersionId", controller.getHistory);
+  router.get("/trace/:id", controller.getTraceDetails);
+  router.get("/:id/trace", controller.getTraceDetails);
+  router.get("/:id/details", controller.getTraceDetails);
+
 
   return router;
 }

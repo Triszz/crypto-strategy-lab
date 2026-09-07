@@ -432,6 +432,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
                   totalReturn: null,
                   winRate: null,
                   maxDrawdown: null,
+                  numTrades: null,
                   errorMessage: null,
                 };
               }
@@ -477,6 +478,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
                   totalReturn: null,
                   winRate: null,
                   maxDrawdown: null,
+                  numTrades: null,
                   errorMessage: null,
                 };
               }
@@ -498,6 +500,7 @@ export function buildLoopRouter(deps: LoopRouterDeps): Router {
                 totalReturn: result ? Number(result.totalReturn) : null,
                 winRate: result ? Number(result.winRate) : null,
                 maxDrawdown: result ? Number(result.maxDrawdown) : null,
+                numTrades: result ? Number(result.numTrades) : null,
                 errorMessage: expRow?.errorMessage ?? null,
               };
             }),

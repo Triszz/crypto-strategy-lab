@@ -99,7 +99,9 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
   }
 
   private async executeRecalculateRanks(symbolId?: string, timeframe?: string): Promise<LeaderboardItem[]> {
-    const whereClause: Record<string, unknown> = {};
+    const whereClause: Record<string, unknown> = {
+      numTrades: { gt: 0 },
+    };
     if (symbolId) whereClause.symbolId = symbolId;
     if (timeframe) whereClause.timeframe = timeframe;
 
@@ -139,6 +141,8 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
         strategyName: entry.strategyVersion?.name || "Strategy",
         strategyVersion: entry.strategyVersion?.version || "1.0.0",
         strategyType: entry.strategyType || "BASE",
+        displayNameWithWeights: entry.strategyVersion?.displayNameWithWeights ?? null,
+        parameters: (entry.strategyVersion?.parameters as Record<string, unknown>) ?? undefined,
         symbolId: entry.symbolId,
         symbolCode: entry.symbol?.symbol || "BTCUSDT",
         timeframe: entry.timeframe,
@@ -160,7 +164,9 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
 
   public async getTopK(options: LeaderboardFilterOptions): Promise<LeaderboardItem[]> {
     const limit = Math.min(100, Math.max(1, options.limit || 10));
-    const whereClause: Record<string, unknown> = {};
+    const whereClause: Record<string, unknown> = {
+      numTrades: { gt: 0 },
+    };
 
     if (options.symbolId) {
       whereClause.symbolId = options.symbolId;
@@ -202,6 +208,8 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
       strategyName: entry.strategyVersion?.name || "Strategy",
       strategyVersion: entry.strategyVersion?.version || "1.0.0",
       strategyType: entry.strategyType || "BASE",
+      displayNameWithWeights: entry.strategyVersion?.displayNameWithWeights ?? null,
+      parameters: (entry.strategyVersion?.parameters as Record<string, unknown>) ?? undefined,
       symbolId: entry.symbolId,
       symbolCode: entry.symbol?.symbol || "BTCUSDT",
       timeframe: entry.timeframe,
@@ -234,4 +242,125 @@ export class PrismaLeaderboardRepository implements LeaderboardRepository {
       datasetLabel: r.datasetLabel,
     }));
   }
+
+  public async getTraceDetails(idOrVersionId: string): Promise<import("../domain/leaderboard.entity").LeaderboardTraceDetails | null> {
+    // 1. Find Leaderboard entry by UUID id OR strategyVersionId
+    const entry = await this.prisma.leaderboardEntry.findFirst({
+      where: {
+        OR: [{ id: idOrVersionId }, { strategyVersionId: idOrVersionId }],
+      },
+      include: {
+        symbol: true,
+        strategyVersion: {
+          include: {
+            definition: true,
+            compositeParent: {
+              include: {
+                componentVersion: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!entry) return null;
+
+    // 2. Query matching Experiment (with trades & dataset timeframe bounds)
+    const experiment = await this.prisma.experiment.findFirst({
+      where: {
+        candidate: { strategyVersionId: entry.strategyVersionId },
+        symbolId: entry.symbolId,
+        timeframe: entry.timeframe,
+      },
+      orderBy: { createdAt: "desc" },
+      include: {
+        symbol: true,
+        trades: {
+          orderBy: { entryTime: "asc" },
+          take: 500,
+        },
+      },
+    });
+
+    const compositeComponents = entry.strategyVersion?.compositeParent?.map((cp) => ({
+      componentVersionId: cp.componentVersionId,
+      componentName: cp.componentVersion?.name || "Child Indicator",
+      weight: Number(cp.weight),
+      position: cp.position,
+    })) || [];
+
+    const mappedEntry: LeaderboardItem = {
+      id: entry.id,
+      strategyVersionId: entry.strategyVersionId,
+      strategyName: entry.strategyVersion?.name || "Strategy",
+      strategyVersion: entry.strategyVersion?.version || "1.0.0",
+      strategyType: entry.strategyType || "BASE",
+      displayNameWithWeights: entry.strategyVersion?.displayNameWithWeights ?? null,
+      parameters: (entry.strategyVersion?.parameters as Record<string, unknown>) ?? {},
+      symbolId: entry.symbolId,
+      symbolCode: entry.symbol?.symbol || "BTCUSDT",
+      timeframe: entry.timeframe,
+      totalReturn: Number(entry.totalReturn),
+      winRate: Number(entry.winRate),
+      maxDrawdown: Number(entry.maxDrawdown),
+      sharpeRatio: entry.sharpeRatio ? Number(entry.sharpeRatio) : undefined,
+      sortinoRatio: entry.sortinoRatio ? Number(entry.sortinoRatio) : undefined,
+      calmarRatio: entry.calmarRatio ? Number(entry.calmarRatio) : undefined,
+      numTrades: entry.numTrades,
+      overallScore: Number(entry.overallScore),
+      rank: entry.rank,
+      lastEvaluatedAt: entry.lastEvaluatedAt,
+    };
+
+    return {
+      leaderboardEntry: mappedEntry,
+      strategyVersion: {
+        id: entry.strategyVersionId,
+        version: entry.strategyVersion?.version || "1.0.0",
+        name: entry.strategyVersion?.name || "Strategy",
+        description: entry.strategyVersion?.description,
+        implementationRef: entry.strategyVersion?.implementationRef || "",
+        parameters: (entry.strategyVersion?.parameters as Record<string, unknown>) ?? {},
+        displayNameWithWeights: entry.strategyVersion?.displayNameWithWeights ?? null,
+        strategyType: entry.strategyType || "BASE",
+        compositeComponents,
+      },
+      dataset: {
+        symbolId: entry.symbolId,
+        symbolCode: entry.symbol?.symbol || "BTCUSDT",
+        baseAsset: entry.symbol?.baseAsset || "BTC",
+        quoteAsset: entry.symbol?.quoteAsset || "USDT",
+        timeframe: entry.timeframe,
+        fromTime: experiment ? experiment.fromTime.toString() : null,
+        toTime: experiment ? experiment.toTime.toString() : null,
+      },
+      experiment: experiment
+        ? {
+            id: experiment.id,
+            initialCapital: Number(experiment.initialCapital),
+            positionSize: Number(experiment.positionSize),
+            positionType: experiment.positionType,
+            status: experiment.status,
+          }
+        : null,
+      trades: experiment
+        ? experiment.trades.map((t) => ({
+            id: t.id,
+            side: t.side,
+            position: t.position,
+            entryTime: Number(t.entryTime),
+            entryPrice: Number(t.entryPrice),
+            exitTime: t.exitTime ? Number(t.exitTime) : null,
+            exitPrice: t.exitPrice ? Number(t.exitPrice) : null,
+            quantity: Number(t.quantity),
+            profitLoss: t.profitLoss ? Number(t.profitLoss) : null,
+            profitLossPct: t.profitLossPct ? Number(t.profitLossPct) : null,
+            entryReason: t.entryReason,
+            exitReason: t.exitReason,
+          }))
+        : [],
+    };
+  }
 }
+

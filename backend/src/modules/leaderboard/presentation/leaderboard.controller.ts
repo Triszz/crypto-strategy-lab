@@ -66,4 +66,42 @@ export class LeaderboardController {
       res.status(500).json(response);
     }
   };
+
+  public getTraceDetails = async (req: Request, res: Response): Promise<void> => {
+    try {
+      const idOrVersionId = req.params.id || (req.query.id as string);
+      if (!idOrVersionId) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: "MISSING_PARAM", message: "id or strategyVersionId is required" },
+        };
+        res.status(400).json(response);
+        return;
+      }
+
+      const details = await this.leaderboardService.getTraceDetails(idOrVersionId);
+      if (!details) {
+        const response: ApiResponse<null> = {
+          success: false,
+          error: { code: "NOT_FOUND", message: `Leaderboard entry '${idOrVersionId}' not found` },
+        };
+        res.status(404).json(response);
+        return;
+      }
+
+      const response: ApiResponse<typeof details> = {
+        success: true,
+        data: details,
+        meta: { timestamp: new Date().toISOString() },
+      };
+      res.json(response);
+    } catch (err) {
+      const response: ApiResponse<null> = {
+        success: false,
+        error: { code: "LEADERBOARD_TRACE_ERROR", message: (err as Error).message },
+      };
+      res.status(500).json(response);
+    }
+  };
 }
+

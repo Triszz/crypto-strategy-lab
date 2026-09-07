@@ -118,7 +118,9 @@ backend/src/modules/news/
 │   ├── news.entity.ts                  # Interface: NewsItem, NewsProviderAdapter, NewsRepository
 │   └── extraction.entity.ts            # Interface: ExtractionTemplateEntity, QualityValidationResult
 ├── infrastructure/
-│   ├── crypto-panic.adapter.ts         # Class: CryptoPanicAdapter (Crawl REST API)
+│   ├── circuit-breaker.ts              # Class: CircuitBreaker (Fast-fail & State Machine CLOSED/OPEN/HALF_OPEN)
+│   ├── cryptopanic-news.adapter.ts     # Class: CryptopanicNewsAdapter (Crawl REST API + CircuitBreaker)
+│   ├── newsdata-news.adapter.ts        # Class: NewsDataNewsAdapter (Crawl REST API + CircuitBreaker)
 │   ├── html-news.adapter.ts            # Class: HtmlNewsAdapter (Scrape tin bằng Cheerio + Template)
 │   ├── llm-extraction.template-manager.ts # Class: LlmExtractionTemplateManager (Sinh CSS selector qua Gemini)
 │   ├── self-healing.orchestrator.ts    # Class: SelfHealingOrchestrator (Giám sát lỗi DOM & auto-heal)
@@ -134,7 +136,9 @@ backend/src/modules/news/
 
 | Tên File | Class / Component | Tên Hàm (Method Signature) | Đầu vào (Input) | Đầu ra (Output) | Nhiệm vụ Kỹ thuật |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| [`crypto-panic.adapter.ts`](file:///e:/Documents/HCMUS/Semester3_Year3/Kiến%20trúc%20phần%20mềm/crypto-strategy-lab/backend/src/modules/news/infrastructure/crypto-panic.adapter.ts) | `CryptoPanicAdapter` | `fetchNews(limit?: number)` | `limit: number` | `Promise<NewsItem[]>` | Gọi CryptoPanic REST API, parse JSON về mảng `NewsItem` chuẩn hóa. |
+| [`circuit-breaker.ts`](file:///e:/Documents/HCMUS/Semester3_Year3/Kiến%20trúc%20phần%20mềm/crypto-strategy-lab/backend/src/modules/news/infrastructure/circuit-breaker.ts) | `CircuitBreaker` | `execute<T>(fn: () => Promise<T>)` | `fn: () => Promise<T>` | `Promise<T>` | **Circuit Breaker Machine**: Quản lý 3 trạng thái `CLOSED` $\rightarrow$ `OPEN` $\rightarrow$ `HALF_OPEN`. Tự động ngắt fast-fail với `CircuitOpenError` khi quá 3 lỗi liên tiếp, phục hồi sau 60s. |
+| [`cryptopanic-news.adapter.ts`](file:///e:/Documents/HCMUS/Semester3_Year3/Kiến%20trúc%20phần%20mềm/crypto-strategy-lab/backend/src/modules/news/infrastructure/cryptopanic-news.adapter.ts) | `CryptopanicNewsAdapter` | `fetchLatestNews(symbol?: string)` | `symbol?: string` | `Promise<NewsItem[]>` | Bọc `pRetry` trong `CircuitBreaker.execute()` để cào tin CryptoPanic REST API an toàn không gây sập ứng dụng. |
+| [`newsdata-news.adapter.ts`](file:///e:/Documents/HCMUS/Semester3_Year3/Kiến%20trúc%20phần%20mềm/crypto-strategy-lab/backend/src/modules/news/infrastructure/newsdata-news.adapter.ts) | `NewsDataNewsAdapter` | `fetchLatestNews(symbol?: string)` | `symbol?: string` | `Promise<NewsItem[]>` | Bọc `pRetry` trong `CircuitBreaker.execute()` để cào tin NewsData.io REST API. |
 | [`html-news.adapter.ts`](file:///e:/Documents/HCMUS/Semester3_Year3/Kiến%20trúc%20phần%20mềm/crypto-strategy-lab/backend/src/modules/news/infrastructure/html-news.adapter.ts) | `HtmlNewsAdapter` | `extract(html: string, template: ExtractionTemplateEntity)` | `html: string, template` | `NewsItem[]` | Dùng `cheerio` load HTML, áp CSS selectors từ template để trích xuất Title, PublishedAt, Content. |
 | [`llm-extraction.template-manager.ts`](file:///e:/Documents/HCMUS/Semester3_Year3/Kiến%20trúc%20phần%20mềm/crypto-strategy-lab/backend/src/modules/news/infrastructure/llm-extraction.template-manager.ts) | `LlmExtractionTemplateManager` | `generateTemplate(domain: string, sampleHtml: string)` | `domain, sampleHtml` | `Promise<ExtractionTemplateEntity>` | Gửi mẫu HTML cho Gemini Prompt, yêu cầu trả JSON chứa CSS Selectors (title, date, body), tăng version template (`v1.4.2`). |
 | [`self-healing.orchestrator.ts`](file:///e:/Documents/HCMUS/Semester3_Year3/Kiến%20trúc%20phần%20mềm/crypto-strategy-lab/backend/src/modules/news/infrastructure/self-healing.orchestrator.ts) | `SelfHealingOrchestrator` | `checkQuality(items: NewsItem[])` | `items: NewsItem[]` | `QualityValidationResult` | Kiểm tra mảng tin cào được. Nếu tỷ lệ rỗng/lỗi $> 10\%$, trả về `valid: false` để trigger Self-Healing. |

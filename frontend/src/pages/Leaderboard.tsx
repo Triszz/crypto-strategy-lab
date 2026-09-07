@@ -238,7 +238,7 @@ export default function Leaderboard() {
                 </div>
               </div>
               <div className="mt-4">
-                <h4 className="text-base font-extrabold text-slate-900">{top2.strategyName}</h4>
+                <h4 className="text-base font-extrabold text-slate-900">{top2.displayNameWithWeights || top2.strategyName}</h4>
                 <div className="text-[11px] text-slate-400 font-semibold mt-0.5">{top2.symbolCode} · {top2.timeframe}</div>
               </div>
               <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-slate-100 text-xs font-bold">
@@ -265,7 +265,7 @@ export default function Leaderboard() {
               </div>
               <div className="mt-4">
                 <span className="text-[9px] font-black uppercase tracking-widest text-amber-600">QUÁN QUÂN HIGHEST SCORE</span>
-                <h3 className="text-lg font-black text-slate-900 mt-0.5">{top1.strategyName}</h3>
+                <h3 className="text-lg font-black text-slate-900 mt-0.5">{top1.displayNameWithWeights || top1.strategyName}</h3>
                 <div className="text-xs text-slate-500 font-bold mt-0.5">{top1.symbolCode} · {top1.timeframe}</div>
               </div>
               <div className="grid grid-cols-3 gap-2 mt-4 pt-3 border-t border-amber-100 text-xs font-black text-center">
@@ -301,7 +301,7 @@ export default function Leaderboard() {
                 </div>
               </div>
               <div className="mt-4">
-                <h4 className="text-base font-extrabold text-slate-900">{top3.strategyName}</h4>
+                <h4 className="text-base font-extrabold text-slate-900">{top3.displayNameWithWeights || top3.strategyName}</h4>
                 <div className="text-[11px] text-slate-400 font-semibold mt-0.5">{top3.symbolCode} · {top3.timeframe}</div>
               </div>
               <div className="grid grid-cols-2 gap-2 mt-4 pt-3 border-t border-slate-100 text-xs font-bold">
@@ -377,7 +377,7 @@ export default function Leaderboard() {
                       <TypeBadge type={item.strategyType} />
                     </td>
                     <td className="py-3 px-4 font-black text-slate-900">
-                      {item.strategyName}
+                      {item.displayNameWithWeights || item.strategyName}
                       <span className="text-[9px] font-mono text-slate-400 block font-normal">v{item.strategyVersion}</span>
                     </td>
                     <td className="py-3 px-3 font-mono text-slate-700">{item.symbolCode}</td>
